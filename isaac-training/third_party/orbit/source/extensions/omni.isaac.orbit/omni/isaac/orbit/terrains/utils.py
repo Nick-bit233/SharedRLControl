@@ -49,7 +49,18 @@ def color_meshes_by_height(meshes: list[trimesh.Trimesh], **kwargs) -> trimesh.T
         heights_normalized = np.clip(heights_normalized, 0.1, 0.9)
         # Get the color for each vertex based on the height
         color_map = kwargs.pop("color_map", "turbo")
-        colors = trimesh.visual.color.interpolate(heights_normalized, color_map=color_map)
+        # Try trimesh interpolate first; if color_map is a matplotlib name, use matplotlib.get_cmap
+        try:
+            colors = trimesh.visual.color.interpolate(heights_normalized, color_map=color_map)
+        except ValueError:
+            # trimesh suggests using matplotlib colormap objects for names it doesn't include
+            try:
+                import matplotlib.pyplot as plt
+                cmap = plt.get_cmap(color_map) if isinstance(color_map, str) else color_map
+                colors = trimesh.visual.color.interpolate(heights_normalized, color_map=cmap)
+            except Exception:
+                # fallback to a safe builtin colormap
+                colors = trimesh.visual.color.interpolate(heights_normalized, color_map="viridis")
         # Set the vertex colors
         mesh.visual.vertex_colors = colors
     # Return the mesh

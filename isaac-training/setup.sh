@@ -37,7 +37,7 @@ pip install matplotlib
 
 # Step 2: Install dependencies
 echo "Installing system dependencies..."
-sudo apt update && sudo apt install -y cmake build-essential
+apt update && apt install -y cmake build-essential
 
 # Install Orbit dependencies
 echo "Installing Orbit dependencies..."

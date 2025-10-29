@@ -31,8 +31,8 @@ viewer:
   resolution: [960, 720]
 
 wandb:
-  project: NavRL
-  name: navigation_training
-  entity: CERLAB-UAV-RL-Navigation
-  mode: offline # online
-  run_id: #kw9xf9k9
+  project: SRLC
+  name: test_navRL
+  entity: nickbit_ipec_group
+  mode: offline 
+  run_id: 
