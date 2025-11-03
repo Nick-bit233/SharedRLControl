@@ -15,6 +15,7 @@ class Agent:
     def init_model(self):
         observation_dim = 8
         num_dim_each_dyn_obs_state = 10
+        # state 的输入结构，使用 CompositeSpec 定义 （字典键值对与PPO中定义的接收输入一致）
         observation_spec = CompositeSpec({
             "agents": CompositeSpec({
                 "observation": CompositeSpec({
@@ -26,6 +27,7 @@ class Agent:
             }).expand(1)
         }, shape=[1], device=self.device)
 
+        # action 的输入结构
         action_dim = 3
         action_spec = CompositeSpec({
             "agents": CompositeSpec({

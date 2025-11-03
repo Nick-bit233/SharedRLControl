@@ -16,9 +16,16 @@ class PPO(TensorDictModuleBase):
         self.cfg = cfg
         self.device = device
 
+        self.rnn_input_dim = 128 + observation_spec["agents", "observation", "state"].shape[-1] + \
+                             observation_spec["agents", "observation", "dynamic_obstacle"].shape[-1] + \
+                             observation_spec["agents", "observation", "human_action"].shape[-1]
+        self.rnn_hidden_dim = 256
+
+        # 策略网络模型的定义
         
         # Feature extractor for LiDAR
         feature_extractor_network = nn.Sequential(
+            # Lidar CNN (for processing "rangefinder" data, aka. static obstacle information)
             nn.LazyConv2d(out_channels=4, kernel_size=[5, 3], padding=[2, 1]), nn.ELU(), 
             nn.LazyConv2d(out_channels=16, kernel_size=[5, 3], stride=[2, 1], padding=[2, 1]), nn.ELU(),
             nn.LazyConv2d(out_channels=16, kernel_size=[5, 3], stride=[2, 2], padding=[2, 1]), nn.ELU(),
@@ -28,23 +35,28 @@ class PPO(TensorDictModuleBase):
         
         # Dynamic obstacle information extractor
         dynamic_obstacle_network = nn.Sequential(
+            # Dynamic Obstacle MLP
             Rearrange("n c w h -> n (c w h)"),
             make_mlp([128, 64])
         ).to(self.device)
 
-        # Feature extractor
+        # RNN network for temporal information of observations
+        self.gru = nn.GRU(self.rnn_input_dim, self.rnn_hidden_dim, batch_first=True).to(self.device)
+        self.post_rnn_mlp = make_mlp([256, 256]).to(self.device)
+
+        # TODO: Rearrange Feature Extractor after add RNN network(GRU or LSTM) 
         self.feature_extractor = TensorDictSequential(
             TensorDictModule(feature_extractor_network, [("agents", "observation", "lidar")], ["_cnn_feature"]),
             TensorDictModule(dynamic_obstacle_network, [("agents", "observation", "dynamic_obstacle")], ["_dynamic_obstacle_feature"]),
             CatTensors(["_cnn_feature", ("agents", "observation", "state"), "_dynamic_obstacle_feature"], "_feature", del_keys=False), 
-            TensorDictModule(make_mlp([256, 256]), ["_feature"], ["_feature"]),
+            TensorDictModule(make_mlp([256, 256]), ["_feature"], ["_feature"]),  # to Feature MLP 
         ).to(self.device)
 
-        # Actor etwork
+        # Actor network
         self.n_agents, self.action_dim = action_spec.shape
         self.actor = ProbabilisticActor(
             TensorDictModule(BetaActor(self.action_dim), ["_feature"], ["alpha", "beta"]),
-            in_keys=["alpha", "beta"],
+            in_keys=["alpha", "beta"],  # Use beta distribution for bounded action space
             out_keys=[("agents", "action_normalized")], 
             distribution_class=IndependentBeta,
             return_log_prob=True
@@ -86,7 +98,9 @@ class PPO(TensorDictModuleBase):
         self.critic(tensordict)
 
         # Cooridnate change: transform local to world
+        # "action_normalized": input action in target frame, range [0, 1]. need to scale to [-action_limit, action_limit]
         actions = (2 * tensordict["agents", "action_normalized"] * self.cfg.actor.action_limit) - self.cfg.actor.action_limit
+        # transform to world frame
         actions_world = vec_to_world(actions, tensordict["agents", "observation", "direction"])
         tensordict["agents", "action"] = actions_world
         return tensordict

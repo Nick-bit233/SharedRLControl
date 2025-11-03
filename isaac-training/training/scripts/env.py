@@ -12,6 +12,7 @@ from omni_drones.utils.torch import euler_to_quaternion, quat_axis
 from omni.isaac.orbit.sensors import RayCaster, RayCasterCfg, patterns
 from omni.isaac.core.utils.viewports import set_camera_view
 from utils import vec_to_new_frame, vec_to_world, construct_input
+from user_model import UserModel
 import omni.isaac.core.utils.prims as prim_utils
 import omni.isaac.orbit.sim as sim_utils
 import omni.isaac.orbit.utils.math as math_utils
@@ -35,6 +36,8 @@ class NavigationEnv(IsaacEnv):
         self.lidar_vbeams = cfg.sensor.lidar_vbeams
         self.lidar_hres = cfg.sensor.lidar_hres
         self.lidar_hbeams = int(360/self.lidar_hres)
+
+        self.user_controller = UserModel()  # TODO: add cfg
 
         super().__init__(cfg, cfg.headless)
         
@@ -292,17 +295,20 @@ class NavigationEnv(IsaacEnv):
 
 
     def _set_specs(self):
-        observation_dim = 8
+        observation_dim = 8  # TODO: change to 3 (lin_vel only)
         num_dim_each_dyn_obs_state = 10
+        human_action_dim = 4  # (lin_vel x, y, z + ang_vel_yaw)
 
         # Observation Spec
         self.observation_spec = CompositeSpec({
             "agents": CompositeSpec({
+                # Del direction and add human_action
                 "observation": CompositeSpec({
                     "state": UnboundedContinuousTensorSpec((observation_dim,), device=self.device), 
                     "lidar": UnboundedContinuousTensorSpec((1, self.lidar_hbeams, self.lidar_vbeams), device=self.device),
-                    "direction": UnboundedContinuousTensorSpec((1, 3), device=self.device),
+                    # "direction": UnboundedContinuousTensorSpec((1, 3), device=self.device),
                     "dynamic_obstacle": UnboundedContinuousTensorSpec((1, self.cfg.algo.feature_extractor.dyn_obs_num, num_dim_each_dyn_obs_state), device=self.device),
+                    "human_action": UnboundedContinuousTensorSpec((human_action_dim,), device=self.device),
                 }),
             }).expand(self.num_envs)
         }, shape=[self.num_envs], device=self.device)
@@ -463,6 +469,7 @@ class NavigationEnv(IsaacEnv):
         
         
         # b. unit direction vector to goal
+        ## TODO: del target input
         target_dir_2d = self.target_dir.clone()
         target_dir_2d[..., 2] = 0
 
@@ -534,13 +541,17 @@ class NavigationEnv(IsaacEnv):
         else:
             dyn_obs_states = torch.zeros(self.num_envs, 1, self.cfg.algo.feature_extractor.dyn_obs_num, 10, device=self.cfg.device)
             dynamic_collision = torch.zeros(self.num_envs, 1, dtype=torch.bool, device=self.cfg.device)
-            
+
+        # human action
+        current_human_action = self.user_controller.predict(self.root_state)
+        
         # -----------------Network Input Final--------------
         obs = {
             "state": drone_state,
             "lidar": self.lidar_scan,
-            "direction": target_dir_2d,
-            "dynamic_obstacle": dyn_obs_states
+            # "direction": target_dir_2d,
+            "dynamic_obstacle": dyn_obs_states,
+            "human_action": current_human_action
         }
 
 
