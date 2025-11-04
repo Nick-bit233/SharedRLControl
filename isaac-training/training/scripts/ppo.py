@@ -4,9 +4,9 @@ import torch.nn.functional as F
 from tensordict.tensordict import TensorDict
 from tensordict.nn import TensorDictModuleBase, TensorDictSequential, TensorDictModule
 from einops.layers.torch import Rearrange
-from torchrl.modules import ProbabilisticActor
+from torchrl.modules import ProbabilisticActor, GRUModule
 from torchrl.envs.transforms import CatTensors
-from utils import ValueNorm, make_mlp, IndependentNormal, Actor, GAE, make_batch, IndependentBeta, BetaActor, vec_to_world
+from utils import ValueNorm, make_mlp, GAE, IndependentBeta, BetaActor, vec_to_world
 
 
 
@@ -16,14 +16,12 @@ class PPO(TensorDictModuleBase):
         self.cfg = cfg
         self.device = device
 
-        self.rnn_input_dim = 128 + observation_spec["agents", "observation", "state"].shape[-1] + \
-                             observation_spec["agents", "observation", "dynamic_obstacle"].shape[-1] + \
-                             observation_spec["agents", "observation", "human_action"].shape[-1]
-        self.rnn_hidden_dim = 256
-
-        # 策略网络模型的定义
+        # Get obs spec dims
+        state_dim = observation_spec["agents", "observation", "state"].shape[-1]
+        dyn_obs_feature_dim = observation_spec["agents", "observation", "dynamic_obstacle"].shape[-1]
+        human_action_dim = observation_spec["agents", "observation", "human_action"].shape[-1]
         
-        # Feature extractor for LiDAR
+        # 1. Extract LiDAR Feature
         feature_extractor_network = nn.Sequential(
             # Lidar CNN (for processing "rangefinder" data, aka. static obstacle information)
             nn.LazyConv2d(out_channels=4, kernel_size=[5, 3], padding=[2, 1]), nn.ELU(), 
@@ -33,26 +31,49 @@ class PPO(TensorDictModuleBase):
             nn.LazyLinear(128), nn.LayerNorm(128),
         ).to(self.device)
         
-        # Dynamic obstacle information extractor
+        # 2. Extract Dynamic obstacle Feature
         dynamic_obstacle_network = nn.Sequential(
             # Dynamic Obstacle MLP
             Rearrange("n c w h -> n (c w h)"),
             make_mlp([128, 64])
         ).to(self.device)
 
-        # RNN network for temporal information of observations
-        self.gru = nn.GRU(self.rnn_input_dim, self.rnn_hidden_dim, batch_first=True).to(self.device)
-        self.post_rnn_mlp = make_mlp([256, 256]).to(self.device)
+        # RNN network dims for temporal information of observations
+        cnn_feature_dim = 128
+        gru_input_dim = cnn_feature_dim + dyn_obs_feature_dim + state_dim + human_action_dim
+        gru_hidden_dim = 256 # TODO: 可以调整的超参数
 
-        # TODO: Rearrange Feature Extractor after add RNN network(GRU or LSTM) 
+        # Rearrange the Feature Extractor network, include a new GRU module.
         self.feature_extractor = TensorDictSequential(
             TensorDictModule(feature_extractor_network, [("agents", "observation", "lidar")], ["_cnn_feature"]),
             TensorDictModule(dynamic_obstacle_network, [("agents", "observation", "dynamic_obstacle")], ["_dynamic_obstacle_feature"]),
-            CatTensors(["_cnn_feature", ("agents", "observation", "state"), "_dynamic_obstacle_feature"], "_feature", del_keys=False), 
-            TensorDictModule(make_mlp([256, 256]), ["_feature"], ["_feature"]),  # to Feature MLP 
+            # 3. Concat different obs features
+            CatTensors(
+                in_keys=[
+                    "_cnn_feature", 
+                    "_dynamic_obstacle_feature"
+                    ("agents", "observation", "state"), 
+                    ("agents", "observation", "human_action")
+                ], 
+                out_key="_feature_cat",  # Concat a new observation feature contain human actions
+                del_keys=False
+            ),  
+            # 4. Add a GRU network, accept "_feature_cat" as input
+            GRUModule(
+                in_features=gru_input_dim,
+                hidden_size=gru_hidden_dim,
+                in_keys=["_feature_cat"],
+                out_keys=[
+                    "_gru_out", 
+                    "recurrent_state" # torchrl default RNN-state key
+                ],
+            ),
+
+            # 5. Final fusion MLP
+            TensorDictModule(make_mlp([256, 256]), ["_gru_out"], ["_feature"]),
         ).to(self.device)
 
-        # Actor network
+        # Actor network, now get input from the GRU output feature
         self.n_agents, self.action_dim = action_spec.shape
         self.actor = ProbabilisticActor(
             TensorDictModule(BetaActor(self.action_dim), ["_feature"], ["alpha", "beta"]),
@@ -97,6 +118,7 @@ class PPO(TensorDictModuleBase):
         self.actor(tensordict)
         self.critic(tensordict)
 
+        # TODO: no need to the Cooridnate transform if no target is provided.
         # Cooridnate change: transform local to world
         # "action_normalized": input action in target frame, range [0, 1]. need to scale to [-action_limit, action_limit]
         actions = (2 * tensordict["agents", "action_normalized"] * self.cfg.actor.action_limit) - self.cfg.actor.action_limit
@@ -109,7 +131,8 @@ class PPO(TensorDictModuleBase):
         # tensordict: (num_env, num_frames, dim), batchsize = num_env * num_frames
         next_tensordict = tensordict["next"]
         with torch.no_grad():
-            next_tensordict = torch.vmap(self.feature_extractor)(next_tensordict) # calculate features for next state value calculation
+            # next_tensordict = torch.vmap(self.feature_extractor)(next_tensordict) # calculate features for next state value calculation
+            self.feature_extractor(next_tensordict)  # No need to vmap, as the GRU module already handle the (B, T, F) sequence input
             next_values = self.critic(next_tensordict)["state_value"]
         rewards = tensordict["next", "agents", "reward"] # Reward obtained by state transition
         dones = tensordict["next", "terminated"] # Whether the next states are terminal states
@@ -128,44 +151,63 @@ class PPO(TensorDictModuleBase):
         tensordict.set("adv", adv)
         tensordict.set("ret", ret)
 
-        # Training
+        # Training: Changed, using BPTT
         infos = []
         for epoch in range(self.cfg.training_epoch_num):
-            batch = make_batch(tensordict, self.cfg.num_minibatches)
-            for minibatch in batch:
+
+            # --- old implementation ---
+            # batch = make_batch(tensordict, self.cfg.num_minibatches)
+            # for minibatch in batch:
+            #     infos.append(self._update(minibatch))
+
+            batch, t = tensordict.batch_size  # batch = num_envs, t = training_frame_num
+            # only shuffle the env batch, but do not shuffle the time dimension
+            perm = torch.randperm(batch, device=self.device)
+            shuffled_tensordict = tensordict[perm]
+
+            t_chunk = t // self.cfg.num_minibatches
+            if t_chunk == 0:
+                raise ValueError("num_minibatches is larger than the number of frames collected per env.")
+            for i in range(0, t, t_chunk):
+                if i + t_chunk > t:
+                    continue  # drop the last incomplete chunk (TODO: check if need padding)
+                minibatch = shuffled_tensordict[:, i : i+t_chunk]
                 infos.append(self._update(minibatch))
+
         infos = torch.stack(infos).to_tensordict()
         
         infos = infos.apply(torch.mean, batch_size=[])
         return {k: v.item() for k, v in infos.items()}    
 
     
-    def _update(self, tensordict): # tensordict shape (batch_size, )
-        self.feature_extractor(tensordict)
+    def _update(self, minibatch): # tensordict now is minibatch shape (minibatch_size, t_chunk, ...)
+        self.feature_extractor(minibatch)
 
         # Get action from the current policy
-        action_dist = self.actor.get_dist(tensordict) # this does an actor forward to get "loc" and "scale" and use them to build multivariate normal distribution
-        log_probs = action_dist.log_prob(tensordict[("agents", "action_normalized")]) # based on the gaussian, we can calculate the log prob of the action from the current policy
+        action_dist = self.actor.get_dist(minibatch) # this does an actor forward to get "loc" and "scale" and use them to build multivariate normal distribution
+        
+        log_probs = action_dist.log_prob(
+            minibatch[("agents", "action_normalized")]) # based on the gaussian, we can calculate the log prob of the action from the current policy
 
         # Entropy Loss
         action_entropy = action_dist.entropy()
         entropy_loss = -self.cfg.entropy_loss_coefficient * torch.mean(action_entropy)
 
         # Actor Loss
-        advantage = tensordict["adv"] # the advantage is calculated based on GAE in hte previous step
-        ratio = torch.exp(log_probs - tensordict["sample_log_prob"]).unsqueeze(-1)
+        advantage = minibatch["adv"] # the advantage is calculated based on GAE in hte previous step
+        ratio = torch.exp(log_probs - minibatch["sample_log_prob"]).unsqueeze(-1)
         surr1 = advantage * ratio
         surr2 = advantage * ratio.clamp(1.-self.cfg.actor.clip_ratio, 1.+self.cfg.actor.clip_ratio)
         actor_loss = -torch.mean(torch.min(surr1, surr2)) * self.action_dim 
 
         # Critic Loss 
-        b_value = tensordict["state_value"]
-        ret = tensordict["ret"] # Return G
-        value = self.critic(tensordict)["state_value"] 
+        b_value = minibatch["state_value"]
+        ret = minibatch["ret"] # Return G
+        value = self.critic(minibatch)["state_value"] 
         value_clipped = b_value + (value - b_value).clamp(-self.cfg.critic.clip_ratio, self.cfg.critic.clip_ratio) # this guarantee that critic update is clamped
         critic_loss_clipped = self.critic_loss_fn(ret, value_clipped)
         critic_loss_original = self.critic_loss_fn(ret, value)
-        critic_loss = torch.max(critic_loss_clipped, critic_loss_original)
+        critic_loss = torch.mean(torch.max(critic_loss_clipped, critic_loss_original))
 
         # Total Loss
         loss = entropy_loss + actor_loss + critic_loss
