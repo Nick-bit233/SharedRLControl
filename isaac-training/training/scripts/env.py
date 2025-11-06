@@ -8,7 +8,7 @@ import omni.isaac.orbit.sim as sim_utils
 from omni_drones.robots.drone import MultirotorBase
 from omni.isaac.orbit.assets import AssetBaseCfg
 from omni.isaac.orbit.terrains import TerrainImporterCfg, TerrainImporter, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
-from omni_drones.utils.torch import euler_to_quaternion, quat_axis
+from omni_drones.utils.torch import euler_to_quaternion, quat_axis, quat_rotate
 from omni.isaac.orbit.sensors import RayCaster, RayCasterCfg, patterns
 from omni.isaac.core.utils.viewports import set_camera_view
 from utils import vec_to_new_frame, vec_to_world, construct_input
@@ -29,7 +29,7 @@ class NavigationEnv(IsaacEnv):
     # 5. _compute_reward_and_done (update reward and calculate returns)
 
     def __init__(self, cfg):
-        print("[Navigation Environment]: Initializing Env...")
+        print("[Navigation Environment]: Initializing Shared Autonomy Env...")
         # LiDAR params:
         self.lidar_range = cfg.sensor.lidar_range
         self.lidar_vfov = (max(-89., cfg.sensor.lidar_vfov[0]), min(89., cfg.sensor.lidar_vfov[1]))
@@ -67,11 +67,11 @@ class NavigationEnv(IsaacEnv):
         # start and target 
         with torch.device(self.device):
             # self.start_pos = torch.zeros(self.num_envs, 1, 3)
-            self.target_pos = torch.zeros(self.num_envs, 1, 3)
-            
-            # Coordinate change: add target direction variable
-            self.target_dir = torch.zeros(self.num_envs, 1, 3)
-            self.height_range = torch.zeros(self.num_envs, 1, 2)
+
+            # (Disable target pos and direction variable)
+            # self.target_pos = torch.zeros(self.num_envs, 1, 3) # pos like: [x, y, z] * envs
+            # self.target_dir = torch.zeros(self.num_envs, 1, 3)
+            # self.height_range = torch.zeros(self.num_envs, 1, 2) # range like: [minz, maxz] * envs
             self.prev_drone_vel_w = torch.zeros(self.num_envs, 1 , 3)
             # self.target_pos[:, 0, 0] = torch.linspace(-0.5, 0.5, self.num_envs) * 32.
             # self.target_pos[:, 0, 1] = 24.
@@ -250,7 +250,6 @@ class NavigationEnv(IsaacEnv):
                 = torch.tensor([obs_width, obs_width, obs_height], dtype=torch.float, device=self.cfg.device)
 
 
-
     def move_dynamic_obstacle(self):
         # Step 1: Random sample new goals for required update dynamic obstacles
         # Check whether the current dynamic obstacles need new goals
@@ -295,9 +294,9 @@ class NavigationEnv(IsaacEnv):
 
 
     def _set_specs(self):
-        observation_dim = 8  # TODO: change to 3 (lin_vel only)
+        observation_dim = 10  # (vel_w[3] + ang_vel_w[3] + orientation[4])
         num_dim_each_dyn_obs_state = 10
-        human_action_dim = 4  # (lin_vel x, y, z + ang_vel_yaw)
+        human_action_dim = 4  # (vel_w[3] + yaw_rate_w[1])
 
         # Observation Spec
         self.observation_spec = CompositeSpec({
@@ -352,6 +351,7 @@ class NavigationEnv(IsaacEnv):
         self.info = info_spec.zero()
 
     
+    @DeprecationWarning
     def reset_target(self, env_ids: torch.Tensor):
         if (self.training):
             # decide which side
@@ -381,9 +381,11 @@ class NavigationEnv(IsaacEnv):
 
 
     def _reset_idx(self, env_ids: torch.Tensor):
+        """reset drone to random position of the scene"""
         self.drone._reset_idx(env_ids, self.training)
-        self.reset_target(env_ids)
-        if (self.training):
+        # self.reset_target(env_ids) # (no target setting now)
+
+        if (self.training):  # get random start position
             masks = torch.tensor([[1., 0., 1.], [1., 0., 1.], [0., 1., 1.], [0., 1., 1.]], dtype=torch.float, device=self.device)
             shifts = torch.tensor([[0., 24., 0.], [0., -24., 0.], [24., 0., 0.], [-24., 0., 0.]], dtype=torch.float, device=self.device)
             mask_indices = np.random.randint(0, masks.size(0), size=env_ids.size(0))
@@ -393,34 +395,39 @@ class NavigationEnv(IsaacEnv):
             # generate random positions
             pos = 48. * torch.rand(env_ids.size(0), 1, 3, dtype=torch.float, device=self.device) + (-24.)
             heights = 0.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (2.5 - 0.5)
-            pos[:, 0, 2] = heights# height
+            pos[:, 0, 2] = heights # height
             pos = pos * selected_masks + selected_shifts
             
             # pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
             # pos[:, 0, 0] = (env_ids / self.num_envs - 0.5) * 32.
             # pos[:, 0, 1] = -24.
             # pos[:, 0, 2] = 2.
-        else:
+        else:  # for eval, using fixed start positions
             pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
             pos[:, 0, 0] = (env_ids / self.num_envs - 0.5) * 32.
             pos[:, 0, 1] = 24.
             pos[:, 0, 2] = 2.
         
         # Coordinate change: after reset, the drone's target direction should be changed
-        self.target_dir[env_ids] = self.target_pos[env_ids] - pos
+        # self.target_dir[env_ids] = self.target_pos[env_ids] - pos
 
         # Coordinate change: after reset, the drone's facing direction should face the current goal
+        # rpy = torch.zeros(len(env_ids), 1, 3, device=self.device)
+        # diff = self.target_pos[env_ids] - pos
+        # facing_yaw = torch.atan2(diff[..., 1], diff[..., 0])
+
+        # (randomlize the drone's facing direction because there's no goal to face now)
         rpy = torch.zeros(len(env_ids), 1, 3, device=self.device)
-        diff = self.target_pos[env_ids] - pos
-        facing_yaw = torch.atan2(diff[..., 1], diff[..., 0])
-        rpy[..., 2] = facing_yaw
+        rpy[..., 2] = torch.rand(len(env_ids), 1, device=self.device) * 2 * torch.pi - torch.pi
 
         rot = euler_to_quaternion(rpy)
         self.drone.set_world_poses(pos, rot, env_ids)
         self.drone.set_velocities(self.init_vels[env_ids], env_ids)
         self.prev_drone_vel_w[env_ids] = 0.
-        self.height_range[env_ids, 0, 0] = torch.min(pos[:, 0, 2], self.target_pos[env_ids, 0, 2])
-        self.height_range[env_ids, 0, 1] = torch.max(pos[:, 0, 2], self.target_pos[env_ids, 0, 2])
+
+        # (no height range limit, at least for now)
+        # self.height_range[env_ids, 0, 0] = torch.min(pos[:, 0, 2], self.target_pos[env_ids, 0, 2])
+        # self.height_range[env_ids, 0, 1] = torch.max(pos[:, 0, 2], self.target_pos[env_ids, 0, 2])
 
         self.stats[env_ids] = 0.  
         
@@ -435,7 +442,9 @@ class NavigationEnv(IsaacEnv):
     
     # get current states/observation
     def _compute_state_and_obs(self):
-        self.root_state = self.drone.get_state(env_frame=False) # (world_pos, orientation (quat), world_vel_and_angular, heading, up, 4motorsthrust)
+        self.root_state = self.drone.get_state(env_frame=False)
+        # explaination of root state:  
+        # (world_pos[3], orientation (quat)[4], world_vel_and_angular[3+3], heading, up, 4motorsthrust)
         self.info["drone_state"][:] = self.root_state[..., :13] # info is for controller
 
         # >>>>>>>>>>>>The relevant code starts from here<<<<<<<<<<<<
@@ -461,32 +470,37 @@ class NavigationEnv(IsaacEnv):
             self.debug_draw.vector(x.expand_as(v[:, 0])[0], v[0, 0])
 
         # ---------Network Input II: Drone's internal states---------
+        # (Changed: remove all tensors about target(goal) from internal states)
+
         # a. distance info in horizontal and vertical plane
-        rpos = self.target_pos - self.root_state[..., :3]        
-        distance = rpos.norm(dim=-1, keepdim=True) # start to goal distance
-        distance_2d = rpos[..., :2].norm(dim=-1, keepdim=True)
-        distance_z = rpos[..., 2].unsqueeze(-1)
-        
+        # rpos = self.target_pos - self.root_state[..., :3]        
+        # distance = rpos.norm(dim=-1, keepdim=True) # start to goal distance
+        # distance_2d = rpos[..., :2].norm(dim=-1, keepdim=True)
+        # distance_z = rpos[..., 2].unsqueeze(-1)
         
         # b. unit direction vector to goal
-        ## TODO: del target input
-        target_dir_2d = self.target_dir.clone()
-        target_dir_2d[..., 2] = 0
+        # target_dir_2d = self.target_dir.clone()
+        # target_dir_2d[..., 2] = 0
 
-        rpos_clipped = rpos / distance.clamp(1e-6) # unit vector: start to goal direction
-        rpos_clipped_g = vec_to_new_frame(rpos_clipped, target_dir_2d) # express in the goal coodinate
+        # rpos_clipped = rpos / distance.clamp(1e-6) # unit vector: start to goal direction
+        # rpos_clipped_g = vec_to_new_frame(rpos_clipped, target_dir_2d) # express in the goal coodinate
         
-        # c. velocity in the goal frame
-        vel_w = self.root_state[..., 7:10] # world vel
-        vel_g = vec_to_new_frame(vel_w, target_dir_2d)   # coordinate change for velocity
-
+        # # c. velocity in the goal frame
+        # vel_w = self.root_state[..., 7:10] # world vel
+        # vel_g = vec_to_new_frame(vel_w, target_dir_2d)   # coordinate change for velocity
+        
         # final drone's internal states
-        drone_state = torch.cat([rpos_clipped_g, distance_2d, distance_z, vel_g], dim=-1).squeeze(1)
+        # drone_state = torch.cat([rpos_clipped_g, distance_2d, distance_z, vel_g], dim=-1).squeeze(1)
+
+        vel_w = self.root_state[..., 7:10].squeeze(1)     # (N, 3) world_vel
+        ang_vel_w = self.root_state[..., 10:13].squeeze(1) # (N, 3) world_angular
+        orientation = self.root_state[..., 3:7].squeeze(1) # (N, 4) orientation(quat)
+        drone_state = torch.cat([vel_w, ang_vel_w, orientation], dim=-1)
 
         if (self.cfg.env_dyn.num_obstacles != 0):
             # ---------Network Input III: Dynamic obstacle states--------
             # ------------------------------------------------------------
-            # a. Closest N obstacles relative position in the goal frame 
+            # Closest N obstacles relative position in the goal frame 
             # Find the N closest and within range obstacles for each drone
             dyn_obs_pos_expanded = self.dyn_obs_state[..., :3].unsqueeze(0).repeat(self.num_envs, 1, 1)
             dyn_obs_rpos_expanded = dyn_obs_pos_expanded[..., :3] - self.root_state[..., :3] 
@@ -495,19 +509,26 @@ class NavigationEnv(IsaacEnv):
             _, closest_dyn_obs_idx = torch.topk(dyn_obs_distance_2d, self.cfg.algo.feature_extractor.dyn_obs_num, dim=1, largest=False) # pick top N closest obstacle index
             dyn_obs_range_mask = dyn_obs_distance_2d.gather(1, closest_dyn_obs_idx) > self.lidar_range
 
-            # relative distance of obstacles in the goal frame
+            # a. Relative distance of obstacles in the goal frame
             closest_dyn_obs_rpos = torch.gather(dyn_obs_rpos_expanded, 1, closest_dyn_obs_idx.unsqueeze(-1).expand(-1, -1, 3))
-            closest_dyn_obs_rpos_g = vec_to_new_frame(closest_dyn_obs_rpos, target_dir_2d) 
-            closest_dyn_obs_rpos_g[dyn_obs_range_mask] = 0. # exclude out of range obstacles
+            closest_dyn_obs_rpos[dyn_obs_range_mask] = 0. # exclude out of range obstacles
             closest_dyn_obs_distance = closest_dyn_obs_rpos.norm(dim=-1, keepdim=True)
-            closest_dyn_obs_distance_2d = closest_dyn_obs_rpos_g[..., :2].norm(dim=-1, keepdim=True)
-            closest_dyn_obs_distance_z = closest_dyn_obs_rpos_g[..., 2].unsqueeze(-1)
-            closest_dyn_obs_rpos_gn = closest_dyn_obs_rpos_g / closest_dyn_obs_distance.clamp(1e-6)
+            closest_dyn_obs_distance_2d = closest_dyn_obs_rpos[..., :2].norm(dim=-1, keepdim=True)
+            closest_dyn_obs_distance_z = closest_dyn_obs_rpos[..., 2].unsqueeze(-1)
+            closest_dyn_obs_rpos_n = closest_dyn_obs_rpos / closest_dyn_obs_distance.clamp(1e-6)
 
-            # b. Velocity in the goal frame for the dynamic obstacles
+            # (no need to change to the target(goal) frame)
+            # closest_dyn_obs_rpos_g = vec_to_new_frame(closest_dyn_obs_rpos, target_dir_2d) 
+            # closest_dyn_obs_rpos_g[dyn_obs_range_mask] = 0. # exclude out of range obstacles
+            # closest_dyn_obs_distance = closest_dyn_obs_rpos.norm(dim=-1, keepdim=True)
+            # closest_dyn_obs_distance_2d = closest_dyn_obs_rpos_g[..., :2].norm(dim=-1, keepdim=True)
+            # closest_dyn_obs_distance_z = closest_dyn_obs_rpos_g[..., 2].unsqueeze(-1)
+            # closest_dyn_obs_rpos_gn = closest_dyn_obs_rpos_g / closest_dyn_obs_distance.clamp(1e-6)
+
+            # b. Relative Velocity for the dynamic obstacles
             closest_dyn_obs_vel = self.dyn_obs_vel[closest_dyn_obs_idx]
             closest_dyn_obs_vel[dyn_obs_range_mask] = 0.
-            closest_dyn_obs_vel_g = vec_to_new_frame(closest_dyn_obs_vel, target_dir_2d) 
+            # closest_dyn_obs_vel_g = vec_to_new_frame(closest_dyn_obs_vel, target_dir_2d) 
 
             # c. Size of dynamic obstacles in category
             closest_dyn_obs_size = self.dyn_obs_size[closest_dyn_obs_idx] # the acutal size
@@ -522,7 +543,10 @@ class NavigationEnv(IsaacEnv):
 
             # concatenate all for dynamic obstacles
             # dyn_obs_states = torch.cat([closest_dyn_obs_rpos_g, closest_dyn_obs_vel_g, closest_dyn_obs_width_category, closest_dyn_obs_height_category], dim=-1).unsqueeze(1)
-            dyn_obs_states = torch.cat([closest_dyn_obs_rpos_gn, closest_dyn_obs_distance_2d, closest_dyn_obs_distance_z, closest_dyn_obs_vel_g, closest_dyn_obs_width_category, closest_dyn_obs_height_category], dim=-1).unsqueeze(1)
+            dyn_obs_states = torch.cat([
+                closest_dyn_obs_rpos_n, closest_dyn_obs_distance_2d, closest_dyn_obs_distance_z, 
+                closest_dyn_obs_vel, 
+                closest_dyn_obs_width_category, closest_dyn_obs_height_category], dim=-1).unsqueeze(1)
 
             # check dynamic obstacle collision for later reward
             closest_dyn_obs_distance_2d_collsion = closest_dyn_obs_rpos[..., :2].norm(dim=-1, keepdim=True)
@@ -542,56 +566,78 @@ class NavigationEnv(IsaacEnv):
             dyn_obs_states = torch.zeros(self.num_envs, 1, self.cfg.algo.feature_extractor.dyn_obs_num, 10, device=self.cfg.device)
             dynamic_collision = torch.zeros(self.num_envs, 1, dtype=torch.bool, device=self.cfg.device)
 
-        # human action
-        current_human_action = self.user_controller.predict(self.root_state)
-        
+        # ---------Network Input IV: Human control action--------
+        # get action input from simulate user
+        human_action_local = self.user_controller.predict(self.root_state, self.prev_drone_vel_w)
+        drone_orientation_q = orientation  # current orientation (from drone_state)
+
+        # human vel_w input frame translate: local to world
+        human_vel_local = human_action_local[..., :3]  # input vel_w
+        human_vel_world = quat_rotate(drone_orientation_q, human_vel_local)
+
+        # human ang_vel input computed from controller yaw rate(project to axis-z)
+        human_yaw_rate_local = human_action_local[..., 3]  # input yaw speed (last number)
+        human_ang_vel_local = torch.zeros_like(vel_w)
+        human_ang_vel_local[..., 2] = human_yaw_rate_local
+        human_ang_vel_world = quat_rotate(drone_orientation_q, human_ang_vel_local)
+        human_yaw_rate_world = human_ang_vel_world[..., 2]
+
+        human_action_world = torch.cat([human_vel_world, human_yaw_rate_world.unsqueeze(-1)], dim=-1)
+
         # -----------------Network Input Final--------------
         obs = {
             "state": drone_state,
             "lidar": self.lidar_scan,
             # "direction": target_dir_2d,
             "dynamic_obstacle": dyn_obs_states,
-            "human_action": current_human_action
+            "human_action": human_action_world
         }
-
 
         # -----------------Reward Calculation-----------------
         # a. safety reward for static obstacles
         reward_safety_static = torch.log((self.lidar_range-self.lidar_scan).clamp(min=1e-6, max=self.lidar_range)).mean(dim=(2, 3))
-        
 
         # b. safety reward for dynamic obstacles
         if (self.cfg.env_dyn.num_obstacles != 0):
             reward_safety_dynamic = torch.log((closest_dyn_obs_distance_reward).clamp(min=1e-6, max=self.lidar_range)).mean(dim=-1, keepdim=True)
+        else:
+            reward_safety_dynamic = 0.0
 
-        # c. velocity reward for goal direction
-        vel_direction = rpos / distance.clamp_min(1e-6)
-        reward_vel = (self.drone.vel_w[..., :3] * vel_direction).sum(-1)#.clip(max=2.0)
+        # c. (changed) velocity_follow reward for closer to human action input
+        # vel_direction = rpos / distance.clamp_min(1e-6)
+        # reward_vel = (self.drone.vel_w[..., :3] * vel_direction).sum(-1)#.clip(max=2.0)
+        policy_action_vel = self.drone.vel_w[..., :3] # (N_envs, 1, 3)
+        human_action_vel = human_action_world.unsqueeze(1) # (N_envs, 1, 3)
+        action_diff = torch.norm(policy_action_vel - human_action_vel, dim=-1)
+        reward_vel_follow = torch.exp(-action_diff)  # TODO: try other reward function
         
         # d. smoothness reward for action smoothness
         penalty_smooth = (self.drone.vel_w[..., :3] - self.prev_drone_vel_w).norm(dim=-1)
         
-        # e. height penalty reward for flying unnessarily high or low
-        penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
-        penalty_height[self.drone.pos[..., 2] > (self.height_range[..., 1] + 0.2)] = ( (self.drone.pos[..., 2] - self.height_range[..., 1] - 0.2)**2 )[self.drone.pos[..., 2] > (self.height_range[..., 1] + 0.2)]
-        penalty_height[self.drone.pos[..., 2] < (self.height_range[..., 0] - 0.2)] = ( (self.height_range[..., 0] - 0.2 - self.drone.pos[..., 2])**2 )[self.drone.pos[..., 2] < (self.height_range[..., 0] - 0.2)]
-
+        # e. (deleted) height penalty reward for flying unnessarily high or low
+        # penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
+        # penalty_height[self.drone.pos[..., 2] > (self.height_range[..., 1] + 0.2)] = ( (self.drone.pos[..., 2] - self.height_range[..., 1] - 0.2)**2 )[self.drone.pos[..., 2] > (self.height_range[..., 1] + 0.2)]
+        # penalty_height[self.drone.pos[..., 2] < (self.height_range[..., 0] - 0.2)] = ( (self.height_range[..., 0] - 0.2 - self.drone.pos[..., 2])**2 )[self.drone.pos[..., 2] < (self.height_range[..., 0] - 0.2)]
+        # TODO: add height limit of input human action simulator
 
         # f. Collision condition with its penalty
         static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") >  (self.lidar_range - 0.3) # 0.3 collision radius
-        collision = static_collision | dynamic_collision
+        collision = static_collision | dynamic_collision  # judge of any collision
         
         # Final reward calculation
-        if (self.cfg.env_dyn.num_obstacles != 0):
-            self.reward = reward_vel + 1. + reward_safety_static * 1.0 + reward_safety_dynamic * 1.0 - penalty_smooth * 0.1 - penalty_height * 8.0
-        else:
-            self.reward = reward_vel + 1. + reward_safety_static * 1.0 - penalty_smooth * 0.1 - penalty_height * 8.0
+        self.reward = (
+            1. +
+            1.5 * reward_vel_follow +
+            1.0 * reward_safety_static + 
+            1.0 * reward_safety_dynamic -
+            0.1 * penalty_smooth
+            # - 8.0 * penalty_height
+        )
 
-        # Terminal reward
+        # Terminal reward (disabled)
         # self.reward[collision] -= 50. # collision
 
         # Terminate Conditions
-        reach_goal = (distance.squeeze(-1) < 0.5)
         below_bound = self.drone.pos[..., 2] < 0.2
         above_bound = self.drone.pos[..., 2] > 4.
         self.terminated = below_bound | above_bound | collision
@@ -601,9 +647,10 @@ class NavigationEnv(IsaacEnv):
         self.prev_drone_vel_w = self.drone.vel_w[..., :3].clone()
 
         # # -----------------Training Stats-----------------
+        # (remove reach_goal flag as no goal target is provided)
         self.stats["return"] += self.reward
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
-        self.stats["reach_goal"] = reach_goal.float()
+        # self.stats["reach_goal"] = reach_goal.float()
         self.stats["collision"] = collision.float()
         self.stats["truncated"] = self.truncated.float()
 

@@ -91,7 +91,7 @@ class PPO(TensorDictModuleBase):
 
         # Loss related
         self.gae = GAE(0.99, 0.95) # generalized adavantage esitmation
-        self.critic_loss_fn = nn.HuberLoss(delta=10) # huberloss (L1+L2): https://pytorch.org/docs/stable/generated/torch.nn.HuberLoss.html
+        self.critic_loss_fn = nn.HuberLoss(delta=10, reduction='none') # huberloss (L1+L2): https://pytorch.org/docs/stable/generated/torch.nn.HuberLoss.html
 
         # Optimizer
         self.feature_extractor_optim = torch.optim.Adam(self.feature_extractor.parameters(), lr=cfg.feature_extractor.learning_rate)
@@ -118,13 +118,12 @@ class PPO(TensorDictModuleBase):
         self.actor(tensordict)
         self.critic(tensordict)
 
-        # TODO: no need to the Cooridnate transform if no target is provided.
-        # Cooridnate change: transform local to world
+        # Cooridnate change: transform local to world (no need transform Cooridnate as no target is provided.)
         # "action_normalized": input action in target frame, range [0, 1]. need to scale to [-action_limit, action_limit]
         actions = (2 * tensordict["agents", "action_normalized"] * self.cfg.actor.action_limit) - self.cfg.actor.action_limit
-        # transform to world frame
-        actions_world = vec_to_world(actions, tensordict["agents", "observation", "direction"])
-        tensordict["agents", "action"] = actions_world
+        # # transform to world frame (no need now)
+        # actions_world = vec_to_world(actions, tensordict["agents", "observation", "direction"]) # transform to world frame
+        tensordict["agents", "action"] = actions
         return tensordict
 
     def train(self, tensordict):
