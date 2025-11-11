@@ -439,6 +439,14 @@ class NavigationEnv(IsaacEnv):
         if (self.cfg.env_dyn.num_obstacles != 0):
             self.move_dynamic_obstacle()
         self.lidar.update(self.dt)
+
+    def get_human_joystick_input(self):
+        # dummmy: 模拟人类输入 (4D, *机体坐标系*)
+        N = self.num_envs
+        human_action_local = torch.zeros(N, 4, device=self.device)
+        human_action_local[:, 0] = 1.5  # 1.5 m/s 机体向前速度
+        human_action_local[:, 3] = -0.5 # -0.5 rad/s 机体Yaw角速度
+        return human_action_local
     
     # get current states/observation
     def _compute_state_and_obs(self):
@@ -568,7 +576,11 @@ class NavigationEnv(IsaacEnv):
 
         # ---------Network Input IV: Human control action--------
         # get action input from simulate user
-        human_action_local = self.user_controller.predict(self.root_state, self.prev_drone_vel_w)
+
+        # TODO: impl user model class
+        # human_action_local = self.user_controller.predict(self.root_state, self.prev_drone_vel_w)
+        human_action_local = self.get_human_joystick_input()
+
         drone_orientation_q = orientation  # current orientation (from drone_state)
 
         # human vel_w input frame translate: local to world

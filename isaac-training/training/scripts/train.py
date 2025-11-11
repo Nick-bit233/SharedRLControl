@@ -57,6 +57,22 @@ def main(cfg):
     transforms.append(vel_transform)
     transformed_env = TransformedEnv(env, Compose(*transforms)).train()
     transformed_env.set_seed(cfg.seed)    
+
+    # ================= Verify Environment
+    print("\n" + "="*50)
+    print("VERIFYING ACTION SPECIFICATIONS")
+    print(f"Original env.action_spec: {env.action_spec}")
+    print(f"Transformed env.action_spec: {transformed_env.action_spec}")
+    
+    # 验证我们期望的 4D (vel_w[3], yaw_rate_w[1])
+    print(f"Transformed spec shape: {transformed_env.action_spec.shape}")
+    
+    # 检查 VelController 期望的动作范围
+    print(f"Transformed spec MIN bounds: {transformed_env.action_spec.space.minimum}")
+    print(f"Transformed spec MAX bounds: {transformed_env.action_spec.space.maximum}")
+    print("="*50 + "\n")
+    # ================= End Verify Environment
+
     # PPO Policy
     policy = PPO(cfg.algo, transformed_env.observation_spec, transformed_env.action_spec, cfg.device)
 

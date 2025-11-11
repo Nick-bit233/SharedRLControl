@@ -51,7 +51,7 @@ class PPO(TensorDictModuleBase):
             CatTensors(
                 in_keys=[
                     "_cnn_feature", 
-                    "_dynamic_obstacle_feature"
+                    "_dynamic_obstacle_feature",
                     ("agents", "observation", "state"), 
                     ("agents", "observation", "human_action")
                 ], 
