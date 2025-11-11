@@ -8,7 +8,7 @@ import omni.isaac.orbit.sim as sim_utils
 from omni_drones.robots.drone import MultirotorBase
 from omni.isaac.orbit.assets import AssetBaseCfg
 from omni.isaac.orbit.terrains import TerrainImporterCfg, TerrainImporter, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
-from omni_drones.utils.torch import euler_to_quaternion, quat_axis, quat_rotate
+from omni_drones.utils.torch import euler_to_quaternion, quat_axis, quat_rotate, quat_rotate_inverse
 from omni.isaac.orbit.sensors import RayCaster, RayCasterCfg, patterns
 from omni.isaac.core.utils.viewports import set_camera_view
 from utils import vec_to_new_frame, vec_to_world, construct_input
@@ -37,7 +37,7 @@ class NavigationEnv(IsaacEnv):
         self.lidar_hres = cfg.sensor.lidar_hres
         self.lidar_hbeams = int(360/self.lidar_hres)
 
-        self.user_controller = UserModel()  # TODO: add cfg
+        self.user_controller = UserModel(cfg=cfg)  # TODO: add cfg
 
         super().__init__(cfg, cfg.headless)
         
@@ -294,16 +294,16 @@ class NavigationEnv(IsaacEnv):
 
 
     def _set_specs(self):
-        observation_dim = 10  # (vel_w[3] + ang_vel_w[3] + orientation[4])
+        drone_state_dim = 10  # (vel_b[3] + ang_vel_b[3] + orientation_q[4])
         num_dim_each_dyn_obs_state = 10
-        human_action_dim = 4  # (vel_w[3] + yaw_rate_w[1])
+        human_action_dim = 4  # (vel_b[3] + yaw_rate_b[1])
 
         # Observation Spec
         self.observation_spec = CompositeSpec({
             "agents": CompositeSpec({
                 # Del direction and add human_action
                 "observation": CompositeSpec({
-                    "state": UnboundedContinuousTensorSpec((observation_dim,), device=self.device), 
+                    "state": UnboundedContinuousTensorSpec((drone_state_dim,), device=self.device), 
                     "lidar": UnboundedContinuousTensorSpec((1, self.lidar_hbeams, self.lidar_vbeams), device=self.device),
                     # "direction": UnboundedContinuousTensorSpec((1, 3), device=self.device),
                     "dynamic_obstacle": UnboundedContinuousTensorSpec((1, self.cfg.algo.feature_extractor.dyn_obs_num, num_dim_each_dyn_obs_state), device=self.device),
@@ -383,8 +383,7 @@ class NavigationEnv(IsaacEnv):
     def _reset_idx(self, env_ids: torch.Tensor):
         """reset drone to random position of the scene"""
         self.drone._reset_idx(env_ids, self.training)
-        # self.reset_target(env_ids) # (no target setting now)
-
+        
         if (self.training):  # get random start position
             masks = torch.tensor([[1., 0., 1.], [1., 0., 1.], [0., 1., 1.], [0., 1., 1.]], dtype=torch.float, device=self.device)
             shifts = torch.tensor([[0., 24., 0.], [0., -24., 0.], [24., 0., 0.], [-24., 0., 0.]], dtype=torch.float, device=self.device)
@@ -480,50 +479,43 @@ class NavigationEnv(IsaacEnv):
         # ---------Network Input II: Drone's internal states---------
         # (Changed: remove all tensors about target(goal) from internal states)
 
-        # a. distance info in horizontal and vertical plane
-        # rpos = self.target_pos - self.root_state[..., :3]        
-        # distance = rpos.norm(dim=-1, keepdim=True) # start to goal distance
-        # distance_2d = rpos[..., :2].norm(dim=-1, keepdim=True)
-        # distance_z = rpos[..., 2].unsqueeze(-1)
-        
-        # b. unit direction vector to goal
-        # target_dir_2d = self.target_dir.clone()
-        # target_dir_2d[..., 2] = 0
-
-        # rpos_clipped = rpos / distance.clamp(1e-6) # unit vector: start to goal direction
-        # rpos_clipped_g = vec_to_new_frame(rpos_clipped, target_dir_2d) # express in the goal coodinate
-        
-        # # c. velocity in the goal frame
-        # vel_w = self.root_state[..., 7:10] # world vel
-        # vel_g = vec_to_new_frame(vel_w, target_dir_2d)   # coordinate change for velocity
-        
-        # final drone's internal states
-        # drone_state = torch.cat([rpos_clipped_g, distance_2d, distance_z, vel_g], dim=-1).squeeze(1)
-
+        # get drone's internal states with velocity and angular velocity in world frame
         vel_w = self.root_state[..., 7:10].squeeze(1)     # (N, 3) world_vel
         ang_vel_w = self.root_state[..., 10:13].squeeze(1) # (N, 3) world_angular
-        orientation = self.root_state[..., 3:7].squeeze(1) # (N, 4) orientation(quat)
-        drone_state = torch.cat([vel_w, ang_vel_w, orientation], dim=-1)
+        drone_orientation_q = self.root_state[..., 3:7].squeeze(1) # (N, 4) orientation(quat)
+
+        # calculate drone's velocity and angular velocity in body frame
+        vel_b = quat_rotate_inverse(drone_orientation_q, vel_w)
+        ang_vel_b = quat_rotate_inverse(drone_orientation_q, ang_vel_w)
+
+        # use body frame velocities for better generalization
+        drone_state = torch.cat([vel_b, ang_vel_b, drone_orientation_q], dim=-1)
 
         if (self.cfg.env_dyn.num_obstacles != 0):
             # ---------Network Input III: Dynamic obstacle states--------
             # ------------------------------------------------------------
-            # Closest N obstacles relative position in the goal frame 
+            # Closest N obstacles relative position in the world frame 
             # Find the N closest and within range obstacles for each drone
             dyn_obs_pos_expanded = self.dyn_obs_state[..., :3].unsqueeze(0).repeat(self.num_envs, 1, 1)
             dyn_obs_rpos_expanded = dyn_obs_pos_expanded[..., :3] - self.root_state[..., :3] 
             dyn_obs_rpos_expanded[:, int(self.dyn_obs_state.size(0)/2):, 2] = 0.
+
             dyn_obs_distance_2d = torch.norm(dyn_obs_rpos_expanded[..., :2], dim=2)  # Shape: (1000, 40). calculate 2d distance to each obstacle for all drones
             _, closest_dyn_obs_idx = torch.topk(dyn_obs_distance_2d, self.cfg.algo.feature_extractor.dyn_obs_num, dim=1, largest=False) # pick top N closest obstacle index
             dyn_obs_range_mask = dyn_obs_distance_2d.gather(1, closest_dyn_obs_idx) > self.lidar_range
 
-            # a. Relative distance of obstacles in the goal frame
+            # a. Relative distance of obstacles in the body frame
             closest_dyn_obs_rpos = torch.gather(dyn_obs_rpos_expanded, 1, closest_dyn_obs_idx.unsqueeze(-1).expand(-1, -1, 3))
-            closest_dyn_obs_rpos[dyn_obs_range_mask] = 0. # exclude out of range obstacles
+            rpos_b = quat_rotate_inverse(drone_orientation_q.unsqueeze(1).expand(-1, 5, -1), closest_dyn_obs_rpos)  # relative position in body frame
+            rpos_b[dyn_obs_range_mask] = 0.  # exclude out of range obstacles
+            closest_dyn_obs_rpos[dyn_obs_range_mask] = 0.
+
+            # for distance calculation, it's the same in all frames
             closest_dyn_obs_distance = closest_dyn_obs_rpos.norm(dim=-1, keepdim=True)
             closest_dyn_obs_distance_2d = closest_dyn_obs_rpos[..., :2].norm(dim=-1, keepdim=True)
             closest_dyn_obs_distance_z = closest_dyn_obs_rpos[..., 2].unsqueeze(-1)
-            closest_dyn_obs_rpos_n = closest_dyn_obs_rpos / closest_dyn_obs_distance.clamp(1e-6)
+            # normalized relative position in body frame
+            rpos_n = rpos_b / closest_dyn_obs_distance.clamp(1e-6)
 
             # (no need to change to the target(goal) frame)
             # closest_dyn_obs_rpos_g = vec_to_new_frame(closest_dyn_obs_rpos, target_dir_2d) 
@@ -533,9 +525,11 @@ class NavigationEnv(IsaacEnv):
             # closest_dyn_obs_distance_z = closest_dyn_obs_rpos_g[..., 2].unsqueeze(-1)
             # closest_dyn_obs_rpos_gn = closest_dyn_obs_rpos_g / closest_dyn_obs_distance.clamp(1e-6)
 
-            # b. Relative Velocity for the dynamic obstacles
-            closest_dyn_obs_vel = self.dyn_obs_vel[closest_dyn_obs_idx]
-            closest_dyn_obs_vel[dyn_obs_range_mask] = 0.
+            # b. Relative Velocity for the dynamic obstacles (body frame)
+            closest_dyn_obs_vel = self.dyn_obs_vel[closest_dyn_obs_idx]  # the actual velocity
+            rvel_w = closest_dyn_obs_vel - vel_w.unsqueeze(1).expand(-1, 5, -1)  # relative velocity in world frame
+            rvel_b = quat_rotate_inverse(drone_orientation_q.unsqueeze(1).expand(-1, 5, -1), rvel_w)  # relative velocity in body frame
+            rvel_b[dyn_obs_range_mask] = 0.
             # closest_dyn_obs_vel_g = vec_to_new_frame(closest_dyn_obs_vel, target_dir_2d) 
 
             # c. Size of dynamic obstacles in category
@@ -552,8 +546,8 @@ class NavigationEnv(IsaacEnv):
             # concatenate all for dynamic obstacles
             # dyn_obs_states = torch.cat([closest_dyn_obs_rpos_g, closest_dyn_obs_vel_g, closest_dyn_obs_width_category, closest_dyn_obs_height_category], dim=-1).unsqueeze(1)
             dyn_obs_states = torch.cat([
-                closest_dyn_obs_rpos_n, closest_dyn_obs_distance_2d, closest_dyn_obs_distance_z, 
-                closest_dyn_obs_vel, 
+                rpos_n, closest_dyn_obs_distance_2d, closest_dyn_obs_distance_z, 
+                rvel_b, 
                 closest_dyn_obs_width_category, closest_dyn_obs_height_category], dim=-1).unsqueeze(1)
 
             # check dynamic obstacle collision for later reward
@@ -580,21 +574,7 @@ class NavigationEnv(IsaacEnv):
         # TODO: impl user model class
         # human_action_local = self.user_controller.predict(self.root_state, self.prev_drone_vel_w)
         human_action_local = self.get_human_joystick_input()
-
-        drone_orientation_q = orientation  # current orientation (from drone_state)
-
-        # human vel_w input frame translate: local to world
-        human_vel_local = human_action_local[..., :3]  # input vel_w
-        human_vel_world = quat_rotate(drone_orientation_q, human_vel_local)
-
-        # human ang_vel input computed from controller yaw rate(project to axis-z)
-        human_yaw_rate_local = human_action_local[..., 3]  # input yaw speed (last number)
-        human_ang_vel_local = torch.zeros_like(vel_w)
-        human_ang_vel_local[..., 2] = human_yaw_rate_local
-        human_ang_vel_world = quat_rotate(drone_orientation_q, human_ang_vel_local)
-        human_yaw_rate_world = human_ang_vel_world[..., 2]
-
-        human_action_world = torch.cat([human_vel_world, human_yaw_rate_world.unsqueeze(-1)], dim=-1)
+        # no need to change human action to world frame, as both action and drone vel are in body frame
 
         # -----------------Network Input Final--------------
         obs = {
@@ -602,7 +582,7 @@ class NavigationEnv(IsaacEnv):
             "lidar": self.lidar_scan,
             # "direction": target_dir_2d,
             "dynamic_obstacle": dyn_obs_states,
-            "human_action": human_action_world
+            "human_action": human_action_local
         }
 
         # -----------------Reward Calculation-----------------
@@ -616,12 +596,12 @@ class NavigationEnv(IsaacEnv):
             reward_safety_dynamic = 0.0
 
         # c. (changed) velocity_follow reward for closer to human action input
-        # vel_direction = rpos / distance.clamp_min(1e-6)
-        # reward_vel = (self.drone.vel_w[..., :3] * vel_direction).sum(-1)#.clip(max=2.0)
-        policy_action_vel = self.drone.vel_w[..., :3] # (N_envs, 1, 3)
-        human_action_vel = human_action_world.unsqueeze(1) # (N_envs, 1, 3)
-        action_diff = torch.norm(policy_action_vel - human_action_vel, dim=-1)
-        reward_vel_follow = torch.exp(-action_diff)  # TODO: try other reward function
+        # 比较 "无人机实际机体系速度" vs "人类期望机体系速度"
+        policy_action_vel_b = vel_b.unsqueeze(1) # (N, 1, 3)
+        human_action_vel_b = human_action_local[..., :3].unsqueeze(1) # (N, 1, 3)
+        
+        action_diff = torch.norm(policy_action_vel_b - human_action_vel_b, dim=-1)
+        reward_vel_follow = torch.exp(-action_diff) # 奖励 [0, 1]  TODO: try other reward function
         
         # d. smoothness reward for action smoothness
         penalty_smooth = (self.drone.vel_w[..., :3] - self.prev_drone_vel_w).norm(dim=-1)

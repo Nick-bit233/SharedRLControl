@@ -43,6 +43,13 @@ class PPO(TensorDictModuleBase):
         gru_input_dim = cnn_feature_dim + dyn_obs_feature_dim + state_dim + human_action_dim
         gru_hidden_dim = 256 # TODO: 可以调整的超参数
 
+        gru_model = GRUModule(
+                input_size=gru_input_dim,
+                hidden_size=gru_hidden_dim,
+                in_keys=["_feature_cat", "recurrent_state"],  # recurrent_state key for GRU hidden state handling in torchrl
+                out_keys=["_gru_out", ("next", "recurrent_state")],
+            )
+        
         # Rearrange the Feature Extractor network, include a new GRU module.
         self.feature_extractor = TensorDictSequential(
             TensorDictModule(feature_extractor_network, [("agents", "observation", "lidar")], ["_cnn_feature"]),
@@ -59,16 +66,7 @@ class PPO(TensorDictModuleBase):
                 del_keys=False
             ),  
             # 4. Add a GRU network, accept "_feature_cat" as input
-            GRUModule(
-                in_features=gru_input_dim,
-                hidden_size=gru_hidden_dim,
-                in_keys=["_feature_cat"],
-                out_keys=[
-                    "_gru_out", 
-                    "recurrent_state" # torchrl default RNN-state key
-                ],
-            ),
-
+            gru_model,
             # 5. Final fusion MLP
             TensorDictModule(make_mlp([256, 256]), ["_gru_out"], ["_feature"]),
         ).to(self.device)
@@ -100,8 +98,7 @@ class PPO(TensorDictModuleBase):
 
         # Dummy Input for nn lazymodule
         dummy_input = observation_spec.zero()
-        # print("dummy_input: ", dummy_input)
-
+        print("[PPO]dummy_input: ", dummy_input)
 
         self.__call__(dummy_input)
 
