@@ -337,7 +337,7 @@ class NavigationEnv(IsaacEnv):
         stats_spec = CompositeSpec({
             "return": UnboundedContinuousTensorSpec(1),
             "episode_len": UnboundedContinuousTensorSpec(1),
-            "reach_goal": UnboundedContinuousTensorSpec(1),
+            # "reach_goal": UnboundedContinuousTensorSpec(1),
             "collision": UnboundedContinuousTensorSpec(1),
             "truncated": UnboundedContinuousTensorSpec(1),
         }).expand(self.num_envs).to(self.device)

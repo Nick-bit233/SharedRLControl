@@ -48,7 +48,8 @@ def color_meshes_by_height(meshes: list[trimesh.Trimesh], **kwargs) -> trimesh.T
         # clip lower and upper bounds to have better color mapping
         heights_normalized = np.clip(heights_normalized, 0.1, 0.9)
         # Get the color for each vertex based on the height
-        color_map = kwargs.pop("color_map", "turbo")
+        # color_map = kwargs.pop("color_map", "turbo")
+        color_map = kwargs.pop("color_map", "magma")  # Fix by https://github.com/Zhefan-Xu/NavRL/issues/129
         # Try trimesh interpolate first; if color_map is a matplotlib name, use matplotlib.get_cmap
         try:
             colors = trimesh.visual.color.interpolate(heights_normalized, color_map=color_map)

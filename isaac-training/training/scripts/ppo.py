@@ -18,7 +18,7 @@ class PPO(TensorDictModuleBase):
 
         # Get obs spec dims
         state_dim = observation_spec["agents", "observation", "state"].shape[-1]
-        dyn_obs_feature_dim = observation_spec["agents", "observation", "dynamic_obstacle"].shape[-1]
+        dyn_obs_feature_dim = 64
         human_action_dim = observation_spec["agents", "observation", "human_action"].shape[-1]
         
         # 1. Extract LiDAR Feature
@@ -40,13 +40,17 @@ class PPO(TensorDictModuleBase):
 
         # RNN network dims for temporal information of observations
         cnn_feature_dim = 128
+        # 128(cnn_feature) + 64（dyn_obs_mlp) + 10 + 4 = 206
         gru_input_dim = cnn_feature_dim + dyn_obs_feature_dim + state_dim + human_action_dim
         gru_hidden_dim = 256 # TODO: 可以调整的超参数
 
-        gru_model = GRUModule(
+        self.gru_num_layers = 1
+        self.gru_hidden_dim = gru_hidden_dim
+        self.gru_model = GRUModule(
                 input_size=gru_input_dim,
                 hidden_size=gru_hidden_dim,
-                in_keys=["_feature_cat", "recurrent_state"],  # recurrent_state key for GRU hidden state handling in torchrl
+                num_layers=self.gru_num_layers,
+                in_keys=["_feature_cat", "recurrent_state"],
                 out_keys=["_gru_out", ("next", "recurrent_state")],
             )
         
@@ -66,7 +70,7 @@ class PPO(TensorDictModuleBase):
                 del_keys=False
             ),  
             # 4. Add a GRU network, accept "_feature_cat" as input
-            gru_model,
+            self.gru_model,
             # 5. Final fusion MLP
             TensorDictModule(make_mlp([256, 256]), ["_gru_out"], ["_feature"]),
         ).to(self.device)
@@ -98,7 +102,16 @@ class PPO(TensorDictModuleBase):
 
         # Dummy Input for nn lazymodule
         dummy_input = observation_spec.zero()
-        print("[PPO]dummy_input: ", dummy_input)
+        # Because of GRUModule, we need to set initial values for recurrent_state and is_init
+        dummy_input.set("is_init", torch.ones(dummy_input.batch_size, dtype=torch.bool, device=self.device))
+        dummy_input.set(
+            "recurrent_state",
+            torch.zeros(
+                (*dummy_input.batch_size, self.gru_num_layers, self.gru_hidden_dim),
+                device=self.device,
+            ),
+        )
+        # print("[PPO]dummy_input: ", dummy_input)
 
         self.__call__(dummy_input)
 
@@ -111,6 +124,15 @@ class PPO(TensorDictModuleBase):
         self.critic.apply(init_)
 
     def __call__(self, tensordict):
+        try:
+            fc = tensordict.get("_feature_cat", None)
+            rs = tensordict.get("recurrent_state", None)
+            if fc is not None:
+                print(f"[DEBUG] _feature_cat shape: {tuple(fc.shape)}")
+            if rs is not None:
+                print(f"[DEBUG] recurrent_state shape: {tuple(rs.shape)}")
+        except Exception as e:
+            print("[DEBUG] shape debug failed:", e)
         self.feature_extractor(tensordict)
         self.actor(tensordict)
         self.critic(tensordict)
@@ -122,6 +144,14 @@ class PPO(TensorDictModuleBase):
         # actions_world = vec_to_world(actions, tensordict["agents", "observation", "direction"]) # transform to world frame
         tensordict["agents", "action"] = actions
         return tensordict
+
+    def get_recurrent_primer(self):
+        """
+        Returns a TensorDictPrimer transform that ensures recurrent_state and is_init
+        are properly initialized in the environment's TensorDicts.
+        """
+        primer = self.gru_model.make_tensordict_primer()
+        return primer
 
     def train(self, tensordict):
         # tensordict: (num_env, num_frames, dim), batchsize = num_env * num_frames

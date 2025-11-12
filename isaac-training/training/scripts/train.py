@@ -10,11 +10,10 @@ from ppo import PPO
 from omni_drones.controllers import LeePositionController
 from omni_drones.utils.torchrl.transforms import VelController, ravel_composite
 from omni_drones.utils.torchrl import SyncDataCollector, EpisodeStats
-from torchrl.envs.transforms import TransformedEnv, Compose
+from torchrl.envs.transforms import TransformedEnv, Compose, InitTracker, TensorDictPrimer
 from utils import evaluate
 from torchrl.envs.utils import ExplorationType
-
-
+from torchrl.data import UnboundedContinuousTensorSpec
 
 
 FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cfg")
@@ -48,41 +47,67 @@ def main(cfg):
     from env import NavigationEnv
     env = NavigationEnv(cfg)
 
-    # Transformed Environment
-    transforms = []
-    # transforms.append(ravel_composite(env.observation_spec, ("agents", "intrinsics"), start_dim=-1))
+    # VelController transforms 4D force action space in omni_drones to desired 4D vel action space
     controller = LeePositionController(9.81, env.drone.params).to(cfg.device)
-    # TODO: 评估是否接收4D动作输入yaw_control
     vel_transform = VelController(controller, yaw_control=True)
-    transforms.append(vel_transform)
-    transformed_env = TransformedEnv(env, Compose(*transforms)).train()
-    transformed_env.set_seed(cfg.seed)    
-
-    # ================= Verify Environment
-    # print("\n" + "="*50)
-    # print("VERIFYING ACTION SPECIFICATIONS")
-    # print(f"Original env.action_spec: {env.action_spec}")
-    # print(f"Transformed env.action_spec: {transformed_env.action_spec}")
     
-    # # 验证我们期望的 4D (vel_w[3], yaw_rate_w[1])
-    # print(f"Transformed spec shape: {transformed_env.action_spec.shape}")
-    
-    # # 检查 VelController 期望的动作范围
-    # print(f"Transformed spec class: {type(transformed_env.action_spec)}")
-    # print("="*50 + "\n")
-    # ================= End Verify Environment
+    # temp Transformed Env only used to init policy observation_spec / action_spec
+    temp_transforms = []
+    temp_transforms.append(InitTracker())  # InitTracker will add a "is_init" boolean mask in the TensorDict for tracking rnn states reset.
+    # temp_transforms.append(vel_transform) # [DEBUG] as the VelController now has the same action spec size with base_env, no need to transform at ppo init.
+    # transforms.append(ravel_composite(env.observation_spec, ("agents", "intrinsics"), start_dim=-1))
 
-    # PPO Policy
-    policy = PPO(cfg.algo, transformed_env.observation_spec, transformed_env.action_spec, cfg.device)
-    # debug: print policy in TensorDict format
+    temp_transformed_env = TransformedEnv(env, Compose(*temp_transforms)).train()
+    temp_transformed_env.set_seed(cfg.seed)  
+
+    # PPO Policy (with GRUModule as recurrent network)
+    policy = PPO(cfg.algo, temp_transformed_env.observation_spec, temp_transformed_env.action_spec, cfg.device)
+    # [DEBUG] print policy in TensorDict format
     print("\n" + "="*50)
     print("PPO Policy Network Structure:")
-    print(policy(transformed_env.reset()))
+    print(policy(temp_transformed_env.reset()))
     print("="*50 + "\n")
     # checkpoint = "/home/zhefan/catkin_ws/src/navigation_runner/scripts/ckpts/checkpoint_2500.pt"
     # checkpoint = "/home/xinmingh/RLDrones/navigation/scripts/nav-ros/navigation_runner/ckpts/checkpoint_36000.pt"
     # policy.load_state_dict(torch.load(checkpoint))
-    
+
+    # Get GRU Primer Transform
+    # Primer is a torchrl transform tells the environment to reset hidden states at the beginning of each episode
+    # primer = policy.get_recurrent_primer()
+
+    primers = {
+        # 给出一个key为recurrent_state的spec， primer根据此在 env.reset() 时创建对应的 tensordict 字段
+        "recurrent_state": UnboundedContinuousTensorSpec(
+                # shape=(batch, 1, hidden_dim),  # policy.gru_num_layers is set default to 1
+                shape=(env.num_envs, policy.gru_num_layers, policy.gru_hidden_dim),
+                device=cfg.device
+            )
+    }
+    # 创建 primer（显式）
+    primer = TensorDictPrimer(primers=primers, default_value=0.0)
+
+    # The actual Transformed Env used in training
+    transforms = []
+    transforms.append(InitTracker()) 
+    transforms.append(primer)
+    transforms.append(vel_transform)
+
+    transformed_env = TransformedEnv(env, Compose(*transforms)).train()
+    transformed_env.set_seed(cfg.seed)
+
+    # [DEBUG] print transformed_env info
+    print("\n" + "="*50)
+    print("VERIFYING TRANSFORMED ENVIRONMENT")
+    td = transformed_env.reset()
+    print("[DEBUG] transformed_env.batch_size:", transformed_env.batch_size)
+    print("[DEBUG] keys:", td.keys(True, True))
+    if "is_init" in td.keys(True, True):
+        print("[DEBUG] is_init shape:", td.get("is_init").shape)
+    if "recurrent_state" in td.keys(True, True):
+        r = td.get("recurrent_state")
+        print("[DEBUG] recurrent_state shape:", r.shape, " mean/std:", float(r.mean()), float(r.std()))
+    print("="*50 + "\n")
+
     # Episode Stats Collector
     episode_stats_keys = [
         k for k in transformed_env.observation_spec.keys(True, True) 
