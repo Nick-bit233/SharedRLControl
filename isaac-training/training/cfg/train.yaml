@@ -10,18 +10,18 @@ seed: 0
 
 # Total Training Length
 max_frame_num: 12e8 # max frame 
-eval_interval: 100 # evaluate the policy for every N training steps
-save_interval: 500
+eval_interval: 200 # evaluate the policy for every N training steps
+save_interval: 800
 
 # Training Environment
 env:
-  num_envs: 100 # Number of drones for training
-  max_episode_length: 2200
+  num_envs: 256 # Number of drones for training
+  max_episode_length: 4000
   env_spacing: 8.0 
-  num_obstacles: 350
+  num_obstacles: 200
 
 env_dyn:
-  num_obstacles: 80 # set to zero if static env is needed
+  num_obstacles: 0 # set to zero if static env is needed
   vel_range: [0.5, 1.5]
   local_range: [5.0, 5.0, 4.5]
 

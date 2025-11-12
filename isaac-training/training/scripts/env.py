@@ -72,10 +72,30 @@ class NavigationEnv(IsaacEnv):
             # self.target_pos = torch.zeros(self.num_envs, 1, 3) # pos like: [x, y, z] * envs
             # self.target_dir = torch.zeros(self.num_envs, 1, 3)
             # self.height_range = torch.zeros(self.num_envs, 1, 2) # range like: [minz, maxz] * envs
+            
+            # prev_drone_vel_w is used to compute acceleration-based penalty and reference of the next human input
             self.prev_drone_vel_w = torch.zeros(self.num_envs, 1 , 3)
             # self.target_pos[:, 0, 0] = torch.linspace(-0.5, 0.5, self.num_envs) * 32.
             # self.target_pos[:, 0, 1] = 24.
-            # self.target_pos[:, 0, 2] = 2.     
+            # self.target_pos[:, 0, 2] = 2. 
+
+            # Simulated human input parameters (TODO: user UserModel)
+            self.human_action_local_slew = torch.zeros(self.num_envs, 4, device=self.device)  # input after smoothing
+            self.human_action_target = torch.zeros(self.num_envs, 4, device=self.device)  # input target(raw)
+            # keep this input for a certain duration (unit: steps, 1 step is cfg.sim.dt second)
+            self.human_intent_remaining_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+            self.human_cfg = {  # TODO: add to cfg
+                "min_intent_duration_sec": 0.64,
+                "max_intent_duration_sec": 2.4,
+                "smoothing_factor": 0.5,  # 越大，响应越快
+                "noise_level": 0.05,
+                "vel_limit": cfg.algo.actor.action_limit, # 2.0
+                "yaw_limit": 1.5 # (rad/s)
+            }
+            sim_dt = cfg.sim.dt  # sim_dt is the environment simulation timestep
+            self.human_cfg["min_steps"] = int(self.human_cfg["min_intent_duration_sec"] / sim_dt)
+            self.human_cfg["max_steps"] = int(self.human_cfg["max_intent_duration_sec"] / sim_dt)
 
 
     def _design_scene(self):
@@ -385,27 +405,41 @@ class NavigationEnv(IsaacEnv):
         self.drone._reset_idx(env_ids, self.training)
         
         if (self.training):  # get random start position
-            masks = torch.tensor([[1., 0., 1.], [1., 0., 1.], [0., 1., 1.], [0., 1., 1.]], dtype=torch.float, device=self.device)
-            shifts = torch.tensor([[0., 24., 0.], [0., -24., 0.], [24., 0., 0.], [-24., 0., 0.]], dtype=torch.float, device=self.device)
-            mask_indices = np.random.randint(0, masks.size(0), size=env_ids.size(0))
-            selected_masks = masks[mask_indices].unsqueeze(1)
-            selected_shifts = shifts[mask_indices].unsqueeze(1)
+            # masks and shifts is used to make start pos at certain side of x-y plane
+            # masks = torch.tensor([[1., 0., 1.], [1., 0., 1.], [0., 1., 1.], [0., 1., 1.]], dtype=torch.float, device=self.device)
+            # shifts = torch.tensor([[0., 24., 0.], [0., -24., 0.], [24., 0., 0.], [-24., 0., 0.]], dtype=torch.float, device=self.device)
+            # mask_indices = np.random.randint(0, masks.size(0), size=env_ids.size(0))
+            # selected_masks = masks[mask_indices].unsqueeze(1)
+            # selected_shifts = shifts[mask_indices].unsqueeze(1)
 
-            # generate random positions
+            # generate random positions (Changed to the whole x-y plane within -24 to 24)
             pos = 48. * torch.rand(env_ids.size(0), 1, 3, dtype=torch.float, device=self.device) + (-24.)
             heights = 0.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (2.5 - 0.5)
-            pos[:, 0, 2] = heights # height
-            pos = pos * selected_masks + selected_shifts
+            pos[:, 0, 2] = heights  # pos z: range from 0.5 to 2.5
+            # pos = pos * selected_masks + selected_shifts
             
             # pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
             # pos[:, 0, 0] = (env_ids / self.num_envs - 0.5) * 32.
             # pos[:, 0, 1] = -24.
             # pos[:, 0, 2] = 2.
-        else:  # for eval, using fixed start positions
+        else:  # for eval, using fixed start positions (grid distribution)
+            sx, sy, sz = self.map_range  # half-extent in x, y, and z-max
+            sx = sx * 0.8  # leave some margin
+            sy = sy * 0.8
+            # choose a near-square grid based on total envs
+            n_cols = int(np.ceil(np.sqrt(self.num_envs)))
+            n_rows = int(np.ceil(self.num_envs / n_cols))
+            # grid coordinates across the full map
+            x_coords = torch.linspace(-sx, sx, steps=n_cols, device=self.device)
+            y_coords = torch.linspace(-sy, sy, steps=n_rows, device=self.device)
+            # map each env_id to (row, col)
+            row_idx = (env_ids // n_cols).clamp(max=n_rows - 1)
+            col_idx = (env_ids % n_cols).clamp(max=n_cols - 1)
+
             pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
-            pos[:, 0, 0] = (env_ids / self.num_envs - 0.5) * 32.
-            pos[:, 0, 1] = 24.
-            pos[:, 0, 2] = 2.
+            pos[:, 0, 0] = x_coords[col_idx]
+            pos[:, 0, 1] = y_coords[row_idx]
+            pos[:, 0, 2] = min(2.0, sz)
         
         # Coordinate change: after reset, the drone's target direction should be changed
         # self.target_dir[env_ids] = self.target_pos[env_ids] - pos
@@ -429,6 +463,12 @@ class NavigationEnv(IsaacEnv):
         # self.height_range[env_ids, 0, 1] = torch.max(pos[:, 0, 2], self.target_pos[env_ids, 0, 2])
 
         self.stats[env_ids] = 0.  
+
+        # reset human action input related variables
+        if len(env_ids) > 0:
+            self.human_action_local_slew[env_ids] = 0.
+            self.human_action_target[env_ids] = 0.
+            self.human_intent_remaining_steps[env_ids] = 0.
         
     def _pre_sim_step(self, tensordict: TensorDictBase):
         actions = tensordict[("agents", "action")] 
@@ -438,14 +478,6 @@ class NavigationEnv(IsaacEnv):
         if (self.cfg.env_dyn.num_obstacles != 0):
             self.move_dynamic_obstacle()
         self.lidar.update(self.dt)
-
-    def get_human_joystick_input(self):
-        # dummmy: 模拟人类输入 (4D, *机体坐标系*)
-        N = self.num_envs
-        human_action_local = torch.zeros(N, 4, device=self.device)
-        human_action_local[:, 0] = 1.5  # 1.5 m/s 机体向前速度
-        human_action_local[:, 3] = -0.5 # -0.5 rad/s 机体Yaw角速度
-        return human_action_local
     
     # get current states/observation
     def _compute_state_and_obs(self):
@@ -577,8 +609,7 @@ class NavigationEnv(IsaacEnv):
         # get action input from simulate user
 
         # TODO: impl user model class
-        # human_action_local = self.user_controller.predict(self.root_state, self.prev_drone_vel_w)
-        human_action_local = self.get_human_joystick_input()
+        human_action_local = self._update_and_get_human_action()
         # no need to change human action to world frame, as both action and drone vel are in body frame
 
         # -----------------Network Input Final--------------
@@ -624,7 +655,7 @@ class NavigationEnv(IsaacEnv):
         # Final reward calculation
         self.reward = (
             1. +
-            1.5 * reward_vel_follow +
+            2.0 * reward_vel_follow +
             1.0 * reward_safety_static + 
             1.0 * reward_safety_dynamic -
             0.1 * penalty_smooth
@@ -677,3 +708,62 @@ class NavigationEnv(IsaacEnv):
             },
             self.batch_size,
         )
+
+    def _update_and_get_human_action(self):
+        # --- 1. Find how many environments that need new "intents" ---
+        env_ids_new_intent = (self.human_intent_remaining_steps <= 0).nonzero(as_tuple=False).squeeze(-1)
+        
+        num_new_intents = len(env_ids_new_intent)
+        if num_new_intents > 0:
+            # --- 2. Generate new "intents" for these environments ---
+            
+            # (A) Discrete intent action type sampling for every environment(as a tensor)
+            # 0=stop, 1=forward, 2=backward, 3=left, 4=right, 5=turn left, 6=turn right
+            intent_types = torch.randint(0, 7, (num_new_intents,), device=self.device)
+            
+            # (B) generate new target tensor
+            new_targets = torch.zeros(num_new_intents, 4, device=self.device)
+
+            # (C) set new target values based on intent types
+            v_lim = self.human_cfg["vel_limit"]
+            y_lim = self.human_cfg["yaw_limit"]
+
+            new_targets[intent_types == 1, 0] = v_lim   # forward
+            new_targets[intent_types == 2, 0] = -v_lim  # backward
+            new_targets[intent_types == 3, 1] = v_lim   # left
+            new_targets[intent_types == 4, 1] = -v_lim  # right 
+            new_targets[intent_types == 5, 3] = y_lim   # turn left 
+            new_targets[intent_types == 6, 3] = -y_lim  # turn right 
+            # if intent_type == 0, all zeros (stop)
+
+            # (D) set sampled new targets for every envs
+            self.human_action_target[env_ids_new_intent] = new_targets
+
+            # (E) set a random duration (steps) for each new intent
+            new_durations = torch.randint(
+                self.human_cfg["min_steps"],
+                self.human_cfg["max_steps"],
+                (num_new_intents,), 
+                device=self.device
+            )
+            # set sampled new durations for every envs
+            self.human_intent_remaining_steps[env_ids_new_intent] = new_durations
+
+        # --- 3. Smoothly update the action values for all environments ---
+        # algo: exponential moving average (last sim-value + new sim-value), not include real prev_drone_vel_w yet.
+        slew_factor = self.human_cfg["smoothing_factor"]
+        self.human_action_local_slew = (
+            (1.0 - slew_factor) * self.human_action_local_slew + 
+            slew_factor * self.human_action_target
+        )
+
+        # --- 4. Add small random noise (simulate hand tremor) ---
+        noise = (torch.randn_like(self.human_action_local_slew) * self.human_cfg["noise_level"])
+        
+        final_action_local = self.human_action_local_slew + noise
+
+        # --- 5. Decrease the step timer for all environments ---
+        self.human_intent_remaining_steps -= 1
+
+        # return final simulated human action input (N, 4)
+        return final_action_local
