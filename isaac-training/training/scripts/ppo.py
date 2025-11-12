@@ -8,6 +8,53 @@ from torchrl.modules import ProbabilisticActor, GRUModule
 from torchrl.envs.transforms import CatTensors
 from utils import ValueNorm, make_mlp, GAE, IndependentBeta, BetaActor, vec_to_world
 
+class _LidarCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LazyConv2d(out_channels=4, kernel_size=[5, 3], padding=[2, 1]), nn.ELU(),
+            nn.LazyConv2d(out_channels=16, kernel_size=[5, 3], stride=[2, 1], padding=[2, 1]), nn.ELU(),
+            nn.LazyConv2d(out_channels=16, kernel_size=[5, 3], stride=[2, 2], padding=[2, 1]), nn.ELU(),
+            Rearrange("n c w h -> n (c w h)"),
+            nn.LazyLinear(128), nn.LayerNorm(128),
+        )
+
+    def forward(self, x):
+        # x: [B, T, C, W, H] or [N, C, W, H]
+        # when forward, combine the batch and time dimensions if input in B&T format
+        if x.dim() == 5:
+            b, t, c, w, h = x.shape
+            x = x.reshape(b * t, c, w, h)
+            x = self.net(x)             # [B*T, 128]
+            x = x.view(b, t, -1)        # [B, T, 128]
+            return x
+        elif x.dim() == 4 or x.dim() == 3:
+            return self.net(x)          # [N, 128] or [1, 128]
+        else:
+            raise RuntimeError(f"Unexpected lidar tensor shape: {tuple(x.shape)}")
+        
+class _DynObsMLP(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # 使用 LazyLinear 适配任意 (1 * dyn_obs_num * 10) 输入维度
+        self.net = nn.Sequential(
+            Rearrange("n c w h -> n (c w h)"),  # 展平到 [N, C*W*H]
+            make_mlp([128, 64])
+        )
+
+    def forward(self, x):
+        # x: [B, T, C=1, W=dyn_obs_num, H=10] or [N, 1, W, H]
+        # same as _LidarCNN, combine batch and time dimensions if input in B&T format
+        if x.dim() == 5:
+            b, t, c, w, h = x.shape
+            x = x.reshape(b * t, c, w, h)
+            x = self.net(x)             # [B*T, 64]
+            x = x.view(b, t, -1)        # [B, T, 64]
+            return x
+        elif x.dim() == 4:
+            return self.net(x)          # [N, 64]
+        else:
+            raise RuntimeError(f"Unexpected dyn-obs tensor shape: {tuple(x.shape)}")
 
 
 class PPO(TensorDictModuleBase):
@@ -22,22 +69,11 @@ class PPO(TensorDictModuleBase):
         human_action_dim = observation_spec["agents", "observation", "human_action"].shape[-1]
         
         # 1. Extract LiDAR Feature
-        feature_extractor_network = nn.Sequential(
-            # Lidar CNN (for processing "rangefinder" data, aka. static obstacle information)
-            nn.LazyConv2d(out_channels=4, kernel_size=[5, 3], padding=[2, 1]), nn.ELU(), 
-            nn.LazyConv2d(out_channels=16, kernel_size=[5, 3], stride=[2, 1], padding=[2, 1]), nn.ELU(),
-            nn.LazyConv2d(out_channels=16, kernel_size=[5, 3], stride=[2, 2], padding=[2, 1]), nn.ELU(),
-            Rearrange("n c w h -> n (c w h)"),
-            nn.LazyLinear(128), nn.LayerNorm(128),
-        ).to(self.device)
+        feature_extractor_network = _LidarCNN().to(self.device)
         
         # 2. Extract Dynamic obstacle Feature
-        dynamic_obstacle_network = nn.Sequential(
-            # Dynamic Obstacle MLP
-            Rearrange("n c w h -> n (c w h)"),
-            make_mlp([128, 64])
-        ).to(self.device)
-
+        dynamic_obstacle_network = _DynObsMLP().to(self.device)
+        
         # RNN network dims for temporal information of observations
         cnn_feature_dim = 128
         # 128(cnn_feature) + 64（dyn_obs_mlp) + 10 + 4 = 206
@@ -124,15 +160,15 @@ class PPO(TensorDictModuleBase):
         self.critic.apply(init_)
 
     def __call__(self, tensordict):
-        try:
-            fc = tensordict.get("_feature_cat", None)
-            rs = tensordict.get("recurrent_state", None)
-            if fc is not None:
-                print(f"[DEBUG] _feature_cat shape: {tuple(fc.shape)}")
-            if rs is not None:
-                print(f"[DEBUG] recurrent_state shape: {tuple(rs.shape)}")
-        except Exception as e:
-            print("[DEBUG] shape debug failed:", e)
+        # try:
+        #     fc = tensordict.get("_feature_cat", None)
+        #     rs = tensordict.get("recurrent_state", None)
+        #     if fc is not None:
+        #         print(f"[DEBUG] _feature_cat shape: {tuple(fc.shape)}")
+        #     if rs is not None:
+        #         print(f"[DEBUG] recurrent_state shape: {tuple(rs.shape)}")
+        # except Exception as e:
+        #     print("[DEBUG] shape debug failed:", e)
         self.feature_extractor(tensordict)
         self.actor(tensordict)
         self.critic(tensordict)

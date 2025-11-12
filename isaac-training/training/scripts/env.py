@@ -504,9 +504,11 @@ class NavigationEnv(IsaacEnv):
             _, closest_dyn_obs_idx = torch.topk(dyn_obs_distance_2d, self.cfg.algo.feature_extractor.dyn_obs_num, dim=1, largest=False) # pick top N closest obstacle index
             dyn_obs_range_mask = dyn_obs_distance_2d.gather(1, closest_dyn_obs_idx) > self.lidar_range
 
+            k = self.cfg.algo.feature_extractor.dyn_obs_num
+
             # a. Relative distance of obstacles in the body frame
             closest_dyn_obs_rpos = torch.gather(dyn_obs_rpos_expanded, 1, closest_dyn_obs_idx.unsqueeze(-1).expand(-1, -1, 3))
-            rpos_b = quat_rotate_inverse(drone_orientation_q.unsqueeze(1).expand(-1, 5, -1), closest_dyn_obs_rpos)  # relative position in body frame
+            rpos_b = quat_rotate_inverse(drone_orientation_q.unsqueeze(1).expand(-1, k, -1), closest_dyn_obs_rpos)  # relative position in body frame
             rpos_b[dyn_obs_range_mask] = 0.  # exclude out of range obstacles
             closest_dyn_obs_rpos[dyn_obs_range_mask] = 0.
 
@@ -527,8 +529,8 @@ class NavigationEnv(IsaacEnv):
 
             # b. Relative Velocity for the dynamic obstacles (body frame)
             closest_dyn_obs_vel = self.dyn_obs_vel[closest_dyn_obs_idx]  # the actual velocity
-            rvel_w = closest_dyn_obs_vel - vel_w.unsqueeze(1).expand(-1, 5, -1)  # relative velocity in world frame
-            rvel_b = quat_rotate_inverse(drone_orientation_q.unsqueeze(1).expand(-1, 5, -1), rvel_w)  # relative velocity in body frame
+            rvel_w = closest_dyn_obs_vel - vel_w.unsqueeze(1).expand(-1, k, -1)  # relative velocity in world frame
+            rvel_b = quat_rotate_inverse(drone_orientation_q.unsqueeze(1).expand(-1, k, -1), rvel_w)  # relative velocity in body frame
             rvel_b[dyn_obs_range_mask] = 0.
             # closest_dyn_obs_vel_g = vec_to_new_frame(closest_dyn_obs_vel, target_dir_2d) 
 
@@ -540,7 +542,10 @@ class NavigationEnv(IsaacEnv):
             closest_dyn_obs_width_category[dyn_obs_range_mask] = 0.
 
             closest_dyn_obs_height = closest_dyn_obs_size[..., 2].unsqueeze(-1)
-            closest_dyn_obs_height_category = torch.where(closest_dyn_obs_height > self.max_obs_3d_height, torch.tensor(0.0), closest_dyn_obs_height)
+            closest_dyn_obs_height_category = torch.where(
+                closest_dyn_obs_height > self.max_obs_3d_height, 
+                torch.zeros_like(closest_dyn_obs_height, device=self.cfg.device), 
+                closest_dyn_obs_height)
             closest_dyn_obs_height_category[dyn_obs_range_mask] = 0.
 
             # concatenate all for dynamic obstacles
