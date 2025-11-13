@@ -37,7 +37,8 @@ class NavigationEnv(IsaacEnv):
         self.lidar_hres = cfg.sensor.lidar_hres
         self.lidar_hbeams = int(360/self.lidar_hres)
 
-        self.user_controller = UserModel(cfg=cfg)  # TODO: add cfg
+        # Env map params
+        self.map_range = self.cfg.env.map_range  # [x_range, y_range, z_range], half extents
 
         super().__init__(cfg, cfg.headless)
         
@@ -62,7 +63,13 @@ class NavigationEnv(IsaacEnv):
         )
         self.lidar = RayCaster(ray_caster_cfg)
         self.lidar._initialize_impl()
-        self.lidar_resolution = (self.lidar_hbeams, self.lidar_vbeams) 
+        self.lidar_resolution = (self.lidar_hbeams, self.lidar_vbeams)
+
+        self.user_controller = UserModel(
+                cfg=cfg, 
+                lidar=self.lidar, 
+                lidar_resolution=self.lidar_resolution
+            )
         
         # start and target 
         with torch.device(self.device):
@@ -121,8 +128,6 @@ class NavigationEnv(IsaacEnv):
         # Ground Plane
         cfg_ground = sim_utils.GroundPlaneCfg(color=(0.1, 0.1, 0.1), size=(300., 300.))
         cfg_ground.func("/World/defaultGroundPlane", cfg_ground, translation=(0, 0, 0.01))
-
-        self.map_range = [20.0, 20.0, 4.5]
 
         terrain_cfg = TerrainImporterCfg(
             num_envs=self.num_envs,
@@ -413,6 +418,7 @@ class NavigationEnv(IsaacEnv):
             # selected_shifts = shifts[mask_indices].unsqueeze(1)
 
             # generate random positions (Changed to the whole x-y plane within -24 to 24)
+            # TODO: calculate by self.map_range
             pos = 48. * torch.rand(env_ids.size(0), 1, 3, dtype=torch.float, device=self.device) + (-24.)
             heights = 0.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (2.5 - 0.5)
             pos[:, 0, 2] = heights  # pos z: range from 0.5 to 2.5

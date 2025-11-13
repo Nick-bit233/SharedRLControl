@@ -3,6 +3,7 @@ defaults:
   - drone
   - ppo
   - sim
+  - user_model
 
 headless: False
 device: "cuda:0"
@@ -19,6 +20,7 @@ env:
   max_episode_length: 4000
   env_spacing: 8.0 
   num_obstacles: 200
+  map_range: [20.0, 20.0, 4.5] # [x, y, z], half extents
 
 env_dyn:
   num_obstacles: 0 # set to zero if static env is needed
