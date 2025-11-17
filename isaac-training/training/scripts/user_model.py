@@ -1,9 +1,11 @@
 from omni_drones.utils import torch
+from omni_drones.utils.torch import euler_to_quaternion, quat_axis, quat_rotate, quat_rotate_inverse
 
 # User Model to simulate human actions
 # TODO: finish it by sampling from different style params and distributions
 class UserModel:
-    def __init__(self, cfg, lidar, lidar_resolution):
+    def __init__(self, id, cfg, lidar, lidar_resolution):
+        self.id = id  # marks the env index of this user model
         self.cfg = cfg
 
         # Init cfg parameters
@@ -46,16 +48,15 @@ class UserModel:
         # 重置意图持续时间
         self.intent_timer = torch.randint(self.min_steps, self.max_steps, (1,)).item()
 
-    def _potential_field_planner(self, drone_pos_w, lidar_scan):
+    def _potential_field_planner(self, drone_pos_w, lidar_scan, drone_orientation_q):
         # 1. 吸引力 (Pull towards G_hat)
         attractive_force = self.G_hat - drone_pos_w
         
         # 2. 排斥力 (Push from obstacles)
-        #    (这是一个简化的实现)
         #    将 Lidar (机体系) 转换为世界坐标系点云，然后计算排斥力
-        #    ... (复杂) ...
+        #    TODO：(复杂版本的实现) ...
         
-        #    一个更简单的实现：
+        #    (这是一个简化的实现)
         #    直接在Lidar数据上操作 (机体系)
         #    如果"前方" (Lidar中心) 有障碍物，施加一个"向后"的力
         repulsive_force_b = torch.zeros(3, device=self.device)
@@ -63,41 +64,46 @@ class UserModel:
         if scan_dist < (self.lidar_range - 0.5): # 快撞到了
             # 施加一个与距离成反比的力
             repulsive_force_b[0] = -1.0 * (self.lidar_range - scan_dist)
+        # TODO: 将排斥力从机体转到世界系
+        repulsive_force_b = quat_rotate(drone_orientation_q, repulsive_force_b)
         
-        # 3. “盲目/熟练度” (β)
+        # 3. “盲目/熟练度 dexterity” (β)
         #    beta=0 (盲目): 完全忽略排斥力
         #    beta=1 (熟练): 完全使用排斥力
         #    (需要将排斥力从机体转到世界系，或者将吸引力从世界转到机体系)
         #    (为了简单，我们假设吸引力占主导)
         
         # 合成力 (世界系)
-        total_force = attractive_force # 简化的“半盲目”
-        
+        beta = self.style_params["dexterity"]
+        total_force = beta * attractive_force + (1 - beta) * repulsive_force_b
+
         # 3. 速度上限 (δ - Daring)
-        max_speed = self.delta * self.max_vel_limit
-        
+        max_vel_limit = self.style_params["max_speed"]
+        delta = self.style_params["aggressiveness"]
+        max_speed = delta * max_vel_limit
+
         # 归一化力，并乘以最大速度
         V_t = (total_force / total_force.norm().clamp(min=1e-6)) * max_speed
         
         return V_t # (B, 3) 世界系下的"期望速度"
 
-    def step(self, drone_root_state, lidar_scan, prev_assistant_action):
-
-        # 提取无人机状态
-        drone_pos_w = drone_root_state[..., :3].squeeze(1)
-        drone_orientation_q = drone_root_state[..., 3:7].squeeze(1)
-        drone_vel_w = drone_root_state[..., 7:10].squeeze(1)
-        drone_ang_vel_w = drone_root_state[..., 10:13].squeeze(1)
+    def step(self, drone_state, lidar_scan, prev_assistant_action):
+        
+        # 提取无人机状态 drone_state is (pos_w[3], vel_b[3], orientation_q[4])
+        drone_pos_w = drone_state[0:3]
+        drone_vel_w = drone_state[3:6]
+        drone_orientation_q = drone_state[6:10]
+        
 
         # 1. 检查是否需要新意图
         self.intent_timer -= 1
         dist_to_goal = (drone_pos_w - self.G_hat).norm()
-        goal_reached = dist_to_goal < 1.0 # 1米阈值
+        goal_reached = dist_to_goal < 0.5 # 到达意图目标的条件
         if self.intent_timer <= 0 or goal_reached:
             self._sample_new_intent_goal()
             
         # 2. 规划器：计算期望速度 V_t (世界系)
-        V_t_world = self._potential_field_planner(drone_pos_w, lidar_scan)
+        V_t_world = self._potential_field_planner(drone_pos_w, lidar_scan, drone_orientation_q)
     
         # 3. 速度映射控制
         # (A) 转换 V_t 到 4D (vel_w[3], yaw_rate_w[1])
