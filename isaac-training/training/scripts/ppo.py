@@ -67,6 +67,7 @@ class PPO(TensorDictModuleBase):
         state_dim = observation_spec["agents", "observation", "state"].shape[-1]
         dyn_obs_feature_dim = 64
         human_action_dim = observation_spec["agents", "observation", "human_action"].shape[-1]
+        prev_action_dim = observation_spec["agents", "observation", "prev_action"].shape[-1]
         
         # 1. Extract LiDAR Feature
         feature_extractor_network = _LidarCNN().to(self.device)
@@ -76,8 +77,8 @@ class PPO(TensorDictModuleBase):
         
         # RNN network dims for temporal information of observations
         cnn_feature_dim = 128
-        # 128(cnn_feature) + 64（dyn_obs_mlp) + 10 + 4 = 206
-        gru_input_dim = cnn_feature_dim + dyn_obs_feature_dim + state_dim + human_action_dim
+        # 128(cnn_feature) + 64（dyn_obs_mlp) + 10 + 4 + 4 = 210
+        gru_input_dim = cnn_feature_dim + dyn_obs_feature_dim + state_dim + human_action_dim + prev_action_dim
         gru_hidden_dim = 256 # TODO: 可以调整的超参数
 
         self.gru_num_layers = 1
@@ -100,7 +101,8 @@ class PPO(TensorDictModuleBase):
                     "_cnn_feature", 
                     "_dynamic_obstacle_feature",
                     ("agents", "observation", "state"), 
-                    ("agents", "observation", "human_action")
+                    ("agents", "observation", "human_action"),
+                    ("agents", "observation", "prev_action")
                 ], 
                 out_key="_feature_cat",  # Concat a new observation feature contain human actions
                 del_keys=False

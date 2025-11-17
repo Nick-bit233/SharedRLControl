@@ -13,9 +13,13 @@ class UserModel:
         self.device = cfg.device
         self.lidar_range = cfg.sensor.lidar_range
 
-        min_intent_sec, max_intent_sec = self.cfg.user_model.intent_duration_range
+        # Count min/max steps for intent duration
+        self.min_steps, self.max_steps = self.cfg.user_model.intent_duration_range / cfg.sim.dt
+        self.min_steps = int(self.min_steps)
+        self.max_steps = int(self.max_steps)
 
         # Get RayCaster Lidar object from env
+
         self.lidar = lidar
         self.lidar_resolution = lidar_resolution  # (hbeams, vbeams)
 
@@ -26,17 +30,15 @@ class UserModel:
             "dexterity": torch.rand(1).item(),
             "max_speed": torch.rand(1).item(),
         }
-
         
         self._sample_new_intent_goal() 
         self.intent_timer = 0
 
-        self.prev_joystic = torch.zeros(4, device=self.device) # generated joystick input last step
         self.prev_user_action = torch.zeros(4, device=self.device) # user action input to the policy last step
         self.prev_actual_action = torch.zeros(4, device=self.device) # actual action taken by the policy last step
 
     def _sample_new_intent_goal(self):
-        # 在地图边界内随机采样一个新目标点 G_hat
+        # 在地图边界内随机采样一个新目标点 G_hat # TODO：修改为在无人机当前可达范围内采样
         sx, sy, sz = self.env_map_range * 1.6  # env_map_range is half extents, extentd it a bit 
         self.G_hat = (torch.rand(3, device=self.device) - 0.5) * 2.0
         self.G_hat[0] *= sx
@@ -79,7 +81,7 @@ class UserModel:
 
         # 3. 速度上限 (δ - Daring)
         max_vel_limit = self.style_params["max_speed"]
-        delta = self.style_params["aggressiveness"]
+        delta = self.style_params["conformance"]  # 与规划器的一致性，越大越快
         max_speed = delta * max_vel_limit
 
         # 归一化力，并乘以最大速度
@@ -87,13 +89,15 @@ class UserModel:
         
         return V_t # (B, 3) 世界系下的"期望速度"
 
-    def step(self, drone_state, lidar_scan, prev_assistant_action):
+    def step(self, drone_state, lidar_scan, prev_agent_action):
         
         # 提取无人机状态 drone_state is (pos_w[3], vel_b[3], orientation_q[4])
         drone_pos_w = drone_state[0:3]
         drone_vel_w = drone_state[3:6]
         drone_orientation_q = drone_state[6:10]
-        
+
+        # 提取上一步的用户动作和实际动作
+        self.prev_actual_action = prev_agent_action.detach()
 
         # 1. 检查是否需要新意图
         self.intent_timer -= 1
@@ -112,17 +116,18 @@ class UserModel:
         
         # (B) Joystick Control (P-Controller)
         # Pgain ∝ gamma (Aggressiveness)
-        Pgain = 0.1 + self.gamma * 0.4 # 映射到 [0.1, 0.5]
+        gamma = self.style_params["aggressiveness"]
+        Pgain = 0.1 + gamma * 0.4 # 映射到 [0.1, 0.5]
         self.Jt = self.Jt + (V_t - self.Jt) * Pgain
 
-        # (C) Adaptability Control (I-Controller)
+        # (C) Adaptability Control (I-Controller)， 为了更加平滑规划动作和上一个用户动作
         # It+1 = It + (au - aa)(1 - α)
-        action_diff = self.prev_user_action - prev_assistant_action
+        action_diff = self.prev_user_action - prev_agent_action
         self.It = self.It + (action_diff) * (1.0 - self.alpha)
         self.It = self.It * 0.95 # 积分衰减，防止无限累积
 
         # (D) Final Action
-        Igain = 0.1 # 可调参数
+        Igain = 0.1 # 平滑参数，可调
         au_world = self.Jt + self.It * Igain
         
         # (E) 添加抖动
@@ -131,23 +136,9 @@ class UserModel:
         
         # --- 4. 转换回机体坐标系 ---
         # (因为我们的PPO-RNN期望的输入是机体系)
-        # drone_orientation_q = env_drone_stae['orientation_q'] # TODO: (需要从 env 传入或从 vel_b/ang_vel_b 重建)
-        # 假设我们从 env.py 传入了 drone_orientation_q
-        # au_local = quat_rotate_inverse(drone_orientation_q, au_world_noisy)
-        # (我们必须在两个坐标系中做出选择，保持一致！)
-        
-        # *** 让我们坚持使用 "混合坐标系" 方案 (PPO输入机体系，输出世界系) ***
-        # 1. UserModel 内部规划 V_t (世界系)
-        # 2. UserModel 执行 Joystick/Adaptability (世界系)
-        # 3. UserModel 输出 au (世界系)
-        # 4. env.py 将 au (世界系) 转换为 au (机体系) 并喂给 PPO
-        
-        # --- 4. (在 env.py 中) 坐标系转换 ---
-        # drone_orientation_q = self.root_state[..., 3:7].squeeze(1)[i]
-        # human_action_local[i] = self.user_models[i].step(...) # <--- UserModel.step() 返回 au_world
-        # human_action_local[i] = quat_rotate_inverse(drone_orientation_q, au_world_noisy)
-        
-        # --- 5. 更新状态并返回 ---
+        au_local_noisy = quat_rotate_inverse(drone_orientation_q, au_world_noisy)
+    
+        # --- 5. 更新历史动作（保持世界系）并返回 ---
         self.prev_user_action = au_world_noisy.detach() # 存储下一步使用
         
-        return au_world_noisy, goal_reached
+        return au_local_noisy, goal_reached

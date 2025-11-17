@@ -13,6 +13,6 @@ algo:
     clip_ratio: 0.1
   
   entropy_loss_coefficient: 5e-3 # encourage exploration
-  training_frame_num: 64
+  training_frame_num: 128
   training_epoch_num: 4
   num_minibatches: 4 # split into N minibatches, use little minibatches so that RNN can learn more frames.

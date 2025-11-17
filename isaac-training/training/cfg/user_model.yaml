@@ -1,2 +1,2 @@
 intent_duration_range: [1.0, 3.0]  # range of intent duration in seconds
-max_intent_goals: 5  # maximum number of intent goals before reset
+max_intent_goals: 5  # model must complete these many intent goals in one episode to be counted as success

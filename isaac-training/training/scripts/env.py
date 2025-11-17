@@ -69,7 +69,7 @@ class NavigationEnv(IsaacEnv):
             [self._create_new_user_model(env_idx) for env_idx in range(self.num_envs)]
         )
         # Intent goal counts params
-        self.max_intent_goals = cfg.user_model.max_intent_goals
+        self.max_intent_goals = cfg.user_model.max_intent_goals  # model musdtt complete these many intent goals in one episode to be counted as success
         self.intent_goal_counts = torch.zeros(self.num_envs, device=self.device)
         
         # start and target 
@@ -702,8 +702,7 @@ class NavigationEnv(IsaacEnv):
         reward_intent_complete = torch.zeros(self.num_envs, 1, device=self.device)
         reward_intent_complete[intent_goals_reached] = 10.0  # Every time when intent goal is reached, give a large reward
         
-        self.intent_completion_count += intent_goals_reached.long()
-
+        self.intent_goal_counts += intent_goals_reached.long()
 
         # f. Collision condition with its penalty
         static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") >  (self.lidar_range - 0.3) # 0.3 collision radius
@@ -727,7 +726,7 @@ class NavigationEnv(IsaacEnv):
         above_bound = self.drone.pos[..., 2] > 4.
 
         self.terminated = below_bound | above_bound | collision
-        success_truncate = (self.intent_completion_count >= self.max_intents_per_episode).unsqueeze(-1)
+        success_truncate = (self.intent_goal_counts >= self.max_intents_per_episode).unsqueeze(-1)
         timeout_truncate = (self.progress_buf >= self.max_episode_length).unsqueeze(-1)
         self.truncated = success_truncate | timeout_truncate
 
@@ -738,7 +737,7 @@ class NavigationEnv(IsaacEnv):
         # (remove reach_goal flag as no goal target is provided)
         self.stats["return"] += self.reward
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
-        self.stats["reach_goal"] = intent_goals_reached.float()  # TODO: check if count for total goals
+        self.stats["reach_goal"] = self.intent_goal_counts.float() / self.max_intents_per_episode  # percentage of completed intent goals
         self.stats["collision"] = collision.float()
         self.stats["truncated"] = self.truncated.float()
 
