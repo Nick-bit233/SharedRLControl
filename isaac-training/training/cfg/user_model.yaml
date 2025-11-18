@@ -1,2 +1,5 @@
 intent_duration_range: [1.0, 3.0]  # range of intent duration in seconds
 max_intent_goals: 5  # model must complete these many intent goals in one episode to be counted as success
+sample_candidates_range: [3.0, 12.0]  # range (in meters) to sample candidate goal points around the drone
+num_goal_candidates: 10  # number of candidate goal points to sample for intent goal selection
+fallback_goal_distance: 3.0  # distance in front of drone to set fallback goal if no candidate is valid

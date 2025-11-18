@@ -65,11 +65,15 @@ class NavigationEnv(IsaacEnv):
         self.lidar_resolution = (self.lidar_hbeams, self.lidar_vbeams)
 
         # User Model Initialization
-        self.user_controllers = torch.nn.ModuleList(
-            [self._create_new_user_model(env_idx) for env_idx in range(self.num_envs)]
-        )
+        self.user_model = UserModel(
+            num_envs=self.num_envs,
+            cfg=cfg, 
+            lidar=self.lidar, 
+            lidar_resolution=self.lidar_resolution,
+            debug_draw=self.debug_draw
+        ) 
         # Intent goal counts params
-        self.max_intent_goals = cfg.user_model.max_intent_goals  # model musdtt complete these many intent goals in one episode to be counted as success
+        self.max_intent_goals = cfg.user_model.max_intent_goals  # model must complete these many intent goals in one episode to be counted as success
         self.intent_goal_counts = torch.zeros(self.num_envs, device=self.device)
         
         # start and target 
@@ -89,33 +93,6 @@ class NavigationEnv(IsaacEnv):
             # self.target_pos[:, 0, 0] = torch.linspace(-0.5, 0.5, self.num_envs) * 32.
             # self.target_pos[:, 0, 1] = 24.
             # self.target_pos[:, 0, 2] = 2. 
-
-            # Simulated human input parameters (TODO: user UserModel)
-            # self.human_action_local_slew = torch.zeros(self.num_envs, 4, device=self.device)  # input after smoothing
-            # self.human_action_target = torch.zeros(self.num_envs, 4, device=self.device)  # input target(raw)
-            # # keep this input for a certain duration (unit: steps, 1 step is cfg.sim.dt second)
-            # self.human_intent_remaining_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-
-            # self.human_cfg = {
-            #     "min_intent_duration_sec": 0.64,
-            #     "max_intent_duration_sec": 2.4,
-            #     "smoothing_factor": 0.5,  # 越大，响应越快
-            #     "noise_level": 0.05,
-            #     "vel_limit": cfg.algo.actor.action_limit, # 2.0
-            #     "yaw_limit": 1.5 # (rad/s)
-            # }
-            # sim_dt = cfg.sim.dt  # sim_dt is the environment simulation timestep
-            # self.human_cfg["min_steps"] = int(self.human_cfg["min_intent_duration_sec"] / sim_dt)
-            # self.human_cfg["max_steps"] = int(self.human_cfg["max_intent_duration_sec"] / sim_dt)
-
-    def _create_new_user_model(self, env_idx):
-
-        return UserModel(
-            id=env_idx,
-            cfg=self.cfg, 
-            lidar=self.lidar, 
-            lidar_resolution=self.lidar_resolution
-        )
 
     def _design_scene(self):
         # Initialize a drone in prim /World/envs/envs_0
@@ -482,11 +459,16 @@ class NavigationEnv(IsaacEnv):
         self.prev_drone_vel_w[env_ids] = 0.
         self.prev_agent_action[env_ids] = 0.
 
-        # Reset user model
-        for env_idx in env_ids:
-            # Recreate a new user model to sample new behaviors
-            self.user_controllers[env_idx] = self._create_new_user_model(env_idx)
-
+        # Update lidar sensor when reset
+        self.lidar.update(self.cfg.sim.dt)
+        lidar_scan = self.lidar_range - (
+            (self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1))
+            .norm(dim=-1)
+            .clamp_max(self.lidar_range)
+            .reshape(self.num_envs, 1, *self.lidar_resolution)
+        )
+        lidar_scan_sel = lidar_scan[env_ids]
+        self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids, lidar_scan=lidar_scan_sel)
 
         # (no height range limit, at least for now)
         # self.height_range[env_ids, 0, 0] = torch.min(pos[:, 0, 2], self.target_pos[env_ids, 0, 2])
@@ -528,6 +510,9 @@ class NavigationEnv(IsaacEnv):
             .clamp_max(self.lidar_range)
             .reshape(self.num_envs, 1, *self.lidar_resolution)
         ) # lidar scan store the data that is range - distance and it is in lidar's local frame
+
+        # print lidar scan shape for debug
+        # print("Lidar scan shape:", self.lidar_scan.shape)  # should be (num_envs, 1, hbeams, vbeams)
 
         # Optional render for LiDAR
         if self._should_render(0):
@@ -654,12 +639,13 @@ class NavigationEnv(IsaacEnv):
         human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)
         intent_goals_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-        for i in range(self.num_envs):  # For every environment, get it's human action from user model
-            human_actions_local[i], intent_goals_reached[i] = self.user_controllers[i].step(
-                user_input_drone_state[i],  # input drone state data (world frame)
-                self.lidar_scan[i],  # input lidar scan data (local frame)
-                prev_action_local[i]  # input previous action data (local frame)
-            )  # no need to change human action to world frame, as both action and drone vel are in body frame
+        # Step the user model to get human action input
+        human_actions_local, intent_goals_reached = self.user_model.step(
+            user_input_drone_state,
+            self.lidar_scan,
+            prev_action_local,
+        )
+
 
         # -----------------Network Input Final--------------
         obs = {
@@ -682,7 +668,6 @@ class NavigationEnv(IsaacEnv):
             reward_safety_dynamic = 0.0
 
         # c. (changed) velocity_follow reward for closer to human action input
-        # 比较 "无人机实际机体系速度" vs "人类期望机体系速度"
         policy_action_vel_b = vel_b.unsqueeze(1) # (N, 1, 3)
         human_action_vel_b = human_actions_local[..., :3].unsqueeze(1) # (N, 1, 3)
         
@@ -710,7 +695,7 @@ class NavigationEnv(IsaacEnv):
         
         # Final reward calculation
         self.reward = (
-            1.5 * reward_vel_follow +
+            0.5 * reward_vel_follow +
             1.0 * reward_safety_static + 
             1.0 * reward_intent_complete +
             1.0 * reward_safety_dynamic -
