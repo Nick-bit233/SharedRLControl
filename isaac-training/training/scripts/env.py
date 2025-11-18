@@ -36,9 +36,8 @@ class NavigationEnv(IsaacEnv):
         self.lidar_vbeams = cfg.sensor.lidar_vbeams
         self.lidar_hres = cfg.sensor.lidar_hres
         self.lidar_hbeams = int(360/self.lidar_hres)
-
-        # Env map params
-        self.map_range = self.cfg.env.map_range  # [x_range, y_range, z_range], half extents
+        # Env map params:
+        self.map_range = cfg.env.map_range  # [x_range, y_range, z_range], half extents
 
         super().__init__(cfg, cfg.headless)
         
@@ -73,7 +72,7 @@ class NavigationEnv(IsaacEnv):
             debug_draw=self.debug_draw
         ) 
         # Intent goal counts params
-        self.max_intent_goals = cfg.user_model.max_intent_goals  # model must complete these many intent goals in one episode to be counted as success
+        self.max_intent_goals_per_episode = cfg.user_model.max_intent_goals  # model must complete these many intent goals in one episode to be counted as success
         self.intent_goal_counts = torch.zeros(self.num_envs, device=self.device)
         
         # start and target 
@@ -89,7 +88,7 @@ class NavigationEnv(IsaacEnv):
             self.prev_drone_vel_w = torch.zeros(self.num_envs, 1 , 3)
             # previous action taken by the agent (drone) (vel_b[3], yaw_rate_b[1])
             # use this 4D action instaed of the prev_drone_vel_w in user model and GRU network.
-            self.prev_agent_action = torch.zeros(self.num_envs, 4, device=self.cfg.device)  
+            self.prev_agent_action = torch.zeros(self.num_envs, 4, device=self.device)  
             # self.target_pos[:, 0, 0] = torch.linspace(-0.5, 0.5, self.num_envs) * 32.
             # self.target_pos[:, 0, 1] = 24.
             # self.target_pos[:, 0, 2] = 2. 
@@ -515,17 +514,17 @@ class NavigationEnv(IsaacEnv):
         # print("Lidar scan shape:", self.lidar_scan.shape)  # should be (num_envs, 1, hbeams, vbeams)
 
         # Optional render for LiDAR
-        if self._should_render(0):
-            self.debug_draw.clear()
-            x = self.lidar.data.pos_w[0]
-            # set_camera_view(
-            #     eye=x.cpu() + torch.as_tensor(self.cfg.viewer.eye),
-            #     target=x.cpu() + torch.as_tensor(self.cfg.viewer.lookat)                        
-            # )
-            v = (self.lidar.data.ray_hits_w[0] - x).reshape(*self.lidar_resolution, 3)
-            # self.debug_draw.vector(x.expand_as(v[:, 0]), v[:, 0])
-            # self.debug_draw.vector(x.expand_as(v[:, -1]), v[:, -1])
-            self.debug_draw.vector(x.expand_as(v[:, 0])[0], v[0, 0])
+        # if self._should_render(0):
+        #     self.debug_draw.clear()
+        #     x = self.lidar.data.pos_w[0]
+        #     # set_camera_view(
+        #     #     eye=x.cpu() + torch.as_tensor(self.cfg.viewer.eye),
+        #     #     target=x.cpu() + torch.as_tensor(self.cfg.viewer.lookat)                        
+        #     # )
+        #     v = (self.lidar.data.ray_hits_w[0] - x).reshape(*self.lidar_resolution, 3)
+        #     self.debug_draw.vector(x.expand_as(v[:, 0]), v[:, 0])
+        #     self.debug_draw.vector(x.expand_as(v[:, -1]), v[:, -1])
+        #     self.debug_draw.vector(x.expand_as(v[:, 0])[0], v[0, 0])
 
         # ---------Network Input II: Drone's internal states---------
         # (Changed: remove all tensors about target(goal) from internal states)
@@ -644,6 +643,7 @@ class NavigationEnv(IsaacEnv):
             user_input_drone_state,
             self.lidar_scan,
             prev_action_local,
+            visualize_env_idx=self.num_envs - 1 # render the last env (closer to the camera) for visualization
         )
 
 
@@ -695,7 +695,7 @@ class NavigationEnv(IsaacEnv):
         
         # Final reward calculation
         self.reward = (
-            0.5 * reward_vel_follow +
+            0.1 * reward_vel_follow +
             1.0 * reward_safety_static + 
             1.0 * reward_intent_complete +
             1.0 * reward_safety_dynamic -
@@ -711,7 +711,7 @@ class NavigationEnv(IsaacEnv):
         above_bound = self.drone.pos[..., 2] > 4.
 
         self.terminated = below_bound | above_bound | collision
-        success_truncate = (self.intent_goal_counts >= self.max_intents_per_episode).unsqueeze(-1)
+        success_truncate = (self.intent_goal_counts >= self.max_intent_goals_per_episode).unsqueeze(-1)
         timeout_truncate = (self.progress_buf >= self.max_episode_length).unsqueeze(-1)
         self.truncated = success_truncate | timeout_truncate
 
@@ -722,7 +722,7 @@ class NavigationEnv(IsaacEnv):
         # (remove reach_goal flag as no goal target is provided)
         self.stats["return"] += self.reward
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
-        self.stats["reach_goal"] = self.intent_goal_counts.float() / self.max_intents_per_episode  # percentage of completed intent goals
+        self.stats["reach_goal"] = self.intent_goal_counts.float() / self.max_intent_goals_per_episode # percentage of completed intent goals
         self.stats["collision"] = collision.float()
         self.stats["truncated"] = self.truncated.float()
 

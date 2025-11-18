@@ -1,8 +1,6 @@
-# filepath: /workspace/NavRL/isaac-training/training/scripts/user_model.py
+import torch
 from omni_drones.envs.isaac_env import DebugDraw
-from omni_drones.utils import torch
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
-import math  # 为 _sample_reachable_goals_vectorized 里的 math.pi
 
 # User Model to simulate human actions
 # TODO: finish it by sampling from different style params and distributions
@@ -13,7 +11,7 @@ class UserModel:
         self.debug_draw = debug_draw
 
         # Init cfg parameters
-        self.env_map_range = cfg.env.map_range
+        self.env_map_range = torch.tensor(cfg.env.map_range, dtype=torch.float32, device=cfg.device)  # half extents of the env map
         self.device = cfg.device
         self.lidar_range = cfg.sensor.lidar_range
         self.max_speed = cfg.algo.actor.action_limit  # max speed limit during training
@@ -23,12 +21,12 @@ class UserModel:
         self.fallback_goal_distance = cfg.user_model.fallback_goal_distance
 
         # Count min/max steps for intent duration
-        self.min_steps, self.max_steps = self.cfg.user_model.intent_duration_range / cfg.sim.dt
-        self.min_steps = int(self.min_steps)
-        self.max_steps = int(self.max_steps)
+        intent_min, intent_max = self.cfg.user_model.intent_duration_range
+        dt = cfg.sim.dt
+        self.min_steps = int(intent_min / dt)
+        self.max_steps = int(intent_max / dt)
 
         # Get RayCaster Lidar object from env
-
         self.lidar = lidar
         self.lidar_resolution = lidar_resolution  # (hbeams, vbeams)
 
@@ -95,7 +93,8 @@ class UserModel:
         # 为这些 env 采样第一批 intent_goals
         if lidar_scan is not None:
             # lidar_scan 传进来是 (K,1,H,V)，直接用
-            new_goals = self._sample_reachable_goals_vectorized(pos_k,
+            new_goals = self._sample_reachable_goals_vectorized(
+                pos_k,
                 quat_k,
                 lidar_scan,
                 light_of_sight_check=False, 
@@ -138,6 +137,9 @@ class UserModel:
         C = self.num_candidates  # number of candidates per environment
         min_r, max_r = self.sample_candidates_range
 
+        # expand quat to match candidate dimension C
+        quat_expanded = quat.unsqueeze(1).expand(-1, C, -1)  # (N,C,4)
+
         # get a set of random goal distances and directions
         r = torch.rand(N, C, device=self.device) * (max_r - min_r) + min_r
         dirs = torch.randn(N, C, 3, device=self.device)  
@@ -145,6 +147,7 @@ class UserModel:
 
         # calculate goal positions (based on current pos)
         candidates = pos.unsqueeze(1) + dirs * r.unsqueeze(-1)
+
         # clamp candidate goal points within map bounds
         candidates[..., 0] = candidates[..., 0].clamp(-sx, sx)
         candidates[..., 1] = candidates[..., 1].clamp(-sy, sy)
@@ -154,21 +157,22 @@ class UserModel:
         # Step 2: Vectorized beam mapping & single check
         # ----------------------------------------
         vec = candidates - pos.unsqueeze(1)  # vector from drone to candidate points, (N,C,3)
-        dist = vec.norm(dim=-1)
-        vec_body = quat_rotate_inverse(quat.unsqueeze(1), vec)  # transform to body frame, (N,C,3)
+        dist = vec.norm(dim=-1)  # distance to candidate points, (N,C)
+        vec_body = quat_rotate_inverse(quat_expanded, vec)  # transform to body frame, (N,C,3)
 
         # compute azimuth phi = atan2(y, x) in body frame; y left, x forward
         phis = torch.atan2(vec_body[..., 1], vec_body[..., 0])
         # map phi to lidar beam index
-        idx = ((phis + torch.pi) / (2 * torch.pi) * H).long() % H
+        idx = ((phis + torch.pi) / (2 * torch.pi) * H).long() % H  # idx = lidar beam index for each candidate, (N,C)
+        env_idx = torch.arange(N, device=self.device).unsqueeze(1).expand(N, C)  # env_idx = which env each candidate belongs to, (N,C)
 
         # quick point check: compare lidar distance vs candidate distance
         midv = V // 2  # use mid vertical beam
-        scan_vals = lidar_scan[:, 0, idx, midv]  # broadcast lidar scan values, (N,C)
-        obs_dist = self.lidar_range - scan_vals
-
+        scan_vals = lidar_scan[env_idx.reshape(-1), 0, idx.reshape(-1), midv].view(N, C)  # (N*C,) -> (N,C)
+        
+        obs_dist = self.lidar_range - scan_vals  # obstacle distances along those beams, (N,C)
         # candidate is free if obs_dists > dist + drone_radius (obstacle is farther than candidate)
-        free_mask = obs_dist > (dist + 0.3)
+        free_mask = obs_dist > (dist + 0.3)  # (N,C) boolean
 
         # ----------------------------------------
         # Step 3: line-of-sight checks (optional)
@@ -194,7 +198,7 @@ class UserModel:
             vec_inter_body = quat_rotate_inverse(quat_flat.unsqueeze(1), vec_inter.unsqueeze(1)).squeeze(1)
 
             phi_inter = torch.atan2(vec_inter_body[:, 1], vec_inter_body[:, 0])
-            idx_inter = ((phi_inter + math.pi) / (2 * math.pi) * H).long() % H
+            idx_inter = ((phi_inter + torch.pi) / (2 * torch.pi) * H).long() % H
 
             env_idx = torch.arange(N, device=self.device).unsqueeze(1).unsqueeze(2).expand(N, C, T).reshape(-1)
             scan_inter_vals = lidar_scan[env_idx, 0, idx_inter, midv]
@@ -203,19 +207,30 @@ class UserModel:
             inter_free = obs_inter > (dist_inter + 0.3)
             los_mask = inter_free.reshape(N, C, T).all(dim=-1)
 
-            ok = free_mask & los_mask
+            reachable_goal_mask = free_mask & los_mask
         else:
-            ok = free_mask
+            reachable_goal_mask = free_mask
 
         # select first OK candidate or fallback
-        good = ok.any(dim=1)
-        best_idx = torch.argmax(ok.float(), dim=1)
-        chosen = candidates[torch.arange(N, device=self.device), best_idx]
+        good = reachable_goal_mask.any(dim=1)  # if there exist any good candidates, (N,) Boolean
+        best_idx = reachable_goal_mask.float().argmax(dim=1)  # first good candidate index, (N,) int64
+        arange_n = torch.arange(N, device=self.device)
+        # # debug
+        # print("Good goals:", good.shape, good.dtype)
+        # print("Best idx:", best_idx.shape, best_idx.dtype)
+        # print("arange_n:", arange_n.shape, arange_n.dtype)
+
+        chosen = candidates[arange_n, best_idx]
+
+        # print("chosen:", chosen.shape, chosen.dtype)
+        # # try to print the content of chosen
+        # print("chosen content:", chosen[:10])
 
         # fallback: short forward
-        fallback = pos + quat_rotate(
-            quat, torch.tensor([1.0, 0, 0], device=self.device)
-        ).reshape(N, 3) * self.fallback_goal_distance
+        forward_body = torch.tensor([1.0, 0, 0], device=self.device).expand(N, 3)  # format a batch of forward vectors, (N,3)
+        forward_w = quat_rotate(quat, forward_body)  # transform to world frame, (N,3)
+        fallback = pos + forward_w * self.fallback_goal_distance  # get fallback goal points, (N,3)
+
         chosen = torch.where(good.unsqueeze(-1), chosen, fallback)
         return chosen
 
@@ -309,40 +324,65 @@ class UserModel:
             lidar_scan
         )
 
-        # 3. 将速度映射到控制
-        # (A) 转换 V_t 到 4D (vel_w[3], yaw_rate_w[1])
-        # (简单规划器只输出了vel_w[3]，假设yaw_rate=0)
-        action_plan_t = torch.cat([vels_t_w, torch.zeros(N, 1, device=self.device)], dim=-1)  # (N,4)
-        
-        # (B) 平滑输出动作
-        # J_t: joystick action，即用户模型上一个输出的动作
-        # p_t: planned action 
+        # 3. 将速度映射到控制（目前只映射线速度）
+        prev_j_vel_w = self.prev_joystick_action[:, 0:3]  # (N,3)
+        prev_a_vel_w = prev_agent_action[:, 0:3]  # (N,3)
+
         # s_t = J_t-1 + (p_t - J_t-1) * Pgain
-        # 参数 Dexterity gamma ∈ [0,1]，刻画模拟用户的熟练度, 越大则越灵活（响应新的规划动作越快），越小则越平滑
         gamma = self.dexterity  
         Pgain = 0.5 + gamma * 0.5  # Pgain ∝ gamma, 映射到 [0.5, 1.0] 之间
-        action_smooth_t = self.prev_joystick_action + (action_plan_t - self.prev_joystick_action) * Pgain
+        vels_smooth_w = prev_j_vel_w + (vels_t_w - prev_j_vel_w) * Pgain
 
-        # (C) Adaptability Control，模拟用户对实际动作的反馈调整
-        # Aa: 上一个实际输出的控制动作（模型输出）
         # J_t = s_t + (J_t-1 - Aa_t-1)(1 - α)
-        # 参数 Conformance α ∈ [0,1], 越大越服从意图，则对实际动作的反馈调整越小
         alpha = self.conformance
-        action_diff = self.prev_joystick_action - prev_agent_action
-        au_world = action_smooth_t + (action_diff) * (1.0 - alpha)
-
-        # TODO: 是否需要额外的积分平滑（类似PID控制器中的I项）
-        # self.It = self.It + (action_diff) * (1.0 - alpha)
-        # self.It = self.It * 0.95 # 积分衰减，防止无限累积
-        # Igain = 0.1 # 平滑参数，可调
-        # au_world = action_joystick_t + self.It * Igain
+        action_diff = prev_j_vel_w - prev_a_vel_w
+        vels_u_w = vels_smooth_w + (action_diff) * (1.0 - alpha)
         
         # (D) 添加抖动(模拟不精确的操作和控制信号噪声等)
-        noise = (torch.randn_like(au_world) * self.noise_level)
-        au_world_noisy = au_world + noise
+        noise = (torch.randn_like(vels_u_w) * self.noise_level)
+        vels_u_w_noisy = vels_u_w + noise
         
         # --- 4. 转换回机体坐标系，以符合训练网络输入规范 ---
-        au_local_noisy = quat_rotate_inverse(drone_orientation_q, au_world_noisy)
+        vels_u_b_noisy = quat_rotate_inverse(drone_orientation_q, vels_u_w_noisy)
+        # transfrorm to 4D action (keep yaw speed rate = 0)
+        au_world_noisy = torch.cat([vels_u_w_noisy, torch.zeros(N, 1, device=self.device)], dim=-1)
+        au_local_noisy = torch.cat([vels_u_b_noisy, torch.zeros(N, 1, device=self.device)], dim=-1)
+
+
+        # # TODO: user_model需要参数来允许生成带有偏航率的动作
+        # # (A) 转换 V_t 到 4D (vel_w[3], yaw_rate_w[1])
+        # # (简单规划器只输出了vel_w[3]，假设yaw_rate=0)
+        # action_plan_t = torch.cat([vels_t_w, torch.zeros(N, 1, device=self.device)], dim=-1)  # (N,4)
+        
+        # # (B) 平滑输出动作
+        # # J_t: joystick action，即用户模型上一个输出的动作
+        # # p_t: planned action 
+        # # s_t = J_t-1 + (p_t - J_t-1) * Pgain
+        # # 参数 Dexterity gamma ∈ [0,1]，刻画模拟用户的熟练度, 越大则越灵活（响应新的规划动作越快），越小则越平滑
+        # gamma = self.dexterity  
+        # Pgain = 0.5 + gamma * 0.5  # Pgain ∝ gamma, 映射到 [0.5, 1.0] 之间
+        # action_smooth_t = self.prev_joystick_action + (action_plan_t - self.prev_joystick_action) * Pgain
+
+        # # (C) Adaptability Control，模拟用户对实际动作的反馈调整
+        # # Aa: 上一个实际输出的控制动作（模型输出）
+        # # J_t = s_t + (J_t-1 - Aa_t-1)(1 - α)
+        # # 参数 Conformance α ∈ [0,1], 越大越服从意图，则对实际动作的反馈调整越小
+        # alpha = self.conformance
+        # action_diff = self.prev_joystick_action - prev_agent_action
+        # au_world = action_smooth_t + (action_diff) * (1.0 - alpha)
+
+        # # TODO: 是否需要额外的积分平滑（类似PID控制器中的I项）
+        # # self.It = self.It + (action_diff) * (1.0 - alpha)
+        # # self.It = self.It * 0.95 # 积分衰减，防止无限累积
+        # # Igain = 0.1 # 平滑参数，可调
+        # # au_world = action_joystick_t + self.It * Igain
+        
+        # # (D) 添加抖动(模拟不精确的操作和控制信号噪声等)
+        # noise = (torch.randn_like(au_world) * self.noise_level)
+        # au_world_noisy = au_world + noise
+        
+        # # --- 4. 转换回机体坐标系，以符合训练网络输入规范 ---
+        # au_local_noisy = quat_rotate_inverse(drone_orientation_q, au_world_noisy)
 
         # --- 5. 更新Joystick动作（保持世界系）并返回 ---
         self.prev_joystick_action = au_world_noisy.detach() # 存储下一步使用
@@ -360,24 +400,28 @@ class UserModel:
     def _visualize_single_env(self, env_idx, pos, goal):
         """
         Visualize the drone position and intent goal in the environment using debug drawing
-        Inputs:
+        Inputs: 
+            env_idx: int, index of the environment to visualize
+            pos: (3,) tensor, drone position in world frame
+            goal: (3,) tensor, intent goal position in world frame
         """
         if self.debug_draw is None:
             return
 
-        p0 = pos.cpu().numpy()
-        g = goal.cpu().numpy()
+        p0 = pos.reshape(1, 3)
+        g = goal.reshape(1, 3)
 
         self.debug_draw.clear()
 
-        # draw goal
-        self.debug_draw.plot(x=g, size=2.0, color=(0.1,0.6,0.9,1.0))
+        # draw goal (red)
+        self.debug_draw.plot(x=g, size=4.0, color=(1.0,0.0,0.0,1.0))
 
-        # draw path
+        # draw path (yellow)
         T = 20
         for t in torch.linspace(0, 1, steps=T):
             pt = pos + (goal - pos) * t
-            self.debug_draw.plot(x=pt.cpu().numpy(), size=1.0, color=(0.9,0.9,0.2,1.0))
-
-        # draw vector
-        self.debug_draw.vector(p0, (g - p0), scale=1.0, color=(0.2,0.9,0.2,1.0))
+            pt_batch = pt.reshape(1, 3)
+            self.debug_draw.plot(x=pt_batch, size=2.0, color=(1.0,0.9,0.2,1.0))
+    
+        # draw vector (green)
+        self.debug_draw.vector(p0, (g - p0), size=2.0, color=(0.1,1.0,0.1,1.0))
