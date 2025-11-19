@@ -469,9 +469,6 @@ class NavigationEnv(IsaacEnv):
         lidar_scan_sel = lidar_scan[env_ids]
         self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids, lidar_scan=lidar_scan_sel)
 
-        # (no height range limit, at least for now)
-        # self.height_range[env_ids, 0, 0] = torch.min(pos[:, 0, 2], self.target_pos[env_ids, 0, 2])
-        # self.height_range[env_ids, 0, 1] = torch.max(pos[:, 0, 2], self.target_pos[env_ids, 0, 2])
 
         self.stats[env_ids] = 0.  
         
@@ -677,10 +674,11 @@ class NavigationEnv(IsaacEnv):
         # d. smoothness reward for action smoothness
         penalty_smooth = (self.drone.vel_w[..., :3] - self.prev_drone_vel_w).norm(dim=-1)
         
-        # e. (deleted) height penalty reward for flying unnessarily high or low
-        # penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
-        # penalty_height[self.drone.pos[..., 2] > (self.height_range[..., 1] + 0.2)] = ( (self.drone.pos[..., 2] - self.height_range[..., 1] - 0.2)**2 )[self.drone.pos[..., 2] > (self.height_range[..., 1] + 0.2)]
-        # penalty_height[self.drone.pos[..., 2] < (self.height_range[..., 0] - 0.2)] = ( (self.height_range[..., 0] - 0.2 - self.drone.pos[..., 2])**2 )[self.drone.pos[..., 2] < (self.height_range[..., 0] - 0.2)]
+        # e. height penalty reward for flying unnessarily high or low
+        height_range = self.user_model.get_height_range() # get height range from user model (different for each env due to random goal sampling)
+        penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
+        penalty_height[self.drone.pos[..., 2] > (height_range[..., 1] + 0.2)] = ( (self.drone.pos[..., 2] - height_range[..., 1] - 0.2)**2 )[self.drone.pos[..., 2] > (height_range[..., 1] + 0.2)]
+        penalty_height[self.drone.pos[..., 2] < (height_range[..., 0] - 0.2)] = ( (height_range[..., 0] - 0.2 - self.drone.pos[..., 2])**2 )[self.drone.pos[..., 2] < (height_range[..., 0] - 0.2)]
         # TODO: add height limit of input human action simulator
 
         # e. Sparse Rewards for intent goal reaching
@@ -690,7 +688,7 @@ class NavigationEnv(IsaacEnv):
         self.intent_goal_counts += intent_goals_reached.long()
 
         # f. Collision condition with its penalty
-        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") >  (self.lidar_range - 0.3) # 0.3 collision radius
+        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3) # 0.3 collision radius
         collision = static_collision | dynamic_collision  # judge of any collision
         
         # Final reward calculation
@@ -700,7 +698,7 @@ class NavigationEnv(IsaacEnv):
             1.0 * reward_intent_complete +
             1.0 * reward_safety_dynamic -
             0.1 * penalty_smooth
-            # - 8.0 * penalty_height
+            - 8.0 * penalty_height
         )
 
         # Terminal reward (disabled) # TODO: try enable
@@ -722,7 +720,7 @@ class NavigationEnv(IsaacEnv):
         # (remove reach_goal flag as no goal target is provided)
         self.stats["return"] += self.reward
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
-        self.stats["reach_goal"] = self.intent_goal_counts.float() / self.max_intent_goals_per_episode # percentage of completed intent goals
+        self.stats["reach_goal"] = success_truncate.float()
         self.stats["collision"] = collision.float()
         self.stats["truncated"] = self.truncated.float()
 

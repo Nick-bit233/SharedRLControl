@@ -40,7 +40,9 @@ class UserModel:
 
         # batched buffers
         self.intent_goals = torch.zeros(self.num_envs, 3, device=self.device)
-        self.intent_timers = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # self.intent_timers = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # height range limit: [minz, maxz] * envs
+        self.height_range = torch.zeros(self.num_envs, 1, 2, device=self.device)
 
         self.prev_joystick_action = torch.zeros(self.num_envs, 4, device=self.device) # user action output (simulate joystick) last step
         self.prev_actual_action = torch.zeros(self.num_envs, 4, device=self.device) # actual action taken by the policy last step
@@ -75,13 +77,13 @@ class UserModel:
         K = env_ids.numel()
 
         # 重置意图计时器
-        new_timers = torch.randint(
-            self.min_steps,
-            self.max_steps,
-            (K,),
-            device=self.device,
-        )
-        self.intent_timers[env_ids] = new_timers
+        # new_timers = torch.randint(
+        #     self.min_steps,
+        #     self.max_steps,
+        #     (K,),
+        #     device=self.device,
+        # )
+        # self.intent_timers[env_ids] = new_timers
 
         # 为这些 env 重新采样风格参数（可选）
         self.conformance[env_ids] = torch.rand(K, 1, device=self.device)
@@ -109,6 +111,9 @@ class UserModel:
             new_goals[..., 2] = 0.5 + rand[..., 2] * max(sz - 0.5, 1e-3)
 
         self.intent_goals[env_ids] = new_goals
+        # 计算height range
+        self.height_range[env_ids, 0, 0] = torch.min(pos[:, 0, 2], new_goals[:, 2])
+        self.height_range[env_ids, 0, 1] = torch.max(pos[:, 0, 2], new_goals[:, 2])
 
         # ------- 4. 重置动作缓存 -------
         self.prev_joystick_action[env_ids] = 0.0
@@ -295,12 +300,14 @@ class UserModel:
         self.prev_actual_action = prev_agent_action.detach()
 
         # 1. 检查是否需要新意图
-        self.intent_timers -= 1
+        # self.intent_timers -= 1
         dist_to_goal = torch.norm(drone_pos_w - self.intent_goals, dim=-1)  # (N,)
         goal_reached = dist_to_goal < 0.5  # 到达意图目标的条件
         
         # 筛选出已经到达当前目标，需要新意图的无人机
-        need_new_intent = (self.intent_timers <= 0) | goal_reached
+        # 测试：去除timer
+        # need_new_intent = (self.intent_timers <= 0) | goal_reached
+        need_new_intent = goal_reached
         if need_new_intent.any():
             # idx 是需要新意图的无人机索引
             idx = need_new_intent.nonzero(as_tuple=False).squeeze(-1)
@@ -312,10 +319,10 @@ class UserModel:
             )
             self.intent_goals[idx] = new_goals
             # 重置意图计时器
-            new_timers = torch.randint(
-                self.min_steps, self.max_steps, (idx.numel(),), device=self.device
-            )
-            self.intent_timers[idx] = new_timers
+            # new_timers = torch.randint(
+            #     self.min_steps, self.max_steps, (idx.numel(),), device=self.device
+            # )
+            # self.intent_timers[idx] = new_timers
 
         # 2. 规划器：计算期望速度 V_t (N, 3) (世界系)
         vels_t_w = self._potential_field_planner(
@@ -393,11 +400,20 @@ class UserModel:
                 env_idx=visualize_env_idx,
                 pos=drone_pos_w[visualize_env_idx],
                 goal=self.intent_goals[visualize_env_idx],
+                action_b=au_local_noisy[visualize_env_idx]
             )
         
         return au_local_noisy, goal_reached
     
-    def _visualize_single_env(self, env_idx, pos, goal):
+    def get_height_range(self):
+        """
+        Get the height range [minz, maxz] for each env based on current pos and intent goal
+        Returns:
+            height_range: (num_envs, 2) tensor, minz and maxz for each env
+        """
+        return self.height_range
+    
+    def _visualize_single_env(self, env_idx, pos, goal, action_b):
         """
         Visualize the drone position and intent goal in the environment using debug drawing
         Inputs: 
@@ -410,18 +426,15 @@ class UserModel:
 
         p0 = pos.reshape(1, 3)
         g = goal.reshape(1, 3)
+        vel_b = action_b[0:3].reshape(1, 3)
 
         self.debug_draw.clear()
 
         # draw goal (red)
-        self.debug_draw.plot(x=g, size=4.0, color=(1.0,0.0,0.0,1.0))
+        self.debug_draw.plot(x=g, size=12.0, color=(1.0,0.0,0.0,1.0))
 
-        # draw path (yellow)
-        T = 20
-        for t in torch.linspace(0, 1, steps=T):
-            pt = pos + (goal - pos) * t
-            pt_batch = pt.reshape(1, 3)
-            self.debug_draw.plot(x=pt_batch, size=2.0, color=(1.0,0.9,0.2,1.0))
-    
-        # draw vector (green)
+        # draw goal vector (green)
         self.debug_draw.vector(p0, (g - p0), size=2.0, color=(0.1,1.0,0.1,1.0))
+
+        # draw current velocity vector (blue)
+        self.debug_draw.vector(p0, vel_b, size=2.0, color=(0.1,0.1,1.0,1.0))
