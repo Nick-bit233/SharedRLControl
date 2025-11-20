@@ -6,6 +6,7 @@ defaults:
   - user_model
 
 headless: False
+debug_mode: False
 device: "cuda:0"
 seed: 0
 

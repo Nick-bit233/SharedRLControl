@@ -1,3 +1,4 @@
+import csv
 import torch
 import einops
 import numpy as np
@@ -75,23 +76,28 @@ class NavigationEnv(IsaacEnv):
         self.max_intent_goals_per_episode = cfg.user_model.max_intent_goals  # model must complete these many intent goals in one episode to be counted as success
         self.intent_goal_counts = torch.zeros(self.num_envs, device=self.device)
         
-        # start and target 
+        # history action buffer for memory
         with torch.device(self.device):
-            # self.start_pos = torch.zeros(self.num_envs, 1, 3)
-
-            # (Disable target pos and direction variable)
-            # self.target_pos = torch.zeros(self.num_envs, 1, 3) # pos like: [x, y, z] * envs
-            # self.target_dir = torch.zeros(self.num_envs, 1, 3)
-            # self.height_range = torch.zeros(self.num_envs, 1, 2) # range like: [minz, maxz] * envs
-            
             # prev_drone_vel_w is used to compute acceleration-based penalty
             self.prev_drone_vel_w = torch.zeros(self.num_envs, 1 , 3)
             # previous action taken by the agent (drone) (vel_b[3], yaw_rate_b[1])
             # use this 4D action instaed of the prev_drone_vel_w in user model and GRU network.
             self.prev_agent_action = torch.zeros(self.num_envs, 4, device=self.device)  
-            # self.target_pos[:, 0, 0] = torch.linspace(-0.5, 0.5, self.num_envs) * 32.
-            # self.target_pos[:, 0, 1] = 24.
-            # self.target_pos[:, 0, 2] = 2. 
+        
+        # Debug mode
+        self.debug_mode = cfg.get("debug_mode", False)
+        if self.debug_mode:
+            print("[NavigationEnv]: Debug Mode is ON!")
+            import os
+            log_file_path = os.path.join(os.getcwd(), "outputs", "debug_log.csv")
+            self.debug_log_file = open(log_file_path, "w", newline="")
+            self.csv_writer = csv.writer(self.debug_log_file)
+            # 写入表头
+            self.csv_writer.writerow([
+                "step", "env_id", 
+                "reward_total", "reward_follow", "reward_safe", 
+                "human_vel_x", "drone_vel_x", "action_diff",
+            ])
 
     def _design_scene(self):
         # Initialize a drone in prim /World/envs/envs_0
@@ -632,15 +638,15 @@ class NavigationEnv(IsaacEnv):
         drone_orientation_q = self.root_state[..., 3:7].squeeze(1) # (B, 4)
         user_input_drone_state = torch.cat([drone_pos_w, drone_orientation_q, drone_vel_w], dim=-1) # (B, 10)
 
-        human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)
-        intent_goals_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-
+        human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)  # (N, 4)
+        intent_goals_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
+ 
         # Step the user model to get human action input
         human_actions_local, intent_goals_reached = self.user_model.step(
             user_input_drone_state,
             self.lidar_scan,
             prev_action_local,
-            visualize_env_idx=self.num_envs - 1 # render the last env (closer to the camera) for visualization
+            # visualize_env_idx=self.num_envs - 1 # render the last env (closer to the camera) for visualization
         )
 
 
@@ -665,8 +671,9 @@ class NavigationEnv(IsaacEnv):
             reward_safety_dynamic = 0.0
 
         # c. (changed) velocity_follow reward for closer to human action input
-        policy_action_vel_b = vel_b.unsqueeze(1) # (N, 1, 3)
-        human_action_vel_b = human_actions_local[..., :3].unsqueeze(1) # (N, 1, 3)
+        policy_action_vel_b = vel_b # (N, 3)
+        human_action_vel_b = human_actions_local[..., :3] # (N, 3)
+        human_action_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)  # for visualization only
         
         action_diff = torch.norm(policy_action_vel_b - human_action_vel_b, dim=-1)
         reward_vel_follow = torch.exp(-action_diff) # 奖励 [0, 1]  TODO: try other reward function
@@ -715,6 +722,48 @@ class NavigationEnv(IsaacEnv):
 
         # update previous velocity for smoothness calculation in the next ieteration
         self.prev_drone_vel_w = self.drone.vel_w[..., :3].clone()
+
+        # ----------------- Visualization and Debugging -----------------
+        if self.debug_mode and self._should_render(0):
+            self.debug_draw.clear()
+            viz_env_id = self.num_envs - 1  # should be 0
+
+            # 绘制向量 (转换回世界系以便绘制)
+            root_pos = drone_pos_w[viz_env_id]
+
+            # A. 绘制无人机实际速度 (蓝色箭头)
+            # drone_vel_b 已经在前面计算过了
+            drone_vel_w_vec = drone_vel_w[viz_env_id]
+            self.debug_draw.vector(
+                x=root_pos, 
+                v=drone_vel_w_vec * 1.0, # 长度缩放
+                color=(0, 0, 1, 1), # Blue
+                size=2.0
+            )
+
+            # B. 绘制人类期望速度 (绿色箭头)
+            # human_action_local 已经在前面计算过了
+            human_vel_w_vec = human_action_vel_w[viz_env_id]
+            self.debug_draw.vector(
+                x=root_pos, 
+                v=human_vel_w_vec * 1.0, 
+                color=(0, 1, 0, 1), # Green
+                size=2.0
+            )
+
+            # 3. 写入 CSV 日志
+            self.csv_writer.writerow([
+                self.progress_buf[viz_env_id].item(),
+                viz_env_id,
+                self.reward[viz_env_id].item(),
+                reward_vel_follow[viz_env_id].item(), # 假设您在前面定义了这些变量
+                reward_safety_static[viz_env_id].item(),
+                human_actions_local[0, 0].item(),
+                vel_b[viz_env_id, 0].item(),
+                action_diff[viz_env_id].item(),
+                # self.user_models[viz_env_id].intent_timer # 假设 UserModel 暴露了这个
+            ])
+            self.debug_log_file.flush() # 强制写入硬盘
 
         # # -----------------Training Stats-----------------
         # (remove reach_goal flag as no goal target is provided)

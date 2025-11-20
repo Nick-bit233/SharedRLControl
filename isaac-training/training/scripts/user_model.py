@@ -3,7 +3,7 @@ from omni_drones.envs.isaac_env import DebugDraw
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
 
 # User Model to simulate human actions
-# TODO: finish it by sampling from different style params and distributions
+# TODO: do not planning, and gengerate action based on a trajectory pre-sampling
 class UserModel:
     def __init__(self, num_envs, cfg, lidar, lidar_resolution, debug_draw: DebugDraw=None):
         self.num_envs = num_envs
@@ -288,6 +288,15 @@ class UserModel:
         vels_t = total_forces / speed * max_speed  # (N,3)
         return vels_t  # 为每个无人机返回期望速度向量，(N,3)
 
+
+    def _traj_action_sampler(self):
+
+        # dummy: just return a stright forward action
+        N = self.num_envs
+        au_local = torch.zeros(N, 4, device=self.device)
+        au_local[:, 0] = self.max_speed * 0.5  # half max speed forward
+        return au_local
+
     def step(self, drone_state, lidar_scan, prev_agent_action, visualize_env_idx=None):
         
         # 提取无人机状态
@@ -325,58 +334,30 @@ class UserModel:
             # self.intent_timers[idx] = new_timers
 
         # 2. 规划器：计算期望速度 V_t (N, 3) (世界系)
-        vels_t_w = self._potential_field_planner(
-            drone_pos_w,
-            drone_orientation_q,
-            lidar_scan
-        )
+        # vels_t_w = self._potential_field_planner(
+        #     drone_pos_w,
+        #     drone_orientation_q,
+        #     lidar_scan
+        # )
+        action_local = self._traj_action_sampler()  # (N,4)
 
-        # 3. 将速度映射到控制（目前只映射线速度）
-        prev_j_vel_w = self.prev_joystick_action[:, 0:3]  # (N,3)
-        prev_a_vel_w = prev_agent_action[:, 0:3]  # (N,3)
+        # # 3. 将速度映射到控制（目前只映射线速度）
+        # prev_j_vel_w = self.prev_joystick_action[:, 0:3]  # (N,3)
+        # prev_a_vel_w = prev_agent_action[:, 0:3]  # (N,3)
 
-        # s_t = J_t-1 + (p_t - J_t-1) * Pgain
-        gamma = self.dexterity  
-        Pgain = 0.5 + gamma * 0.5  # Pgain ∝ gamma, 映射到 [0.5, 1.0] 之间
-        vels_smooth_w = prev_j_vel_w + (vels_t_w - prev_j_vel_w) * Pgain
-
-        # J_t = s_t + (J_t-1 - Aa_t-1)(1 - α)
-        alpha = self.conformance
-        action_diff = prev_j_vel_w - prev_a_vel_w
-        vels_u_w = vels_smooth_w + (action_diff) * (1.0 - alpha)
-        
-        # (D) 添加抖动(模拟不精确的操作和控制信号噪声等)
-        noise = (torch.randn_like(vels_u_w) * self.noise_level)
-        vels_u_w_noisy = vels_u_w + noise
-        
-        # --- 4. 转换回机体坐标系，以符合训练网络输入规范 ---
-        vels_u_b_noisy = quat_rotate_inverse(drone_orientation_q, vels_u_w_noisy)
-        # transfrorm to 4D action (keep yaw speed rate = 0)
-        au_world_noisy = torch.cat([vels_u_w_noisy, torch.zeros(N, 1, device=self.device)], dim=-1)
-        au_local_noisy = torch.cat([vels_u_b_noisy, torch.zeros(N, 1, device=self.device)], dim=-1)
-
-
-        # # TODO: user_model需要参数来允许生成带有偏航率的动作
-        # # (A) 转换 V_t 到 4D (vel_w[3], yaw_rate_w[1])
-        # # (简单规划器只输出了vel_w[3]，假设yaw_rate=0)
-        # action_plan_t = torch.cat([vels_t_w, torch.zeros(N, 1, device=self.device)], dim=-1)  # (N,4)
-        
-        # # (B) 平滑输出动作
-        # # J_t: joystick action，即用户模型上一个输出的动作
-        # # p_t: planned action 
         # # s_t = J_t-1 + (p_t - J_t-1) * Pgain
-        # # 参数 Dexterity gamma ∈ [0,1]，刻画模拟用户的熟练度, 越大则越灵活（响应新的规划动作越快），越小则越平滑
         # gamma = self.dexterity  
         # Pgain = 0.5 + gamma * 0.5  # Pgain ∝ gamma, 映射到 [0.5, 1.0] 之间
-        # action_smooth_t = self.prev_joystick_action + (action_plan_t - self.prev_joystick_action) * Pgain
+        # vels_smooth_w = prev_j_vel_w + (vels_t_w - prev_j_vel_w) * Pgain
 
-        # # (C) Adaptability Control，模拟用户对实际动作的反馈调整
-        # # Aa: 上一个实际输出的控制动作（模型输出）
         # # J_t = s_t + (J_t-1 - Aa_t-1)(1 - α)
-        # # 参数 Conformance α ∈ [0,1], 越大越服从意图，则对实际动作的反馈调整越小
         # alpha = self.conformance
-        # action_diff = self.prev_joystick_action - prev_agent_action
-        # au_world = action_smooth_t + (action_diff) * (1.0 - alpha)
+        # action_diff = prev_j_vel_w - prev_a_vel_w
+        # vels_u_w = vels_smooth_w + (action_diff) * (1.0 - alpha)
+        
+        # # (D) 添加抖动(模拟不精确的操作和控制信号噪声等)
+        # noise = (torch.randn_like(vels_u_w) * self.noise_level)
+        # vels_u_w_noisy = vels_u_w + noise
 
         # # TODO: 是否需要额外的积分平滑（类似PID控制器中的I项）
         # # self.It = self.It + (action_diff) * (1.0 - alpha)
@@ -384,12 +365,18 @@ class UserModel:
         # # Igain = 0.1 # 平滑参数，可调
         # # au_world = action_joystick_t + self.It * Igain
         
-        # # (D) 添加抖动(模拟不精确的操作和控制信号噪声等)
-        # noise = (torch.randn_like(au_world) * self.noise_level)
-        # au_world_noisy = au_world + noise
-        
         # # --- 4. 转换回机体坐标系，以符合训练网络输入规范 ---
-        # au_local_noisy = quat_rotate_inverse(drone_orientation_q, au_world_noisy)
+        # vels_u_b_noisy = quat_rotate_inverse(drone_orientation_q, vels_u_w_noisy)
+        # # transfrorm to 4D action (keep yaw speed rate = 0)
+        # au_world_noisy = torch.cat([vels_u_w_noisy, torch.zeros(N, 1, device=self.device)], dim=-1)
+        # au_local_noisy = torch.cat([vels_u_b_noisy, torch.zeros(N, 1, device=self.device)], dim=-1)
+
+        noise = (torch.randn_like(action_local) * self.noise_level)
+        au_local_noisy = action_local + noise
+
+        vels_u_b_noisy = au_local_noisy[:, 0:3]
+        # 转换到世界系
+        au_world_noisy = torch.cat([quat_rotate(drone_orientation_q, vels_u_b_noisy), au_local_noisy[:, 3:4]], dim=-1)
 
         # --- 5. 更新Joystick动作（保持世界系）并返回 ---
         self.prev_joystick_action = au_world_noisy.detach() # 存储下一步使用
@@ -429,9 +416,11 @@ class UserModel:
         vel_b = action_b[0:3].reshape(1, 3)
 
         self.debug_draw.clear()
-
+        g_top = g + torch.tensor([0, 0, 0.5], device=self.device) # 向上 0.5m
+        line_points = torch.cat([g, g_top], dim=0) # (2, 3)
+        
         # draw goal (red)
-        self.debug_draw.plot(x=g, size=12.0, color=(1.0,0.0,0.0,1.0))
+        self.debug_draw.plot(x=line_points, size=12.0, color=(1.0,0.0,0.0,1.0))
 
         # draw goal vector (green)
         self.debug_draw.vector(p0, (g - p0), size=2.0, color=(0.1,1.0,0.1,1.0))
