@@ -39,6 +39,7 @@ class NavigationEnv(IsaacEnv):
         self.lidar_hbeams = int(360/self.lidar_hres)
         # Env map params:
         self.map_range = cfg.env.map_range  # [x_range, y_range, z_range], half extents
+        self.platform_width = cfg.env.platform_width  # square platform width at the center of the map
 
         super().__init__(cfg, cfg.headless)
         
@@ -78,24 +79,28 @@ class NavigationEnv(IsaacEnv):
         
         # history action buffer for memory
         with torch.device(self.device):
+            self.start_pos = torch.zeros(self.num_envs, 3, device=self.device)
             # prev_drone_vel_w is used to compute acceleration-based penalty
-            self.prev_drone_vel_w = torch.zeros(self.num_envs, 1 , 3)
+            self.prev_drone_vel_w = torch.zeros(self.num_envs, 3, device=self.device)
             # previous action taken by the agent (drone) (vel_b[3], yaw_rate_b[1])
             # use this 4D action instaed of the prev_drone_vel_w in user model and GRU network.
             self.prev_agent_action = torch.zeros(self.num_envs, 4, device=self.device)  
         
+        # visualize options
+        self.render_lidar = False
         # Debug mode
         self.debug_mode = cfg.get("debug_mode", False)
         if self.debug_mode:
-            print("[NavigationEnv]: Debug Mode is ON!")
             import os
-            log_file_path = os.path.join(os.getcwd(), "outputs", "debug_log.csv")
+            log_output_dir = cfg.get("log_output_dir", os.path.join(os.getcwd(), "outputs"))
+            print("[NavigationEnv]: Debug Mode is ON!")
+            log_file_path = os.path.join(log_output_dir, "debug_log.csv")
             self.debug_log_file = open(log_file_path, "w", newline="")
             self.csv_writer = csv.writer(self.debug_log_file)
             # 写入表头
             self.csv_writer.writerow([
-                "step", "env_id", 
-                "reward_total", "reward_follow", "reward_safe", 
+                "step", "env_id", "mode", "start_pos_x", "start_pos_y", "start_pos_z",
+                "reward_total", "reward_follow", "reward_safe", "reward_penalty_smooth","reward_penalty_height", 
                 "human_vel_x", "drone_vel_x", "action_diff",
             ])
 
@@ -149,7 +154,7 @@ class NavigationEnv(IsaacEnv):
                         obstacle_width_range=(0.4, 1.1),
                         obstacle_height_range=[1.0, 1.5, 2.0, 4.0, 6.0],
                         obstacle_height_probability=[0.1, 0.15, 0.20, 0.55],
-                        platform_width=0.0,
+                        platform_width=self.platform_width,
                     ),
                 },
             ),
@@ -406,43 +411,34 @@ class NavigationEnv(IsaacEnv):
         self.drone._reset_idx(env_ids, self.training)
         
         # Reset drone state (vel, rot and pos)
+        sx, sy, sz = self.map_range  # half-extent in x, y, and z-max
         if (self.training):  # get random start position
-            # masks and shifts is used to make start pos at certain side of x-y plane
-            # masks = torch.tensor([[1., 0., 1.], [1., 0., 1.], [0., 1., 1.], [0., 1., 1.]], dtype=torch.float, device=self.device)
-            # shifts = torch.tensor([[0., 24., 0.], [0., -24., 0.], [24., 0., 0.], [-24., 0., 0.]], dtype=torch.float, device=self.device)
-            # mask_indices = np.random.randint(0, masks.size(0), size=env_ids.size(0))
-            # selected_masks = masks[mask_indices].unsqueeze(1)
-            # selected_shifts = shifts[mask_indices].unsqueeze(1)
+            s_radius = self.platform_width / 2 
 
-            # generate random positions (Changed to the whole x-y plane within -24 to 24)
-            # TODO: calculate by self.map_range
-            pos = 48. * torch.rand(env_ids.size(0), 1, 3, dtype=torch.float, device=self.device) + (-24.)
+            # generate random start positions (within the platform area near the center of the map)
+            pos = s_radius * (torch.rand(env_ids.size(0), 1, 3, dtype=torch.float, device=self.device) - 0.5)
             heights = 0.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (2.5 - 0.5)
             pos[:, 0, 2] = heights  # pos z: range from 0.5 to 2.5
-            # pos = pos * selected_masks + selected_shifts
-            
-            # pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
-            # pos[:, 0, 0] = (env_ids / self.num_envs - 0.5) * 32.
-            # pos[:, 0, 1] = -24.
-            # pos[:, 0, 2] = 2.
-        else:  # for eval, using fixed start positions (grid distribution)
-            sx, sy, sz = self.map_range  # half-extent in x, y, and z-max
-            sx = sx * 0.8  # leave some margin
-            sy = sy * 0.8
-            # choose a near-square grid based on total envs
-            n_cols = int(np.ceil(np.sqrt(self.num_envs)))
-            n_rows = int(np.ceil(self.num_envs / n_cols))
-            # grid coordinates across the full map
-            x_coords = torch.linspace(-sx, sx, steps=n_cols, device=self.device)
-            y_coords = torch.linspace(-sy, sy, steps=n_rows, device=self.device)
-            # map each env_id to (row, col)
-            row_idx = (env_ids // n_cols).clamp(max=n_rows - 1)
-            col_idx = (env_ids % n_cols).clamp(max=n_cols - 1)
 
+            # sx = sx * 0.8  # leave some margin
+            # sy = sy * 0.8
+            # # choose a near-square grid based on total envs
+            # n_cols = int(np.ceil(np.sqrt(self.num_envs)))
+            # n_rows = int(np.ceil(self.num_envs / n_cols))
+            # # grid coordinates across the full map
+            # x_coords = torch.linspace(-sx, sx, steps=n_cols, device=self.device)
+            # y_coords = torch.linspace(-sy, sy, steps=n_rows, device=self.device)
+            # # map each env_id to (row, col)
+            # row_idx = (env_ids // n_cols).clamp(max=n_rows - 1)
+            # col_idx = (env_ids % n_cols).clamp(max=n_cols - 1)
+        else:
+            # assign positions on the center of the map grid
             pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
-            pos[:, 0, 0] = x_coords[col_idx]
-            pos[:, 0, 1] = y_coords[row_idx]
+            pos[:, 0, 0] = 0
+            pos[:, 0, 1] = 0
             pos[:, 0, 2] = min(2.0, sz)
+
+        self.start_pos = pos.clone()  # record start pos for debug
         
         # Coordinate change: after reset, the drone's target direction should be changed
         # self.target_dir[env_ids] = self.target_pos[env_ids] - pos
@@ -474,7 +470,6 @@ class NavigationEnv(IsaacEnv):
         )
         lidar_scan_sel = lidar_scan[env_ids]
         self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids, lidar_scan=lidar_scan_sel)
-
 
         self.stats[env_ids] = 0.  
         
@@ -646,7 +641,6 @@ class NavigationEnv(IsaacEnv):
             user_input_drone_state,
             self.lidar_scan,
             prev_action_local,
-            # visualize_env_idx=self.num_envs - 1 # render the last env (closer to the camera) for visualization
         )
 
 
@@ -675,11 +669,15 @@ class NavigationEnv(IsaacEnv):
         human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         human_action_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)  # for visualization only
         
-        action_diff = torch.norm(policy_action_vel_b - human_action_vel_b, dim=-1)
+        action_diff = torch.norm(policy_action_vel_b - human_action_vel_b, dim=-1, keepdim=True)
         reward_vel_follow = torch.exp(-action_diff) # 奖励 [0, 1]  TODO: try other reward function
         
         # d. smoothness reward for action smoothness
-        penalty_smooth = (self.drone.vel_w[..., :3] - self.prev_drone_vel_w).norm(dim=-1)
+        current_vel_w = self.drone.vel_w[..., :3]
+        # squeeze the drone velocity tensor if needed
+        if current_vel_w.ndim == 3 and current_vel_w.shape[1] == 1:
+            current_vel_w = current_vel_w.squeeze(1)
+        penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
         
         # e. height penalty reward for flying unnessarily high or low
         height_range = self.user_model.get_height_range() # get height range from user model (different for each env due to random goal sampling)
@@ -704,9 +702,19 @@ class NavigationEnv(IsaacEnv):
             1.0 * reward_safety_static + 
             1.0 * reward_intent_complete +
             1.0 * reward_safety_dynamic -
-            0.1 * penalty_smooth
-            - 8.0 * penalty_height
+            0.1 * penalty_smooth- 
+            8.0 * penalty_height
         )
+        # ---- Debug print shapes ----
+        # print(f"""
+        #     reward shapes: 
+        #     vel_follow {reward_vel_follow.shape}, 
+        #     safety_static {reward_safety_static.shape}, 
+        #     intent_complete {reward_intent_complete.shape},
+        #     smoothness penalty {penalty_smooth.shape},
+        #     height penalty {penalty_height.shape}
+        #     reward total {self.reward.shape}"""
+        # )
 
         # Terminal reward (disabled) # TODO: try enable
         # self.reward[collision] -= 50. # collision
@@ -721,15 +729,37 @@ class NavigationEnv(IsaacEnv):
         self.truncated = success_truncate | timeout_truncate
 
         # update previous velocity for smoothness calculation in the next ieteration
-        self.prev_drone_vel_w = self.drone.vel_w[..., :3].clone()
+        self.prev_drone_vel_w = current_vel_w.clone()
 
         # ----------------- Visualization and Debugging -----------------
         if self.debug_mode and self._should_render(0):
             self.debug_draw.clear()
-            viz_env_id = self.num_envs - 1  # should be 0
+            
+            # get the first (env_id=0) lidar position
+            view_pos = self.lidar.data.pos_w[0]
+            # set the camera to focus on the lidar position (which is the drone)
+            if self.cfg.global_view:
+                set_camera_view(
+                    eye=torch.tensor([-3.0, 0.0, 20.0]),  # global top-down view
+                    target=torch.tensor([0.0, 0.0, 0.0])                        
+                )
+            else:
+                set_camera_view(
+                    # use cfg viewer settings as offset
+                    eye=view_pos.cpu() + torch.as_tensor(self.cfg.viewer.eye),
+                    target=view_pos.cpu() + torch.as_tensor(self.cfg.viewer.lookat)                        
+                )
+            if self.render_lidar:
+                # rendering LiDAR rays (360 degrees horizontal)
+                v = (self.lidar.data.ray_hits_w[0] - view_pos).reshape(*self.lidar_resolution, 3)
+                self.debug_draw.vector(view_pos.expand_as(v[:, 0]), v[:, 0])
+                self.debug_draw.vector(view_pos.expand_as(v[:, -1]), v[:, -1])
+
+            viz_env_id = 0
 
             # 绘制向量 (转换回世界系以便绘制)
-            root_pos = drone_pos_w[viz_env_id]
+            root_pos = drone_pos_w[viz_env_id]  # TODO: assert root pos == view pos
+            # print(f"[Compare] view pos: {view_pos}, root pos: {root_pos}")
 
             # A. 绘制无人机实际速度 (蓝色箭头)
             # drone_vel_b 已经在前面计算过了
@@ -753,15 +783,20 @@ class NavigationEnv(IsaacEnv):
 
             # 3. 写入 CSV 日志
             self.csv_writer.writerow([
-                self.progress_buf[viz_env_id].item(),
-                viz_env_id,
-                self.reward[viz_env_id].item(),
-                reward_vel_follow[viz_env_id].item(), # 假设您在前面定义了这些变量
+                self.progress_buf[viz_env_id].item(),  # step
+                viz_env_id, # env id
+                "train" if self.training else "eval",  # mode,
+                self.start_pos[viz_env_id, 0, 0].item(),  # start x
+                self.start_pos[viz_env_id, 0, 1].item(),  # start y
+                self.start_pos[viz_env_id, 0, 2].item(),  # start z
+                self.reward[viz_env_id].item(),  # reward total
+                reward_vel_follow[viz_env_id].item(),
                 reward_safety_static[viz_env_id].item(),
+                penalty_smooth[viz_env_id].item(),
+                penalty_height[viz_env_id].item(),
                 human_actions_local[0, 0].item(),
                 vel_b[viz_env_id, 0].item(),
                 action_diff[viz_env_id].item(),
-                # self.user_models[viz_env_id].intent_timer # 假设 UserModel 暴露了这个
             ])
             self.debug_log_file.flush() # 强制写入硬盘
 

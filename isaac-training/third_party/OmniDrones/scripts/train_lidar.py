@@ -390,6 +390,8 @@ def main(cfg):
             }
             info.update(stats)
             print("my info: ", info)
+        
+        # train policy
         info.update(policy.train_op(data.to_tensordict()))
 
         if eval_interval > 0 and i % eval_interval == 0:

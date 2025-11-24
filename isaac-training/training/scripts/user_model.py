@@ -380,15 +380,6 @@ class UserModel:
 
         # --- 5. 更新Joystick动作（保持世界系）并返回 ---
         self.prev_joystick_action = au_world_noisy.detach() # 存储下一步使用
-
-        # 可视化选项
-        if visualize_env_idx is not None and self.debug_draw is not None:
-            self._visualize_single_env(
-                env_idx=visualize_env_idx,
-                pos=drone_pos_w[visualize_env_idx],
-                goal=self.intent_goals[visualize_env_idx],
-                action_b=au_local_noisy[visualize_env_idx]
-            )
         
         return au_local_noisy, goal_reached
     
@@ -400,30 +391,30 @@ class UserModel:
         """
         return self.height_range
     
-    def _visualize_single_env(self, env_idx, pos, goal, action_b):
-        """
-        Visualize the drone position and intent goal in the environment using debug drawing
-        Inputs: 
-            env_idx: int, index of the environment to visualize
-            pos: (3,) tensor, drone position in world frame
-            goal: (3,) tensor, intent goal position in world frame
-        """
-        if self.debug_draw is None:
-            return
+    # def _visualize_single_env(self, env_idx, pos, goal, action_b):
+    #     """
+    #     Visualize the drone position and intent goal in the environment using debug drawing
+    #     Inputs: 
+    #         env_idx: int, index of the environment to visualize
+    #         pos: (3,) tensor, drone position in world frame
+    #         goal: (3,) tensor, intent goal position in world frame
+    #     """
+    #     if self.debug_draw is None:
+    #         return
 
-        p0 = pos.reshape(1, 3)
-        g = goal.reshape(1, 3)
-        vel_b = action_b[0:3].reshape(1, 3)
+    #     p0 = pos.reshape(1, 3)
+    #     g = goal.reshape(1, 3)
+    #     vel_b = action_b[0:3].reshape(1, 3)
 
-        self.debug_draw.clear()
-        g_top = g + torch.tensor([0, 0, 0.5], device=self.device) # 向上 0.5m
-        line_points = torch.cat([g, g_top], dim=0) # (2, 3)
+    #     self.debug_draw.clear()
+    #     g_top = g + torch.tensor([0, 0, 0.5], device=self.device) # 向上 0.5m
+    #     line_points = torch.cat([g, g_top], dim=0) # (2, 3)
         
-        # draw goal (red)
-        self.debug_draw.plot(x=line_points, size=12.0, color=(1.0,0.0,0.0,1.0))
+    #     # draw goal (red)
+    #     self.debug_draw.plot(x=line_points, size=12.0, color=(1.0,0.0,0.0,1.0))
 
-        # draw goal vector (green)
-        self.debug_draw.vector(p0, (g - p0), size=2.0, color=(0.1,1.0,0.1,1.0))
+    #     # draw goal vector (green)
+    #     self.debug_draw.vector(p0, (g - p0), size=2.0, color=(0.1,1.0,0.1,1.0))
 
-        # draw current velocity vector (blue)
-        self.debug_draw.vector(p0, vel_b, size=2.0, color=(0.1,0.1,1.0,1.0))
+    #     # draw current velocity vector (blue)
+    #     self.debug_draw.vector(p0, vel_b, size=2.0, color=(0.1,0.1,1.0,1.0))

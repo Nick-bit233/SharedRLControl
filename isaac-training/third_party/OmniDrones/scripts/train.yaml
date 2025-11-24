@@ -4,12 +4,12 @@ hydra:
   # see https://hydra.cc/docs/advanced/search_path/
    - file://../cfg
 
-headless: false # 是否显示isaac GUI
+headless: true # 是否显示isaac GUI
 
 sim: ${task.sim} # 需要输入当前的task名：例如python xxxx task=Forest， 会找到cfg/task/Forest.yaml
 env: ${task.env} # 同样在Forest.yaml中有env变量
 
-total_frames: 150_000_000
+total_frames: 20_000_000
 max_iters: -1
 eval_interval: -1
 save_interval: -1
@@ -27,12 +27,12 @@ wandb:
   job_type: train
   entity: marl-drones
   project: omnidrones
-  mode: online # set to 'disabled' when debugging locally
+  mode: offline # set to 'disabled' when debugging locally
   run_id: 
   monitor_gym: True
   tags: 
 
 defaults:
-  - task: Hover
+  - task: Forest
   - algo: ppo
   - _self_

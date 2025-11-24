@@ -205,6 +205,7 @@ class Forest(IsaacEnv):
                         obstacle_height_mode="choice",
                         obstacle_width_range=(0.4, 0.8),
                         obstacle_height_range=(3.0, 4.0),
+                        obstacle_height_probability=[0.1, 0.15, 0.20],
                         platform_width=1.5,
                     )
                 },

@@ -86,10 +86,12 @@ class PPO(TensorDictModuleBase):
         self.gru_model = GRUModule(
                 input_size=gru_input_dim,
                 hidden_size=gru_hidden_dim,
-                num_layers=self.gru_num_layers,
-                in_keys=["_feature_cat", "recurrent_state"],
-                out_keys=["_gru_out", ("next", "recurrent_state")],
+                device=self.device,
+                in_key="_embed",
+                out_key="_embed",
             )
+        print("in keys: ", self.gru_model.in_keys)
+        print("out keys: ", self.gru_model.out_keys)
         
         # Rearrange the Feature Extractor network, include a new GRU module.
         self.feature_extractor = TensorDictSequential(
@@ -104,13 +106,13 @@ class PPO(TensorDictModuleBase):
                     ("agents", "observation", "human_action"),
                     ("agents", "observation", "prev_action")
                 ], 
-                out_key="_feature_cat",  # Concat a new observation feature contain human actions
+                out_key="_embed",  # Concat a new observation feature contain human actions
                 del_keys=False
             ),  
-            # 4. Add a GRU network, accept "_feature_cat" as input
+            # 4. Add a GRU network
             self.gru_model,
             # 5. Final fusion MLP
-            TensorDictModule(make_mlp([256, 256]), ["_gru_out"], ["_feature"]),
+            TensorDictModule(make_mlp([256, 256]), ["_embed"], ["_feature"]),
         ).to(self.device)
 
         # Actor network, now get input from the GRU output feature
@@ -231,7 +233,7 @@ class PPO(TensorDictModuleBase):
 
             t_chunk = t // self.cfg.num_minibatches
             if t_chunk == 0:
-                raise ValueError("num_minibatches is larger than the number of frames collected per env.")
+                raise ValueError(f"num_minibatches is larger than the number of frames collected per env. batch:{batch}, training_frame_num:{t}, num_minibatches:{self.cfg.num_minibatches}")
             for i in range(0, t, t_chunk):
                 if i + t_chunk > t:
                     continue  # drop the last incomplete chunk (TODO: check if need padding)
