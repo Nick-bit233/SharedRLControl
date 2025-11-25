@@ -69,7 +69,7 @@ class Camera:
         if isinstance(self.device, str) and "cuda" in self.device:
             self.device = self.device.split(":")[0]
         self.annotators = []
-        self.prim_paths = prim_paths
+        self.prim_paths = []
 
     def spawn(
         self, 
