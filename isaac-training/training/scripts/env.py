@@ -70,12 +70,8 @@ class NavigationEnv(IsaacEnv):
             num_envs=self.num_envs,
             cfg=cfg, 
             lidar=self.lidar, 
-            lidar_resolution=self.lidar_resolution,
-            debug_draw=self.debug_draw
+            lidar_resolution=self.lidar_resolution
         ) 
-        # Intent goal counts params
-        self.max_intent_goals_per_episode = cfg.user_model.max_intent_goals  # model must complete these many intent goals in one episode to be counted as success
-        self.intent_goal_counts = torch.zeros(self.num_envs, device=self.device)
         
         # history action buffer for memory
         with torch.device(self.device):
@@ -85,7 +81,8 @@ class NavigationEnv(IsaacEnv):
             # previous action taken by the agent (drone) (vel_b[3], yaw_rate_b[1])
             # use this 4D action instaed of the prev_drone_vel_w in user model and GRU network.
             self.prev_agent_action = torch.zeros(self.num_envs, 4, device=self.device)  
-        
+            self.intent_complete_counts = torch.zeros(self.num_envs, 1, device=self.device)
+
         # visualize options
         self.render_lidar = False
         # Debug mode
@@ -100,8 +97,8 @@ class NavigationEnv(IsaacEnv):
             # 写入表头
             self.csv_writer.writerow([
                 "step", "env_id", "mode", "start_pos_x", "start_pos_y", "start_pos_z",
-                "reward_total", "reward_follow", "reward_safe", "reward_penalty_smooth","reward_penalty_height", 
-                "human_vel_x", "drone_vel_x", "action_diff",
+                "reward_total", "reward_vel", "reward_intent_complete", "reward_safe", "reward_penalty_smooth","reward_penalty_height", 
+                "human_vel_x", "drone_vel_x",
             ])
 
     def _design_scene(self):
@@ -363,7 +360,7 @@ class NavigationEnv(IsaacEnv):
         stats_spec = CompositeSpec({
             "return": UnboundedContinuousTensorSpec(1),
             "episode_len": UnboundedContinuousTensorSpec(1),
-            "reach_goal": UnboundedContinuousTensorSpec(1),
+            "intent_completion": UnboundedContinuousTensorSpec(1),
             "collision": UnboundedContinuousTensorSpec(1),
             "truncated": UnboundedContinuousTensorSpec(1),
         }).expand(self.num_envs).to(self.device)
@@ -461,15 +458,15 @@ class NavigationEnv(IsaacEnv):
         self.prev_agent_action[env_ids] = 0.
 
         # Update lidar sensor when reset
-        self.lidar.update(self.cfg.sim.dt)
-        lidar_scan = self.lidar_range - (
-            (self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1))
-            .norm(dim=-1)
-            .clamp_max(self.lidar_range)
-            .reshape(self.num_envs, 1, *self.lidar_resolution)
-        )
-        lidar_scan_sel = lidar_scan[env_ids]
-        self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids, lidar_scan=lidar_scan_sel)
+        # self.lidar.update(self.cfg.sim.dt)
+        # lidar_scan = self.lidar_range - (
+        #     (self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1))
+        #     .norm(dim=-1)
+        #     .clamp_max(self.lidar_range)
+        #     .reshape(self.num_envs, 1, *self.lidar_resolution)
+        # )
+        # lidar_scan_sel = lidar_scan[env_ids]
+        self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids)
 
         self.stats[env_ids] = 0.  
         
@@ -634,15 +631,13 @@ class NavigationEnv(IsaacEnv):
         user_input_drone_state = torch.cat([drone_pos_w, drone_orientation_q, drone_vel_w], dim=-1) # (B, 10)
 
         human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)  # (N, 4)
-        intent_goals_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
+        intent_completed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
  
         # Step the user model to get human action input
-        human_actions_local, intent_goals_reached = self.user_model.step(
+        human_actions_local, intent_completed, intent_goals = self.user_model.step(
             user_input_drone_state,
-            self.lidar_scan,
             prev_action_local,
         )
-
 
         # -----------------Network Input Final--------------
         obs = {
@@ -664,45 +659,67 @@ class NavigationEnv(IsaacEnv):
         else:
             reward_safety_dynamic = 0.0
 
-        # c. (changed) velocity_follow reward for closer to human action input
-        policy_action_vel_b = vel_b # (N, 3)
-        human_action_vel_b = human_actions_local[..., :3] # (N, 3)
-        human_action_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)  # for visualization only
-        
-        action_diff = torch.norm(policy_action_vel_b - human_action_vel_b, dim=-1, keepdim=True)
-        reward_vel_follow = torch.exp(-action_diff) # 奖励 [0, 1]  TODO: try other reward function
-        
-        # d. smoothness reward for action smoothness
-        current_vel_w = self.drone.vel_w[..., :3]
+        current_vel_w = self.drone.vel_w[..., :3] # (N, 1, 3)
         # squeeze the drone velocity tensor if needed
         if current_vel_w.ndim == 3 and current_vel_w.shape[1] == 1:
-            current_vel_w = current_vel_w.squeeze(1)
+            current_vel_w = current_vel_w.squeeze(1)  # (N, 3)
+        current_yaw_rate = self.drone.vel_w[..., 5:6]  # (N, 1, 1) get wz as yaw rate
+        if current_yaw_rate.ndim == 3 and current_yaw_rate.shape[1] == 1:
+            current_yaw_rate = current_yaw_rate.squeeze(-1)  # (N, 1)
+
+        # c. (changed) velocity_follow reward (penalty)
+        # TODO: 如果L2惩罚有效，合并到4D动作中
+        # 速度惩罚：速度误差的L2范数
+        human_action_vel_b = human_actions_local[..., :3] # (N, 3)
+        target_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)
+
+        vel_error_norm = (torch.norm(current_vel_w - target_vel_w, dim=-1, keepdim=True)).clamp(min=1e-6)
+        reward_vel = -vel_error_norm  # L2 norm penalty
+        
+        # 朝向惩罚
+        target_yaw_rate = human_actions_local[..., 3:4]  # (N, 1)
+        yaw_rate_error_norm = (torch.norm(current_yaw_rate - target_yaw_rate, dim=-1, keepdim=True)).clamp(min=1e-6)
+        reward_vel += -yaw_rate_error_norm  # L2 norm penalty
+        
+        # d. smoothness reward for action smoothness
         penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
         
         # e. height penalty reward for flying unnessarily high or low
         height_range = self.user_model.get_height_range() # get height range from user model (different for each env due to random goal sampling)
+        h_min, h_max = height_range[..., 0], height_range[..., 1]
+        # penalty when z > h_max + 0.2 or z < h_min - 0.2
         penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
-        penalty_height[self.drone.pos[..., 2] > (height_range[..., 1] + 0.2)] = ( (self.drone.pos[..., 2] - height_range[..., 1] - 0.2)**2 )[self.drone.pos[..., 2] > (height_range[..., 1] + 0.2)]
-        penalty_height[self.drone.pos[..., 2] < (height_range[..., 0] - 0.2)] = ( (height_range[..., 0] - 0.2 - self.drone.pos[..., 2])**2 )[self.drone.pos[..., 2] < (height_range[..., 0] - 0.2)]
-        # TODO: add height limit of input human action simulator
+        z = self.drone.pos[..., 2]
+        penalty_height[z > (h_max + 0.2)] = ((z - h_max - 0.2)**2)[z > (h_max + 0.2)]
+        penalty_height[z < (h_min - 0.2)] = ((h_min - 0.2 - z)**2)[z < (h_min - 0.2)]
 
         # e. Sparse Rewards for intent goal reaching
         reward_intent_complete = torch.zeros(self.num_envs, 1, device=self.device)
-        reward_intent_complete[intent_goals_reached] = 10.0  # Every time when intent goal is reached, give a large reward
+        reward_intent_complete[intent_completed] = 10.0  # Every time when safely end an intent, give a large reward
         
-        self.intent_goal_counts += intent_goals_reached.long()
+        self.intent_complete_counts += intent_completed.long().unsqueeze(1)  # TODO: norm by episode length?
 
         # f. Collision condition with its penalty
         static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3) # 0.3 collision radius
         collision = static_collision | dynamic_collision  # judge of any collision
         
+        # (Optional) distance to intent goal reward (dense)
+        # Try: add intent_goal to observation and use dense reward to speed up training
+        reward_intent_goal = torch.zeros(self.num_envs, 1, device=self.device)
+        if intent_goals is not None:
+            dist_to_goal = torch.norm(intent_goals - drone_pos_w, dim=-1, keepdim=True)
+            reward_intent_goal = -dist_to_goal
+        else:
+            reward_intent_goal = 0.0
+
         # Final reward calculation
         self.reward = (
-            0.1 * reward_vel_follow +
+            1.0 * reward_vel +
             1.0 * reward_safety_static + 
             1.0 * reward_intent_complete +
+            # 0.0 * reward_intent_goal + 
             1.0 * reward_safety_dynamic -
-            0.1 * penalty_smooth- 
+            0.1 * penalty_smooth - 
             8.0 * penalty_height
         )
         # ---- Debug print shapes ----
@@ -724,15 +741,14 @@ class NavigationEnv(IsaacEnv):
         above_bound = self.drone.pos[..., 2] > 4.
 
         self.terminated = below_bound | above_bound | collision
-        success_truncate = (self.intent_goal_counts >= self.max_intent_goals_per_episode).unsqueeze(-1)
         timeout_truncate = (self.progress_buf >= self.max_episode_length).unsqueeze(-1)
-        self.truncated = success_truncate | timeout_truncate
+        self.truncated = timeout_truncate
 
         # update previous velocity for smoothness calculation in the next ieteration
         self.prev_drone_vel_w = current_vel_w.clone()
 
         # ----------------- Visualization and Debugging -----------------
-        if self.debug_mode and self._should_render(0):
+        if self._should_render(0):
             self.debug_draw.clear()
             
             # get the first (env_id=0) lidar position
@@ -758,8 +774,7 @@ class NavigationEnv(IsaacEnv):
             viz_env_id = 0
 
             # 绘制向量 (转换回世界系以便绘制)
-            root_pos = drone_pos_w[viz_env_id]  # TODO: assert root pos == view pos
-            # print(f"[Compare] view pos: {view_pos}, root pos: {root_pos}")
+            root_pos = drone_pos_w[viz_env_id]  # root pos == view pos TODO: merge it
 
             # A. 绘制无人机实际速度 (蓝色箭头)
             # drone_vel_b 已经在前面计算过了
@@ -773,7 +788,7 @@ class NavigationEnv(IsaacEnv):
 
             # B. 绘制人类期望速度 (绿色箭头)
             # human_action_local 已经在前面计算过了
-            human_vel_w_vec = human_action_vel_w[viz_env_id]
+            human_vel_w_vec = target_vel_w[viz_env_id]
             self.debug_draw.vector(
                 x=root_pos, 
                 v=human_vel_w_vec * 1.0, 
@@ -781,7 +796,19 @@ class NavigationEnv(IsaacEnv):
                 size=2.0
             )
 
-            # 3. 写入 CSV 日志
+            # C. 绘制无人机当前位置到当前intent goal的向量（红色箭头）
+            if intent_goals is not None:
+                intent_goal_pos = intent_goals[viz_env_id]
+                intent_goal_vec = intent_goal_pos - root_pos
+                self.debug_draw.vector(
+                    x=root_pos, 
+                    v=intent_goal_vec * 1.0, 
+                    color=(1, 0, 0, 1), # Red
+                    size=2.0
+                )
+
+        if self.debug_mode:
+            # 写入 CSV 日志
             self.csv_writer.writerow([
                 self.progress_buf[viz_env_id].item(),  # step
                 viz_env_id, # env id
@@ -790,13 +817,13 @@ class NavigationEnv(IsaacEnv):
                 self.start_pos[viz_env_id, 0, 1].item(),  # start y
                 self.start_pos[viz_env_id, 0, 2].item(),  # start z
                 self.reward[viz_env_id].item(),  # reward total
-                reward_vel_follow[viz_env_id].item(),
-                reward_safety_static[viz_env_id].item(),
-                penalty_smooth[viz_env_id].item(),
-                penalty_height[viz_env_id].item(),
-                human_actions_local[0, 0].item(),
-                vel_b[viz_env_id, 0].item(),
-                action_diff[viz_env_id].item(),
+                reward_vel[viz_env_id].item(),  # velocity reward
+                reward_intent_complete[viz_env_id].item(),  # intent complete reward
+                reward_safety_static[viz_env_id].item(), # static safety reward
+                penalty_smooth[viz_env_id].item(), # smoothness penalty
+                penalty_height[viz_env_id].item(), # height penalty
+                human_actions_local[0, 0].item(), # human vel x
+                vel_b[viz_env_id, 0].item(), # drone vel x
             ])
             self.debug_log_file.flush() # 强制写入硬盘
 
@@ -804,9 +831,18 @@ class NavigationEnv(IsaacEnv):
         # (remove reach_goal flag as no goal target is provided)
         self.stats["return"] += self.reward
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
-        self.stats["reach_goal"] = success_truncate.float()
+        self.stats["intent_completion"] = self.intent_complete_counts.float().unsqueeze(1)
         self.stats["collision"] = collision.float()
         self.stats["truncated"] = self.truncated.float()
+
+        # === Probe: Check for NaNs in Observation and Reward ===
+        if torch.isnan(self.reward).any():
+            print("[Env Probe] NaN detected in Reward!")
+            print("Reward components:")
+            print(f"  vel: {reward_vel[torch.isnan(self.reward)]}")
+            print(f"  static: {reward_safety_static[torch.isnan(self.reward)]}")
+            print(f"  dynamic: {reward_safety_dynamic[torch.isnan(self.reward)]}")
+            raise ValueError("NaN in reward")
 
         return TensorDict({
             "agents": TensorDict(

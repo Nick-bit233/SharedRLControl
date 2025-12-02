@@ -5,7 +5,7 @@ defaults:
   - sim
   - user_model
 
-headless: False
+headless: True
 debug_mode: False
 log_output_dir: "./outputs"
 device: "cuda:0"
@@ -21,12 +21,12 @@ env:
   num_envs: 256 # Number of drones for training
   max_episode_length: 2000
   env_spacing: 8.0 
-  num_obstacles: 100
+  num_obstacles: 512
   map_range: [20.0, 20.0, 4.5] # [x, y, z], half extents
   platform_width: 4.0  # 原点周围保持平坦的区域宽度（正方形边长）
 
 env_dyn:
-  num_obstacles: 0 # set to zero if static env is needed
+  num_obstacles: 10 # set to zero if static env is needed
   vel_range: [0.5, 1.5]
   local_range: [5.0, 5.0, 4.5]
 

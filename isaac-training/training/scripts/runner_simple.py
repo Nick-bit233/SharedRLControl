@@ -12,8 +12,8 @@ from hydra.core.hydra_config import HydraConfig
 # 强制开启 GUI 渲染管线 (即使在 headless 模式下也能录像)
 sim_app = SimulationApp({"headless": True, "anti_aliasing": 1, "renderer": "RayTracing"})
 
-from env import NavigationEnv
-from ppo import PPO
+from env_simple import FollowingEnvSimple
+from ppo_simple import SimplePPO
 from omni_drones.controllers import LeePositionController
 from omni_drones.utils.torchrl.transforms import VelController
 from torchrl.envs.transforms import TransformedEnv, Compose, InitTracker, TensorDictPrimer
@@ -25,15 +25,19 @@ FILE_PATH = os.path.join(os.path.dirname(__file__), "../cfg")
 
 @hydra.main(config_path=FILE_PATH, config_name="train", version_base=None)
 def main(cfg):
-    print("[DebugRunner] Starting Minimal Debug Environment...")
+    print("[SimpleRunner] Starting Simple Environment...")
 
-    # === 覆盖配置以进行 Debug ===
+    # === 覆盖配置 ===
     cfg.env.num_envs = 4           # 无人机数量
-    cfg.env.num_obstacles = 800     # 静态障碍数量
-    cfg.env_dyn.num_obstacles = 0   # 动态障碍数量
+    # cfg.env.num_obstacles = 0     # 已经在 env_simple.py 中强制设为 0
+    # cfg.env_dyn.num_obstacles = 0   # 已经在 env_simple.py 中强制设为 0
+    
+    # 设置是否启用 Lidar (默认为 False)
+    cfg.env.enable_lidar = False 
+    
     cfg.algo.training_frame_num = 128  # 每个采集批次帧数
     cfg.max_frame_num = cfg.algo.training_frame_num * 101  # 最大采集帧数
-    cfg.debug_mode = True          # 开启调试模式，以绘制辅助信息
+    cfg.debug_mode = False
     cfg.global_view = False       # 是否使用全局视角
     one_step_only = False         # 是否只跑一步
     eval_interval = 100            # 每 100 个 batch 评估一次
@@ -45,7 +49,7 @@ def main(cfg):
     print(OmegaConf.to_yaml(cfg))
 
     # === 初始化环境 ===
-    base_env = NavigationEnv(cfg)
+    base_env = FollowingEnvSimple(cfg)
     
     # 启用渲染 (这对录像至关重要)
     base_env.enable_render(True)
@@ -72,21 +76,18 @@ def main(cfg):
         )
     ).train()
     
-    # === 初始化 PPO (加载权重或随机) ===
-    policy = PPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
+    # === 初始化 SimplePPO ===
+    policy = SimplePPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
     
-    # primer = policy.get_recurrent_primer()
-    # transformed_env.append_transform(primer)
-
-    print("[DebugRunner] Environment structure.")
+    print("[SimpleRunner] Environment structure.")
     print(env)
 
-    print("[DebugRunner] Policy structure.")
+    print("[SimpleRunner] Policy structure.")
     print(policy(env.reset()))
 
     def save_env_image(frame_idx: int):
         # === 保存帧用于检查 ===
-        print("[DebugRunner] Capturing frame...")
+        print("[SimpleRunner] Capturing frame...")
         # 强制刷新一次渲染管线，确保画面是最新的
         base_env.sim.render() 
         # 获取 RGB 数据
@@ -103,9 +104,9 @@ def main(cfg):
             
             # 保存图片
             imageio.imwrite(save_path, rgb_image)
-            print(f"[DebugRunner] Initialization frame saved to: {save_path}")
+            print(f"[SimpleRunner] Initialization frame saved to: {save_path}")
         else:
-            print("[DebugRunner] Failed to capture frame. Check if renderer is enabled.")
+            print("[SimpleRunner] Failed to capture frame. Check if renderer is enabled.")
 
     # === 同步数据采集器 ===
     from omni_drones.utils.torchrl import SyncDataCollector, EpisodeStats
@@ -216,7 +217,7 @@ def main(cfg):
         if i == 0:  # test save image at second batch
             save_env_image(collector._frames)
             if one_step_only:
-                print("[DebugRunner] One step only mode, exiting after first step.")
+                print("[SimpleRunner] One step only mode, exiting after first step.")
                 break
 
 
@@ -243,7 +244,7 @@ def main(cfg):
             base_env.train()
         
         # 记录当前信息到log
-        # logging.info(f"[DebugRunner] Batch {i} info: \n {info}")
+        # logging.info(f"[SimpleRunner] Batch {i} info: \n {info}")
 
     sim_app.close()
 

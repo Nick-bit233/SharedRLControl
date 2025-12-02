@@ -34,32 +34,8 @@ class _LidarCNN(nn.Module):
             return self.net(x)          # [N, 128] or [1, 128]
         else:
             raise RuntimeError(f"Unexpected lidar tensor shape: {tuple(x.shape)}")
-        
-class _DynObsMLP(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # 使用 LazyLinear 适配任意 (1 * dyn_obs_num * 10) 输入维度
-        self.net = nn.Sequential(
-            Rearrange("n c w h -> n (c w h)"),  # 展平到 [N, C*W*H]
-            make_mlp([128, 64])
-        )
 
-    def forward(self, x):
-        # x: [B, T, C=1, W=dyn_obs_num, H=10] or [N, 1, W, H]
-        # same as _LidarCNN, combine batch and time dimensions if input in B&T format
-        if x.dim() == 5:
-            b, t, c, w, h = x.shape
-            x = x.reshape(b * t, c, w, h)
-            x = self.net(x)             # [B*T, 64]
-            x = x.view(b, t, -1)        # [B, T, 64]
-            return x
-        elif x.dim() == 4:
-            return self.net(x)          # [N, 64]
-        else:
-            raise RuntimeError(f"Unexpected dyn-obs tensor shape: {tuple(x.shape)}")
-
-
-class PPO(TensorDictModuleBase):
+class SimplePPO(TensorDictModuleBase):
     def __init__(self, cfg, observation_spec, action_spec, device):
         super().__init__()
         self.cfg = cfg
@@ -67,20 +43,33 @@ class PPO(TensorDictModuleBase):
 
         # Get obs spec dims
         state_dim = observation_spec["agents", "observation", "state"].shape[-1]
-        dyn_obs_feature_dim = 64
         human_action_dim = observation_spec["agents", "observation", "human_action"].shape[-1]
         prev_action_dim = observation_spec["agents", "observation", "prev_action"].shape[-1]
         
-        # 1. Extract LiDAR Feature
-        feature_extractor_network = _LidarCNN().to(self.device)
+        # Check if lidar is present in observation spec
+        self.has_lidar = "lidar" in observation_spec["agents", "observation"]
         
-        # 2. Extract Dynamic obstacle Feature
-        dynamic_obstacle_network = _DynObsMLP().to(self.device)
+        modules = []
+        cat_keys = []
+        
+        cnn_feature_dim = 0
+        if self.has_lidar:
+            # 1. Extract LiDAR Feature
+            feature_extractor_network = _LidarCNN().to(self.device)
+            modules.append(TensorDictModule(feature_extractor_network, [("agents", "observation", "lidar")], ["_cnn_feature"]))
+            cat_keys.append("_cnn_feature")
+            cnn_feature_dim = 128
+            
+        # Add other keys to concatenation
+        cat_keys.extend([
+            ("agents", "observation", "state"), 
+            ("agents", "observation", "human_action"),
+            ("agents", "observation", "prev_action")
+        ])
         
         # RNN network dims for temporal information of observations
-        cnn_feature_dim = 128
-        # 128(cnn_feature) + 64（dyn_obs_mlp) + 10 + 4 + 4 = 210
-        gru_input_dim = cnn_feature_dim + dyn_obs_feature_dim + state_dim + human_action_dim + prev_action_dim
+        # cnn_feature + state + human_action + prev_action
+        gru_input_dim = cnn_feature_dim + state_dim + human_action_dim + prev_action_dim
         gru_hidden_dim = 256 # TODO: 可以调整的超参数
 
         self.gru_num_layers = 1
@@ -95,35 +84,28 @@ class PPO(TensorDictModuleBase):
         print("in keys: ", self.gru_model.in_keys)
         print("out keys: ", self.gru_model.out_keys)
         
-        # Rearrange the Feature Extractor network, include a new GRU module.
-        self.feature_extractor = TensorDictSequential(
-            TensorDictModule(feature_extractor_network, [("agents", "observation", "lidar")], ["_cnn_feature"]),
-            TensorDictModule(dynamic_obstacle_network, [("agents", "observation", "dynamic_obstacle")], ["_dynamic_obstacle_feature"]),
-            # 3. Concat different obs features
-            CatTensors(
-                in_keys=[
-                    "_cnn_feature", 
-                    "_dynamic_obstacle_feature",
-                    ("agents", "observation", "state"), 
-                    ("agents", "observation", "human_action"),
-                    ("agents", "observation", "prev_action")
-                ], 
-                out_key="_embed_inputs",  # Changed: Output to intermediate key
-                del_keys=False
-            ),
-            # 原先特征直接经过MLP，因此无需正则化，现在因为要添加GRU，需要添加 LayerNorm 来稳定训练（否则容易梯度爆炸）
-            # === Fix: Add LayerNorm to normalize inputs before GRU ===
-            TensorDictModule(
-                nn.LayerNorm(gru_input_dim, eps=NORM_EPS),
-                in_keys=["_embed_inputs"],
-                out_keys=["_embed"]
-            ),
-            # =========================================================
-            # 4. Add a GRU network
-            self.gru_model,
-            # 5. Final fusion MLP
-            TensorDictModule(make_mlp([256, 256]), ["_embed"], ["_feature"]),
-        ).to(self.device)
+        # 3. Concat different obs features
+        modules.append(CatTensors(
+            in_keys=cat_keys, 
+            out_key="_embed_inputs",  # Output to intermediate key
+            del_keys=False
+        ))
+        
+        # Add LayerNorm to normalize inputs before GRU
+        modules.append(TensorDictModule(
+            nn.LayerNorm(gru_input_dim, eps=NORM_EPS),
+            in_keys=["_embed_inputs"],
+            out_keys=["_embed"]
+        ))
+        
+        # 4. Add a GRU network
+        modules.append(self.gru_model)
+        
+        # 5. Final fusion MLP
+        modules.append(TensorDictModule(make_mlp([256, 256]), ["_embed"], ["_feature"]))
+        
+        # Rearrange the Feature Extractor network
+        self.feature_extractor = TensorDictSequential(*modules).to(self.device)
 
         # Actor network, now get input from the GRU output feature
         self.n_agents, self.action_dim = action_spec.shape
@@ -179,15 +161,6 @@ class PPO(TensorDictModuleBase):
         self.critic.apply(init_)
 
     def __call__(self, tensordict):
-        # try:
-        #     fc = tensordict.get("_feature_cat", None)
-        #     rs = tensordict.get("recurrent_state", None)
-        #     if fc is not None:
-        #         print(f"[DEBUG] _feature_cat shape: {tuple(fc.shape)}")
-        #     if rs is not None:
-        #         print(f"[DEBUG] recurrent_state shape: {tuple(rs.shape)}")
-        # except Exception as e:
-        #     print("[DEBUG] shape debug failed:", e)
         self.feature_extractor(tensordict)
         
         # === Probe: Check Feature Extractor Output ===
@@ -200,8 +173,7 @@ class PPO(TensorDictModuleBase):
             if torch.isnan(tensordict.get("_embed_inputs")).any():
                  print("[PPO Probe] NaN is coming from Inputs before LayerNorm (_embed_inputs)!")
                  # Check individual components to find the culprit
-                 if torch.isnan(tensordict.get("_cnn_feature")).any(): print("  -> _cnn_feature is NaN")
-                 if torch.isnan(tensordict.get("_dynamic_obstacle_feature")).any(): print("  -> _dynamic_obstacle_feature is NaN")
+                 if self.has_lidar and torch.isnan(tensordict.get("_cnn_feature")).any(): print("  -> _cnn_feature is NaN")
                  if torch.isnan(tensordict.get(("agents", "observation", "state"))).any(): print("  -> state is NaN")
             
             raise ValueError("NaN in PPO forward pass")
