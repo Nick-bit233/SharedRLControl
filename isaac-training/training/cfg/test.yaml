@@ -5,18 +5,14 @@ defaults:
   - sim
   - user_model
 
-headless: True
+checkpoint: "/workspace/NavRL/isaac-training/wandb/latest-run/files/checkpoint_18000.pt"
+headless: False
 debug_mode: False
 log_output_dir: "./outputs"
 device: "cuda:0"
 seed: 0
 
-# Total Training Length
-max_frame_num: 12e8 # max frame 
-eval_interval: 800 # evaluate the policy for every N training steps
-save_interval: 800
-
-# Training Environment
+# Environment
 env:
   num_envs: 1024 # Number of drones for training
   max_episode_length: 2000
@@ -36,10 +32,3 @@ viewer:
   eye: [-3., 0., 6.]
   lookat: [0., 0, 1.]
   resolution: [960, 720]
-
-wandb:
-  project: SRLC
-  name: test_navRL
-  entity: nickbit_ipec_group
-  mode: offline 
-  run_id: 

@@ -230,7 +230,7 @@ def main(cfg):
             info.update(stats)
 
         # 进行一次策略更新
-        training_infos = policy.train(data.to_tensordict())
+        training_infos = policy.train_op(data.to_tensordict())
         # 将策略网络内部的训练信息添加到 info 中
         info.update({f"ppo_train/{k}": v for k, v in training_infos.items()})
 

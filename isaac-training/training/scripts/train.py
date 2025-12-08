@@ -134,7 +134,7 @@ def main(cfg):
         info = {"env_frames": collector._frames, "rollout_fps": collector._fps}
 
         # Train Policy
-        train_loss_stats = policy.train(data)
+        train_loss_stats = policy.train_op(data)
         info.update(train_loss_stats) # log training loss info
 
         # Calculate and log training episode stats

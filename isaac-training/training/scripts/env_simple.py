@@ -142,33 +142,7 @@ class FollowingEnvSimple(IsaacEnv):
         cfg_ground = sim_utils.GroundPlaneCfg(color=(0.1, 0.1, 0.1), size=(300., 300.))
         cfg_ground.func("/World/defaultGroundPlane", cfg_ground, translation=(0, 0, 0.01))
 
-        # Flat Terrain (No obstacles)
-        terrain_cfg = TerrainImporterCfg(
-            num_envs=self.num_envs,
-            env_spacing=0.0,
-            prim_path="/World/ground",
-            terrain_type="generator",
-            terrain_generator=TerrainGeneratorCfg(
-                seed=0,
-                size=(self.map_range[0]*2, self.map_range[1]*2), 
-                border_width=5.0,
-                num_rows=1, 
-                num_cols=1, 
-                horizontal_scale=0.1,
-                vertical_scale=0.1,
-                slope_threshold=0.75,
-                use_cache=False,
-                color_scheme="height",
-                sub_terrains={}, # Empty sub_terrains for flat ground
-            ),
-            visual_material = None,
-            max_init_terrain_level=None,
-            collision_group=-1,
-            debug_vis=True,
-        )
-        terrain_importer = TerrainImporter(terrain_cfg)
-
-        # No dynamic obstacles initialization
+        # No Terrain and dynamic obstacles initialization
 
     def _set_specs(self):
         drone_state_dim = 10  # (vel_b[3] + ang_vel_b[3] + orientation_q[4])
@@ -346,11 +320,15 @@ class FollowingEnvSimple(IsaacEnv):
         human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)  # (N, 4)
         intent_completed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
  
-        # Step the user model to get human action input
-        human_actions_local, intent_completed, intent_goals = self.user_model.step(
-            user_input_drone_state,
-            prev_action_local,
-        )
+        if getattr(self, "manual_mode", False):
+            # Use manual action input as human input
+            human_actions_local = self.manual_action.clone()
+        else:
+            # Step the simulated user model to get human action input
+            human_actions_local, intent_completed, intent_goals = self.user_model.step(
+                user_input_drone_state,
+                prev_action_local,
+            )
 
         # -----------------Network Input Final--------------
         obs = {
@@ -372,26 +350,51 @@ class FollowingEnvSimple(IsaacEnv):
         if current_yaw_rate.ndim == 3 and current_yaw_rate.shape[1] == 1:
             current_yaw_rate = current_yaw_rate.squeeze(-1)  # (N, 1)
 
-        # Velocity following reward (Positive)
+        # # Velocity following reward (Positive)
+        # TODO: 奖励重视速度的方向和yaw角速度，而不是绝对值大小
+        # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
+        # target_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)
+
+        # vel_error_norm = (torch.norm(current_vel_w - target_vel_w, dim=-1, keepdim=True))
+        # reward_vel = torch.exp(-vel_error_norm)  # Positive reward
+        
+        # # Yaw rate following reward (Positive)
+        # target_yaw_rate = human_actions_local[..., 3:4]  # (N, 1)
+        # yaw_rate_error_norm = (torch.norm(current_yaw_rate - target_yaw_rate, dim=-1, keepdim=True))
+        # reward_vel += torch.exp(-yaw_rate_error_norm)  # Positive reward
+
+        # # 4D Action difference reward (Positive)
         human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)
-
-        vel_error_norm = (torch.norm(current_vel_w - target_vel_w, dim=-1, keepdim=True))
-        reward_vel = torch.exp(-vel_error_norm)  # Positive reward
-        
-        # Yaw rate following reward (Positive)
         target_yaw_rate = human_actions_local[..., 3:4]  # (N, 1)
-        yaw_rate_error_norm = (torch.norm(current_yaw_rate - target_yaw_rate, dim=-1, keepdim=True))
-        reward_vel += torch.exp(-yaw_rate_error_norm)  # Positive reward
+
+        target_action = torch.cat([target_vel_w, target_yaw_rate], dim=-1)  # (N, 4)
+        current_action = torch.cat([current_vel_w, current_yaw_rate], dim=-1)  # (N, 4)
+
+        action_diff = (current_action - target_action).norm(dim=-1, keepdim=True)
+        reward_vel = torch.exp(-action_diff)  # (N, 1) Positive reward
+
+        # d. smoothness reward for action smoothness
+        penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
+        
+        # e. height penalty reward for flying unnessarily high or low
+        height_range = self.user_model.get_height_range() # get height range from user model (different for each env due to random goal sampling)
+        h_min, h_max = height_range[..., 0], height_range[..., 1]
+        # penalty when z > h_max + 0.2 or z < h_min - 0.2
+        penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
+        z = self.drone.pos[..., 2]
+        penalty_height[z > (h_max + 0.2)] = ((z - h_max - 0.2)**2)[z > (h_max + 0.2)]
+        penalty_height[z < (h_min - 0.2)] = ((h_min - 0.2 - z)**2)[z < (h_min - 0.2)]
         
         # Survival reward (keep flying as long as possible)
         reward_survival = 1.0
         
         # Final reward calculation
         self.reward = (
-            1.0 * reward_vel +
-            1.0 * reward_survival 
-            # - 0.1 * penalty_smooth - 8.0 * penalty_height
+            2.0 * reward_vel +
+            0.1 * reward_survival 
+            - 0.05 * penalty_smooth 
+            - 1.0 * penalty_height
         )
 
         # Terminate Conditions
@@ -474,7 +477,7 @@ class FollowingEnvSimple(IsaacEnv):
             self.viz_traj_human.append(self.viz_human_pos.clone())
             
             # Limit trajectory length to avoid memory issues (e.g. last 500 points)
-            max_traj_len = 500
+            max_traj_len = 1000
             if len(self.viz_traj_agent) > max_traj_len:
                 self.viz_traj_agent.pop(0)
                 self.viz_traj_human.pop(0)
@@ -555,3 +558,15 @@ class FollowingEnvSimple(IsaacEnv):
             },
             self.batch_size,
         )
+
+    def set_manual_mode(self, enabled: bool):
+        """
+        If manual mode is enabled, the environment will use outside manual_action as the human input action.
+        :param enabled: bool
+        """
+        self.manual_mode = enabled
+        self.manual_action = torch.zeros(self.num_envs, 4, device=self.device)
+
+    def set_manual_action(self, action: torch.Tensor):
+        if self.manual_mode:
+            self.manual_action[:] = action

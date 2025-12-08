@@ -1,6 +1,8 @@
 import os
 import logging
 import hydra
+import datetime
+import wandb
 import torch
 import imageio
 import numpy as np
@@ -25,22 +27,47 @@ FILE_PATH = os.path.join(os.path.dirname(__file__), "../cfg")
 
 @hydra.main(config_path=FILE_PATH, config_name="train", version_base=None)
 def main(cfg):
+    # Use Wandb to monitor training
+    if (cfg.wandb.run_id is None):
+        run = wandb.init(
+            project=cfg.wandb.project,
+            name=f"{cfg.wandb.name}/{datetime.datetime.now().strftime('%m-%d_%H-%M')}",
+            entity=cfg.wandb.entity,
+            config=cfg,
+            mode=cfg.wandb.mode,
+            id=wandb.util.generate_id(),
+        )
+    else:
+        run = wandb.init(
+            project=cfg.wandb.project,
+            name=f"{cfg.wandb.name}/{datetime.datetime.now().strftime('%m-%d_%H-%M')}",
+            entity=cfg.wandb.entity,
+            config=cfg,
+            mode=cfg.wandb.mode,
+            id=cfg.wandb.run_id,
+            resume="must"
+        )
+
     print("[SimpleRunner] Starting Simple Environment...")
 
     # === 覆盖配置 ===
-    cfg.env.num_envs = 4           # 无人机数量
+    cfg.env.num_envs = 1024           # 无人机数量
     # cfg.env.num_obstacles = 0     # 已经在 env_simple.py 中强制设为 0
     # cfg.env_dyn.num_obstacles = 0   # 已经在 env_simple.py 中强制设为 0
     
-    # 设置是否启用 Lidar (默认为 False)
+    # 设置是否启用 Lidar
     cfg.env.enable_lidar = False 
     
+    # 设置是否启用 RNN
+    cfg.algo.rnn.enable = False
+
     cfg.algo.training_frame_num = 128  # 每个采集批次帧数
-    cfg.max_frame_num = cfg.algo.training_frame_num * 101  # 最大采集帧数
+    cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 20000  # 最大采集帧数 = frame_num * N * Batches
     cfg.debug_mode = False
-    cfg.global_view = False       # 是否使用全局视角
+    cfg.global_view = True      # 是否使用全局视角
     one_step_only = False         # 是否只跑一步
-    eval_interval = 100            # 每 100 个 batch 评估一次
+    eval_interval = 500            # 每 i 个 batch 评估一次
+    save_interval = 500          # 每 i 个 batch 保存一次模型
 
     hydra_cfg = HydraConfig.get()
     cfg.log_output_dir = hydra_cfg.runtime.output_dir  # 使用 Hydra 日志输出目录
@@ -57,24 +84,33 @@ def main(cfg):
     # === Transforms (保持与 train.py 一致) ===
     controller = LeePositionController(9.81, base_env.drone.params).to(cfg.device)
     vel_transform = VelController(controller, yaw_control=True)
-    primers_dict = {
-        # 给出一个key为recurrent_state的spec， primer根据此在 env.reset() 时创建对应的 tensordict 字段
-        "recurrent_state": UnboundedContinuousTensorSpec(
-                # shape=(batch, 1, hidden_dim),  # policy.gru_num_layers is set default to 1
-                shape=(base_env.num_envs, 1, 256),
-                device=cfg.device
-            )
-    }
-    primer = TensorDictPrimer(primers=primers_dict, default_value=0.0)
 
-    env = TransformedEnv(
-        base_env, 
-        Compose(
-            InitTracker(),  # 跟踪初始化状态 (RNN)
-            vel_transform,
-            primer
-        )
-    ).train()
+    if cfg.algo.rnn.enable:
+        primers_dict = {
+            # 给出一个key为recurrent_state的spec， primer根据此在 env.reset() 时创建对应的 tensordict 字段
+            "recurrent_state": UnboundedContinuousTensorSpec(
+                    # shape=(batch, 1, hidden_dim),  # policy.gru_num_layers is set default to 1
+                    shape=(base_env.num_envs, 1, 256),
+                    device=cfg.device
+                )
+        }
+        primer = TensorDictPrimer(primers=primers_dict, default_value=0.0)
+
+        env = TransformedEnv(
+            base_env, 
+            Compose(
+                InitTracker(),  # 跟踪初始化状态 (RNN)
+                vel_transform,
+                primer
+            )
+        ).train()
+    else:
+        env = TransformedEnv(
+            base_env, 
+            Compose(
+                vel_transform,
+            )
+        ).train()
     
     # === 初始化 SimplePPO ===
     policy = SimplePPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
@@ -173,35 +209,40 @@ def main(cfg):
         logging.info(f"[Eval] eval info: {info}")
 
         # 保存评估视频
-        video_path = os.path.join(cfg.log_output_dir, f"debug_eval_rollout_{collector._frames}_steps.mp4")
-        logging.info(f"[Eval] Saving eval video to {video_path}")
-        frames = render_callback.frames # 获取帧列表
-        if len(frames) > 0:
-            video_frames = []
-            for f in frames:
-                # Handle Torch Tensors
-                if isinstance(f, torch.Tensor):
-                    f = f.cpu().numpy()
+        info["recording"] = wandb.Video(
+            render_callback.get_video_array(axes="t c h w"), 
+            fps=0.5 / (cfg.sim.dt * cfg.sim.substeps), 
+            format="mp4"
+        )
+        # video_path = os.path.join(cfg.log_output_dir, f"debug_eval_rollout_{collector._frames}_steps.mp4")
+        # logging.info(f"[Eval] Saving eval video to {video_path}")
+        # frames = render_callback.frames # 获取帧列表
+        # if len(frames) > 0:
+        #     video_frames = []
+        #     for f in frames:
+        #         # Handle Torch Tensors
+        #         if isinstance(f, torch.Tensor):
+        #             f = f.cpu().numpy()
                 
-                # Handle Numpy Arrays (frames: numpy.ndarray)
-                # IsaacEnv render returns (H, W, 3), so we usually don't need to transpose.
-                # Only transpose if we detect (3, H, W) structure.
-                if f.ndim == 3 and f.shape[0] == 3 and f.shape[2] != 3:
-                    f = np.transpose(f, (1, 2, 0))
+        #         # Handle Numpy Arrays (frames: numpy.ndarray)
+        #         # IsaacEnv render returns (H, W, 3), so we usually don't need to transpose.
+        #         # Only transpose if we detect (3, H, W) structure.
+        #         if f.ndim == 3 and f.shape[0] == 3 and f.shape[2] != 3:
+        #             f = np.transpose(f, (1, 2, 0))
                 
-                # Ensure uint8
-                if f.dtype != np.uint8:
-                    if f.max() <= 1.0:
-                        f = (f * 255).astype(np.uint8)
-                    else:
-                        f = f.astype(np.uint8)
+        #         # Ensure uint8
+        #         if f.dtype != np.uint8:
+        #             if f.max() <= 1.0:
+        #                 f = (f * 255).astype(np.uint8)
+        #             else:
+        #                 f = f.astype(np.uint8)
                 
-                video_frames.append(f)
+        #         video_frames.append(f)
 
-            imageio.mimsave(video_path, video_frames, fps=30)
-            logging.info("Video saved successfully.")
-        else:
-            logging.info("No frames captured!")
+        #     imageio.mimsave(video_path, video_frames, fps=30)
+        #     logging.info("Video saved successfully.")
+        # else:
+        #     logging.info("No frames captured!")
         
         return info
 
@@ -231,7 +272,7 @@ def main(cfg):
             info.update(stats)
 
         # 进行一次策略更新
-        training_infos = policy.train(data.to_tensordict())
+        training_infos = policy.train_op(data.to_tensordict())
         # 将策略网络内部的训练信息添加到 info 中
         info.update({f"ppo_train/{k}": v for k, v in training_infos.items()})
 
@@ -242,10 +283,18 @@ def main(cfg):
             # 改回训练模式
             env.train()
             base_env.train()
-        
-        # 记录当前信息到log
-        # logging.info(f"[SimpleRunner] Batch {i} info: \n {info}")
+            env.reset()
 
+        # 记录到 Wandb
+        run.log(info)
+
+        # Save Model
+        if i % save_interval == 0:
+            ckpt_path = os.path.join(run.dir, f"checkpoint_{i}.pt")
+            torch.save(policy.state_dict(), ckpt_path)
+            print("[RunnerSimple]: model saved at training step: ", i)
+
+    wandb.finish()
     sim_app.close()
 
 if __name__ == "__main__":

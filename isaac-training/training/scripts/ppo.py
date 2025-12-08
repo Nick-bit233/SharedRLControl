@@ -226,7 +226,7 @@ class PPO(TensorDictModuleBase):
         primer = self.gru_model.make_tensordict_primer()
         return primer
 
-    def train(self, tensordict):
+    def train_op(self, tensordict):
         # tensordict: (num_env, num_frames, dim), batchsize = num_env * num_frames
         next_tensordict = tensordict["next"]
         with torch.no_grad():
