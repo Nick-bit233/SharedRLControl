@@ -22,30 +22,29 @@ def main(cfg):
     print(OmegaConf.to_yaml(cfg))
 
     import omni_drones.utils.scene as scene_utils
-    from omni.isaac.core.simulation_context import SimulationContext
+    import isaaclab.sim as sim_utils
+    from isaaclab.sim import SimulationContext
     from omni_drones.controllers import LeePositionController
     from omni_drones.robots.drone import MultirotorBase
     from omni_drones.sensors.camera import Camera, PinholeCameraCfg
-    from omni.isaac.core.utils.viewports import set_camera_view
-    from omni.isaac.debug_draw import _debug_draw
+    from isaacsim.core.utils.viewports import set_camera_view
+    # from omni.isaac.debug_draw import _debug_draw  # @Deprecation - use isaacsim.util.debug_draw
+    from isaacsim.util.debug_draw import _debug_draw
     import dataclasses
 
     hydra_cfg = HydraConfig.get()
     log_output_dir = hydra_cfg.runtime.output_dir  # 使用 Hydra 日志输出目录 
 
-    sim = SimulationContext(
-        stage_units_in_meters=1.0,
-        physics_dt=cfg.sim.dt,
-        rendering_dt=cfg.sim.dt,
-        sim_params=cfg.sim,
-        backend="torch",
+    sim_cfg = sim_utils.SimulationCfg(
+        dt=cfg.sim.dt,
         device=cfg.sim.device,
     )
+    sim = SimulationContext(sim_cfg)
 
     n = 1
-    drone_model = cfg.get("drone_model", "Hummingbird")
-    drone_cls = MultirotorBase.REGISTRY[drone_model]
-    drone = drone_cls()
+    drone, controller = MultirotorBase.make(
+        cfg.drone_model, "LeePositionController", cfg.sim.device
+    )
 
     # Spawn drone
     translations = torch.zeros(n, 3)
@@ -75,27 +74,39 @@ def main(cfg):
 
     # Mock style
     style = {
-        'aggressiveness': torch.tensor([0.5]),
-        'dexterity': torch.tensor([0.5])
+        'aggressiveness': torch.tensor([0.5], device=sim.device),
+        'dexterity': torch.tensor([0.5], device=sim.device)
     }
-    noise_level = torch.tensor([0.0]) # Clean trajectory for visualization
-    
-    t_total, right_target, left_target, params = \
-        user_model.sample_joystick_profile(
-            style, 
-            noise_level, 
-            min_duration=cfg.trajectory.min_duration, 
-            max_duration=cfg.trajectory.max_duration
-        )
-    print(f"Sampled target: left: {left_target}, right: {right_target}, duration: {t_total:.2f}s")
+    noise_level = torch.tensor([0.0], device=sim.device) # Clean trajectory for visualization
+
+    batched_data = user_model.sample_joystick_profile_batched(
+        num_envs=1,
+        style=style,
+        noise_level=noise_level,
+        device=sim.device,
+        min_duration=cfg.trajectory.min_duration,
+        max_duration=cfg.trajectory.max_duration
+    )
+    t_total, right_target, left_target, params = batched_data
+    print(f"Sampled target: left: {left_target}, right: {right_target}, duration: {t_total.item():.2f}s")
     
     # Generate actions (normalized)
-    actions = user_model.generate_action_from_stick_profile(
-        dt=dt, t_total=t_total,
-        right_target=right_target, left_target=left_target,
-        params=params
+    total_steps = int(t_total.item() / dt)
+    action_scale = torch.ones(4, device=sim.device)
+
+    actions = user_model.generate_action_from_stick_profile_batched(
+        dt=dt, 
+        total_steps=total_steps,
+        action_scale=action_scale,
+        right_target=right_target, 
+        left_target=left_target,
+        params=params,
+        device=sim.device
     )
-    print(f"Generated action shape: {actions.shape},  {actions.shape[0]} actions for {t_total:.2f} seconds.")
+    # Squeeze batch dimension (1, T, 4) -> (T, 4)
+    actions = actions.squeeze(0)
+
+    print(f"Generated action shape: {actions.shape},  {actions.shape[0]} actions for {t_total.item():.2f} seconds.")
     
     # Scale actions to physical units (max velocities for drones)
     # Assuming:
@@ -156,9 +167,6 @@ def main(cfg):
         # Draw lines between consecutive points
         draw.draw_lines(points[:-1], points[1:], [(1, 0, 1, 1)] * (len(points)-1), [2.0] * (len(points)-1))
     
-    # Controller
-    controller = LeePositionController(g=9.81, uav_params=drone.params).to(sim.device)
-    
     frames = []
     drone_state = drone.get_state()[..., :13].squeeze(0)
     
@@ -172,7 +180,7 @@ def main(cfg):
         target_pos = ref_positions[i].unsqueeze(0) # (1, 3)
         target_yaw = ref_yaws[i].unsqueeze(0)      # (1,)
         
-        action = controller(drone_state, target_pos=target_pos, target_yaw=target_yaw)
+        action = controller.compute(drone_state, target_pos=target_pos, target_yaw=target_yaw)
         drone.apply_action(action)
         
         sim.step(render=True)
@@ -188,7 +196,10 @@ def main(cfg):
         set_camera_view(eye=cam_eye.cpu().numpy(), target=cam_target.cpu().numpy())
         
         if i % 2 == 0:
-            frames.append(camera_vis.get_images()["rgb"].cpu())
+            # omni_drones camera using old omni.replicator.core interface, empty img tensors may occur in the first frame.
+            images = camera_vis.get_images().get("rgb", None)
+            if images is not None:
+                frames.append(images.cpu())
             
         drone_state = drone.get_state()[..., :13].squeeze(0)
         

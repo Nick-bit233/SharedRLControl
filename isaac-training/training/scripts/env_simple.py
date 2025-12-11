@@ -3,21 +3,25 @@ import torch
 import einops
 import numpy as np
 from tensordict.tensordict import TensorDict, TensorDictBase
-from torchrl.data import UnboundedContinuousTensorSpec, CompositeSpec, DiscreteTensorSpec
+# === Fix: Update deprecated imports ===
+from torchrl.data import Unbounded, Composite, Categorical
+# from torchrl.data import UnboundedContinuousTensorSpec, CompositeSpec, DiscreteTensorSpec
+# ======================================
 from omni_drones.envs.isaac_env import IsaacEnv, AgentSpec
-import omni.isaac.orbit.sim as sim_utils
+# [Update import name rules]:
+# - change all "omni.isaac.orbit" to name "isaaclab"
+# - change all "omni.isaac.core" to name "isaacsim.core"
+import isaaclab.sim as sim_utils
 from omni_drones.robots.drone import MultirotorBase
-from omni.isaac.orbit.assets import AssetBaseCfg
-from omni.isaac.orbit.terrains import TerrainImporterCfg, TerrainImporter, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
+from isaaclab.assets import AssetBaseCfg
+from isaaclab.terrains import TerrainImporterCfg, TerrainImporter, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
 from omni_drones.utils.torch import euler_to_quaternion, quat_axis, quat_rotate, quat_rotate_inverse
-from omni.isaac.orbit.sensors import RayCaster, RayCasterCfg, patterns
-from omni.isaac.core.utils.viewports import set_camera_view
-from utils import vec_to_new_frame, vec_to_world, construct_input
+from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
+from isaacsim.core.utils.viewports import set_camera_view
+from trainning_utils import vec_to_new_frame, vec_to_world, construct_input
 from user_model import UserModel
-import omni.isaac.core.utils.prims as prim_utils
-import omni.isaac.orbit.sim as sim_utils
-import omni.isaac.orbit.utils.math as math_utils
-from omni.isaac.orbit.assets import RigidObject, RigidObjectCfg
+import isaaclab.utils.math as math_utils
+from isaaclab.assets import RigidObject, RigidObjectCfg
 import time
 
 class FollowingEnvSimple(IsaacEnv):
@@ -119,9 +123,14 @@ class FollowingEnvSimple(IsaacEnv):
         #     ])
 
     def _design_scene(self):
+        import omni_drones.utils.kit as kit_utils
+        import isaacsim.core.utils.prims as prim_utils
+
         # Initialize a drone in prim /World/envs/envs_0
         drone_model = MultirotorBase.REGISTRY[self.cfg.drone.model_name] # drone model class
-        cfg = drone_model.cfg_cls(force_sensor=False)
+        cfg = drone_model.cfg_cls()
+        print("[NavigationEnv]: Spawning Drone Model:", self.cfg.drone.model_name)
+        print(f"[NavigationEnv]: Drone Model Config: {cfg}")
         self.drone = drone_model(cfg=cfg)
         # drone_prim = self.drone.spawn(translations=[(0.0, 0.0, 1.0)])[0]
         drone_prim = self.drone.spawn(translations=[(0.0, 0.0, 2.0)])[0]
@@ -139,9 +148,14 @@ class FollowingEnvSimple(IsaacEnv):
         sky_light.spawn.func(sky_light.prim_path, sky_light.spawn)
         
         # Ground Plane
-        cfg_ground = sim_utils.GroundPlaneCfg(color=(0.1, 0.1, 0.1), size=(300., 300.))
-        cfg_ground.func("/World/defaultGroundPlane", cfg_ground, translation=(0, 0, 0.01))
+        kit_utils.create_ground_plane(
+            "/World/defaultGroundPlane",
+            static_friction=1.0,
+            dynamic_friction=1.0,
+            restitution=0.0,
+        )
 
+        return ["/World/defaultGroundPlane"]
         # No Terrain and dynamic obstacles initialization
 
     def _set_specs(self):
@@ -150,54 +164,56 @@ class FollowingEnvSimple(IsaacEnv):
         human_action_dim = 4  # (vel_b[3] + yaw_rate_b[1])
 
         # Observation Spec
+        # === Fix: Use new Spec classes ===
         obs_dict = {
-            "state": UnboundedContinuousTensorSpec((drone_state_dim,), device=self.device), 
-            "prev_action": UnboundedContinuousTensorSpec((prev_action_dim,), device=self.device),
-            "human_action": UnboundedContinuousTensorSpec((human_action_dim,), device=self.device),
+            "state": Unbounded((drone_state_dim,), device=self.device), 
+            "prev_action": Unbounded((prev_action_dim,), device=self.device),
+            "human_action": Unbounded((human_action_dim,), device=self.device),
         }
         
         if self.enable_lidar:
-             obs_dict["lidar"] = UnboundedContinuousTensorSpec((1, self.lidar_hbeams, self.lidar_vbeams), device=self.device)
+             obs_dict["lidar"] = Unbounded((1, self.lidar_hbeams, self.lidar_vbeams), device=self.device)
 
-        self.observation_spec = CompositeSpec({
-            "agents": CompositeSpec({
-                "observation": CompositeSpec(obs_dict),
+        self.observation_spec = Composite({
+            "agents": Composite({
+                "observation": Composite(obs_dict),
             }).expand(self.num_envs)
         }, shape=[self.num_envs], device=self.device)
         
         # Action Spec
-        self.action_spec = CompositeSpec({
-            "agents": CompositeSpec({
+        self.action_spec = Composite({
+            "agents": Composite({
                 "action": self.drone.action_spec, # number of motor
             })
         }).expand(self.num_envs).to(self.device)
         
         # Reward Spec
-        self.reward_spec = CompositeSpec({
-            "agents": CompositeSpec({
-                "reward": UnboundedContinuousTensorSpec((1,))
+        self.reward_spec = Composite({
+            "agents": Composite({
+                "reward": Unbounded((1,))
             })
         }).expand(self.num_envs).to(self.device)
 
         # Done Spec
-        self.done_spec = CompositeSpec({
-            "done": DiscreteTensorSpec(2, (1,), dtype=torch.bool),
-            "terminated": DiscreteTensorSpec(2, (1,), dtype=torch.bool),
-            "truncated": DiscreteTensorSpec(2, (1,), dtype=torch.bool),
+        self.done_spec = Composite({
+            "done": Categorical(2, (1,), dtype=torch.bool),
+            "terminated": Categorical(2, (1,), dtype=torch.bool),
+            "truncated": Categorical(2, (1,), dtype=torch.bool),
         }).expand(self.num_envs).to(self.device) 
 
 
-        stats_spec = CompositeSpec({
-            "return": UnboundedContinuousTensorSpec(1),
-            "episode_len": UnboundedContinuousTensorSpec(1),
-            "intent_completion": UnboundedContinuousTensorSpec(1),
-            "collision": UnboundedContinuousTensorSpec(1),
-            "truncated": UnboundedContinuousTensorSpec(1),
+        stats_spec = Composite({
+            "return": Unbounded(1),
+            "episode_len": Unbounded(1),
+            "intent_completion": Unbounded(1),
+            "collision": Unbounded(1),
+            "truncated": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
 
-        info_spec = CompositeSpec({
-            "drone_state": UnboundedContinuousTensorSpec((self.drone.n, 13), device=self.device),
+        info_spec = Composite({
+            "drone_state": Unbounded((self.drone.n, 13), device=self.device),
         }).expand(self.num_envs).to(self.device)
+        # =================================
         self.observation_spec["stats"] = stats_spec
         self.observation_spec["info"] = info_spec
         self.stats = stats_spec.zero()
@@ -521,7 +537,7 @@ class FollowingEnvSimple(IsaacEnv):
         # (remove reach_goal flag as no goal target is provided)
         self.stats["return"] += self.reward
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
-        self.stats["intent_completion"] = self.intent_complete_counts.float().unsqueeze(1)
+        self.stats["intent_completion"] = self.intent_complete_counts.float()
         self.stats["collision"] = torch.zeros_like(self.stats["collision"]) # No collision
         self.stats["truncated"] = self.truncated.float()
 

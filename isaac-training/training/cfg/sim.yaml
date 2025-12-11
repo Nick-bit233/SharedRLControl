@@ -5,6 +5,7 @@ sim:
   replicate_physics: false
   use_flatcache: true
   use_gpu_pipeline: true
+  enable_replicator: true # Enable Replicator for RGB rendering (even in headless mode)
   device: "cuda:0"
 
   solver_type: 1

@@ -7,33 +7,39 @@ import torch
 import imageio
 import numpy as np
 from omegaconf import OmegaConf
-from omni.isaac.kit import SimulationApp
+# from omni.isaac.kit import SimulationApp  # @Deprecation
+# from isaacsim import SimulationApp
+from omni_drones import init_simulation_app # use omni_drones init_simulation_app interface to avoid importing isaacsim
+
 from hydra.core.hydra_config import HydraConfig
-
-# 1. 启动 Isaac Sim (必须在其他 import 之前)
-# 强制开启 GUI 渲染管线 (即使在 headless 模式下也能录像)
-sim_app = SimulationApp({"headless": True, "anti_aliasing": 1, "renderer": "RayTracing"})
-
-from env_simple import FollowingEnvSimple
-from ppo_simple import SimplePPO
 from omni_drones.controllers import LeePositionController
 from omni_drones.utils.torchrl.transforms import VelController
 from torchrl.envs.transforms import TransformedEnv, Compose, InitTracker, TensorDictPrimer
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from omni_drones.utils.torchrl import RenderCallback
-from torchrl.data import UnboundedContinuousTensorSpec
+from torchrl.data import Unbounded
 
 FILE_PATH = os.path.join(os.path.dirname(__file__), "../cfg")
 
 @hydra.main(config_path=FILE_PATH, config_name="train", version_base=None)
 def main(cfg):
+    # Start Simulation App
+    sim_app = init_simulation_app(cfg)  # headless option is configurable via cfg
+
+    # Import environment and algorithm (must after sim_app is instantiated)
+    from env_simple import FollowingEnvSimple
+    from ppo_simple import SimplePPO
+
     # Use Wandb to monitor training
+    # Convert OmegaConf to dict to avoid serialization errors with wandb/dataclasses
+    wandb_config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+
     if (cfg.wandb.run_id is None):
         run = wandb.init(
             project=cfg.wandb.project,
             name=f"{cfg.wandb.name}/{datetime.datetime.now().strftime('%m-%d_%H-%M')}",
             entity=cfg.wandb.entity,
-            config=cfg,
+            config=wandb_config,
             mode=cfg.wandb.mode,
             id=wandb.util.generate_id(),
         )
@@ -42,7 +48,7 @@ def main(cfg):
             project=cfg.wandb.project,
             name=f"{cfg.wandb.name}/{datetime.datetime.now().strftime('%m-%d_%H-%M')}",
             entity=cfg.wandb.entity,
-            config=cfg,
+            config=wandb_config,
             mode=cfg.wandb.mode,
             id=cfg.wandb.run_id,
             resume="must"
@@ -51,7 +57,7 @@ def main(cfg):
     print("[SimpleRunner] Starting Simple Environment...")
 
     # === 覆盖配置 ===
-    cfg.env.num_envs = 1024           # 无人机数量
+    cfg.env.num_envs = 256           # 无人机数量
     # cfg.env.num_obstacles = 0     # 已经在 env_simple.py 中强制设为 0
     # cfg.env_dyn.num_obstacles = 0   # 已经在 env_simple.py 中强制设为 0
     
@@ -88,7 +94,7 @@ def main(cfg):
     if cfg.algo.rnn.enable:
         primers_dict = {
             # 给出一个key为recurrent_state的spec， primer根据此在 env.reset() 时创建对应的 tensordict 字段
-            "recurrent_state": UnboundedContinuousTensorSpec(
+            "recurrent_state": Unbounded(
                     # shape=(batch, 1, hidden_dim),  # policy.gru_num_layers is set default to 1
                     shape=(base_env.num_envs, 1, 256),
                     device=cfg.device
@@ -255,11 +261,11 @@ def main(cfg):
             "rollout_fps": collector._fps,
         }
 
-        if i == 0:  # test save image at second batch
-            save_env_image(collector._frames)
-            if one_step_only:
-                print("[SimpleRunner] One step only mode, exiting after first step.")
-                break
+        # if i == 0:  # test save image at second batch
+        #     save_env_image(collector._frames)
+        #     if one_step_only:
+        #         print("[SimpleRunner] One step only mode, exiting after first step.")
+        #         break
 
 
         episode_stats.add(data.to_tensordict())

@@ -6,7 +6,7 @@ from tensordict.nn import TensorDictModuleBase, TensorDictSequential, TensorDict
 from einops.layers.torch import Rearrange
 from torchrl.modules import ProbabilisticActor, GRUModule
 from torchrl.envs.transforms import CatTensors
-from utils import ValueNorm, make_batch, make_mlp, GAE, IndependentBeta, BetaActor, vec_to_world
+from trainning_utils import ValueNorm, make_batch, make_mlp, GAE, IndependentBeta, BetaActor, vec_to_world
 
 NORM_EPS = 1e-3
 
@@ -124,13 +124,16 @@ class SimplePPO(TensorDictModuleBase):
         self.feature_extractor = TensorDictSequential(*modules).to(self.device)
 
         # Actor network, now get input from the GRU output feature
-        self.n_agents, self.action_dim = action_spec.shape
+        actual_action_spec = action_spec[("agents", "action")]
+        self.n_agents, self.action_dim = actual_action_spec.shape[-2:]
+        # self.n_agents, self.action_dim = action_spec.shape
         self.actor = ProbabilisticActor(
             TensorDictModule(BetaActor(self.action_dim), ["_feature"], ["alpha", "beta"]),
             in_keys=["alpha", "beta"],  # Use beta distribution for bounded action space
             out_keys=[("agents", "action_normalized")], 
             distribution_class=IndependentBeta,
-            return_log_prob=True
+            return_log_prob=True,
+            log_prob_key="sample_log_prob"
         ).to(self.device)
 
         # Critic network
