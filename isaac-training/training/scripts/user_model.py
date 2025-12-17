@@ -93,9 +93,11 @@ class UserModel:
         # Previous action for smoothing (Low Pass Filter)
         self.prev_filtered_action = torch.zeros(num_envs, 4, device=self.device)
         
-    def reset(self, pos, quat, env_ids):
+    def reset(self, pos, quat, env_ids, seed=None):
         """
         Reset state for env_ids
+        Args:
+            seed: (int, optional) If provided, forces deterministic behavior for evaluation.
         """
         if pos.ndim == 3: pos = pos.squeeze(1)
         if quat.ndim == 3: quat = quat.squeeze(1)
@@ -106,15 +108,31 @@ class UserModel:
         self.noise_time[env_ids] = 0
         self.buffer_read_idx[env_ids] = 0
         
-        # New seeds
-        self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, 4), device=self.device)
-        
-        # Randomize styles
-        # freq range: 0.05 - 0.1 for lower change rate
-        self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * 0.05 + 0.05
-        self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.5 + 0.2
-        self.styles['laziness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.2
-        
+        # Handle Seeding
+        if seed is not None:
+            # Evaluation Mode: Deterministic
+
+            # 使用 seed + env_id 确保每个环境不同，但每次运行一致
+            gen = torch.Generator(device=self.device)
+            gen.manual_seed(seed)
+            
+            # 为每个 env 生成一个基于 base gen 的确定性唯一种子
+            base_seeds = torch.randint(0, 100000, (K, 4), generator=gen, device=self.device)
+            # 为了保证不同 env_id 即使在不同 batch 也有区别，可以加上 env_ids
+            self.noise_seeds[env_ids] = base_seeds + env_ids.unsqueeze(1)
+            
+            # 确定性的风格参数
+            self.styles['noise_freq'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.05 + 0.05
+            self.styles['smoothness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.5 + 0.2
+            self.styles['laziness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.2
+            
+        else:
+            # Training Mode: Random
+            self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, 4), device=self.device)
+            self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * 0.05 + 0.05
+            self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.5 + 0.2
+            self.styles['laziness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.2
+
         self.prev_filtered_action[env_ids] = 0.0
         
         # Refill buffer

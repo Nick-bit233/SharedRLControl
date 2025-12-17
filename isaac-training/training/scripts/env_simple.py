@@ -18,7 +18,7 @@ from isaaclab.terrains import TerrainImporterCfg, TerrainImporter, TerrainGenera
 from omni_drones.utils.torch import euler_to_quaternion, quat_axis, quat_rotate, quat_rotate_inverse
 from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
 from isaacsim.core.utils.viewports import set_camera_view
-from trainning_utils import vec_to_new_frame, vec_to_world, construct_input
+from trainning_utils import vec_to_body, vec_to_world
 from user_model import UserModel
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import RigidObject, RigidObjectCfg
@@ -85,6 +85,7 @@ class FollowingEnvSimple(IsaacEnv):
             num_envs=self.num_envs,
             cfg=cfg, 
         ) 
+        self.seed = cfg.get("seed", 0)  # seed for evaluation mode
         
         # history action buffer for memory
         with torch.device(self.device):
@@ -253,7 +254,11 @@ class FollowingEnvSimple(IsaacEnv):
         self.prev_drone_vel_w[env_ids] = 0.
         self.prev_agent_action[env_ids] = 0.
 
-        self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids)
+        if (self.training):
+            self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids)
+        else:
+            # When evaluating, use fixed seed for reproducibility
+            self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids, seed=self.seed)
 
         self.stats[env_ids] = 0.  
 
@@ -270,7 +275,7 @@ class FollowingEnvSimple(IsaacEnv):
             self.viz_human_pos = pos[idx, 0].clone()
         
     def _pre_sim_step(self, tensordict: TensorDictBase):
-        actions = tensordict[("agents", "action")]
+        actions = tensordict[("agents", "action")]  # action in world frame (transformed in ppo __call__)
 
         # store applied action so that the subsequent observation (next step) sees it as prev_action
         # sometimes actions may be shape (num_envs, 1, 4) or (num_envs, 4). Normalize:
@@ -278,8 +283,10 @@ class FollowingEnvSimple(IsaacEnv):
             actions_flat = actions.reshape(self.num_envs, -1)[..., :4]  # be careful: assume first 4 are vel+yaw
         else:
             actions_flat = actions
-        # clone to avoid in-place aliasing
-        self.prev_agent_action = actions_flat.clone()
+
+        # prev_action: world frame (should transform back to body frame when feeding into tensor dict)
+        self.prev_agent_action = actions_flat.clone()  # clone to avoid in-place aliasing
+
 
         self.drone.apply_action(actions) 
 
@@ -326,7 +333,9 @@ class FollowingEnvSimple(IsaacEnv):
 
         # ---------Network Input IV: Previous drone action--------
         
-        prev_action_local = self.prev_agent_action  # shape: (N, 4)
+        prev_action_local = vec_to_body(
+            self.prev_agent_action, drone_state
+        )  # shape: (N, 4), new vec to body function can handle 4D action
 
         # ---------Network Input V: Human control action--------
 

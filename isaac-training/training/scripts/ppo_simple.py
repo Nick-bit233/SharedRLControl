@@ -206,9 +206,13 @@ class SimplePPO(TensorDictModuleBase):
         # Cooridnate change: transform local to world (no need transform Cooridnate as no target is provided.)
         # "action_normalized": input action in target frame, range [0, 1]. need to scale to [-action_limit, action_limit]
         actions = (2 * tensordict["agents", "action_normalized"] * self.cfg.actor.action_limit) - self.cfg.actor.action_limit
-        # # transform to world frame (no need now)
-        # actions_world = vec_to_world(actions, tensordict["agents", "observation", "direction"]) # transform to world frame
-        tensordict["agents", "action"] = actions
+
+        # transform to world frame
+        actions_world = vec_to_world(
+            actions, tensordict["agents", "observation", "state"]
+        )
+
+        tensordict["agents", "action"] = actions_world
         return tensordict
 
     def get_recurrent_primer(self):

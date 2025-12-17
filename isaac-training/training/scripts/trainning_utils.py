@@ -6,6 +6,7 @@ from typing import Iterable, Union
 from tensordict.tensordict import TensorDict
 from omni_drones.utils.torchrl import RenderCallback
 from torchrl.envs.utils import ExplorationType, set_exploration_type
+from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
 
 class ValueNorm(nn.Module):
     def __init__(
@@ -245,16 +246,51 @@ def vec_to_new_frame(vec, goal_direction):
 
     return vec_new
 
-
-def vec_to_world(vec, goal_direction):
-    world_dir = torch.tensor([1., 0, 0], device=vec.device).expand_as(goal_direction)
+def vec_to_world(vec, drone_state):
+    """
+    Convert vector from body frame to world frame.
+    vec: (N, 3) or (N, 4)
+    drone_state: (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)]
+    """
+    # Extract quaternion
+    if drone_state.dim() == 3:
+        q = drone_state[..., 0, 6:10]
+    else:
+        q = drone_state[..., 6:10]
     
-    # directional vector of world coordinate expressed in the local frame
-    world_frame_new = vec_to_new_frame(world_dir, goal_direction)
+    # Handle 3D or 4D vector
+    if vec.shape[-1] == 3:
+        return quat_rotate(q, vec)
+    elif vec.shape[-1] == 4:
+        v = vec[..., :3]
+        other = vec[..., 3:]
+        v_w = quat_rotate(q, v)
+        return torch.cat([v_w, other], dim=-1)
+    else:
+        raise ValueError(f"Unsupported vector shape: {vec.shape}")
 
-    # convert the velocity in the local target coordinate to the world coodirnate
-    world_frame_vel = vec_to_new_frame(vec, world_frame_new)
-    return world_frame_vel
+def vec_to_body(vec, drone_state):
+    """
+    Convert vector from world frame to body frame.
+    vec: (N, 3) or (N, 4)
+    drone_state: (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)]
+    """
+    # Extract quaternion
+    if drone_state.dim() == 3:
+        q = drone_state[..., 0, 6:10]
+    else:
+        q = drone_state[..., 6:10]
+        
+    # Handle 3D or 4D vector
+    if vec.shape[-1] == 3:
+        return quat_rotate_inverse(q, vec)
+    elif vec.shape[-1] == 4:
+        v = vec[..., :3]
+        other = vec[..., 3:]
+        v_b = quat_rotate_inverse(q, v)
+        return torch.cat([v_b, other], dim=-1)
+    else:
+        raise ValueError(f"Unsupported vector shape: {vec.shape}")
 
 
 def construct_input(start, end):

@@ -19,5 +19,5 @@ algo:
 
   entropy_loss_coefficient: 1e-3 # encourage exploration
   training_frame_num: 128
-  training_epoch_num: 4
-  num_minibatches: 4 # split into N minibatches, use little minibatches so that RNN can learn more frames.
+  training_epoch_num: 10
+  num_minibatches: 16 # split into N minibatches
