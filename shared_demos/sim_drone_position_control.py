@@ -154,7 +154,7 @@ def main():
         
         if sim.is_playing():
             # A. 获取无人机状态
-            # get_state 返回 (num_envs, state_dim)
+            # get_state 返回 (num_envs, num_drones, state_dim) = (1, 1, 13)
             # 我们只需要前13维: pos(3), quat(4), lin_vel(3), ang_vel(3)
             root_state = drone.get_state()[..., :13]
             
@@ -227,13 +227,15 @@ def main():
                 pass
 
             # C. 计算控制指令
-            # LeePositionController compute 接口:
+            # LeePositionController compute()
             # root_state, target_pos, target_vel, target_acc, target_yaw
+            # action: (1, 1, 4)
             action = controller.compute(
                 root_state=root_state,
                 target_pos=target_pos,
                 target_yaw=target_yaw
             )
+            print(f"[DEBUG] Root state shape: {root_state.shape}, action shape: {action.shape}")
             
             # D. 应用控制指令
             drone.apply_action(action)

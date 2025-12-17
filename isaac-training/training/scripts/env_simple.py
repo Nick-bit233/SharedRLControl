@@ -84,19 +84,18 @@ class FollowingEnvSimple(IsaacEnv):
         self.user_model = UserModel(
             num_envs=self.num_envs,
             cfg=cfg, 
-            lidar=self.lidar, 
-            lidar_resolution=self.lidar_resolution
         ) 
         
         # history action buffer for memory
         with torch.device(self.device):
-            self.start_pos = torch.zeros(self.num_envs, 3, device=self.device)
+            self.start_pos = torch.zeros(self.num_envs, 3)
             # prev_drone_vel_w is used to compute acceleration-based penalty
-            self.prev_drone_vel_w = torch.zeros(self.num_envs, 3, device=self.device)
+            self.prev_drone_vel_w = torch.zeros(self.num_envs, 3)
             # previous action taken by the agent (drone) (vel_b[3], yaw_rate_b[1])
             # use this 4D action instaed of the prev_drone_vel_w in user model and GRU network.
-            self.prev_agent_action = torch.zeros(self.num_envs, 4, device=self.device)  
-            self.intent_complete_counts = torch.zeros(self.num_envs, 1, device=self.device)
+            self.prev_agent_action = torch.zeros(self.num_envs, 4)
+            self.intent_complete_counts = torch.zeros(self.num_envs, 1)
+            self.height_range = torch.zeros(self.num_envs, 1, 2)
 
         # visualize options
         self.render_lidar = False
@@ -231,14 +230,14 @@ class FollowingEnvSimple(IsaacEnv):
 
             # generate random start positions (within the platform area near the center of the map)
             pos = s_radius * (torch.rand(env_ids.size(0), 1, 3, dtype=torch.float, device=self.device) - 0.5)
-            heights = 0.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (2.5 - 0.5)
-            pos[:, 0, 2] = heights  # pos z: range from 0.5 to 2.5
+            heights = 2.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (5.0 - 2.5)
+            pos[:, 0, 2] = heights  # pos z: range from 2.5 to 5.0
         else:
             # assign positions on the center of the map grid
             pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
             pos[:, 0, 0] = 0
             pos[:, 0, 1] = 0
-            pos[:, 0, 2] = min(2.0, sz)
+            pos[:, 0, 2] = min(2.5, sz)
 
         self.start_pos = pos.clone()  # record start pos for debug
         
@@ -257,6 +256,10 @@ class FollowingEnvSimple(IsaacEnv):
         self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids)
 
         self.stats[env_ids] = 0.  
+
+        # Set default height range for each env
+        self.height_range[env_ids, 0, 0] = 1.0  # min height
+        self.height_range[env_ids, 0, 1] = 2 * sz    # max height
 
         # Reset visualization buffers if env 0 is reset
         if 0 in env_ids:
@@ -341,7 +344,7 @@ class FollowingEnvSimple(IsaacEnv):
             human_actions_local = self.manual_action.clone()
         else:
             # Step the simulated user model to get human action input
-            human_actions_local, intent_completed, intent_goals = self.user_model.step(
+            human_actions_local, intent_completed = self.user_model.step(
                 user_input_drone_state,
                 prev_action_local,
             )
@@ -394,8 +397,7 @@ class FollowingEnvSimple(IsaacEnv):
         penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
         
         # e. height penalty reward for flying unnessarily high or low
-        height_range = self.user_model.get_height_range() # get height range from user model (different for each env due to random goal sampling)
-        h_min, h_max = height_range[..., 0], height_range[..., 1]
+        h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
         # penalty when z > h_max + 0.2 or z < h_min - 0.2
         penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
         z = self.drone.pos[..., 2]
@@ -420,6 +422,7 @@ class FollowingEnvSimple(IsaacEnv):
         # No collision check needed as there are no obstacles, but ground collision is below_bound
         
         self.terminated = below_bound | above_bound
+        # TODO: 检查progress_buf（step次数）是否永远不会超过max_episode_length（由于帧数限制）
         timeout_truncate = (self.progress_buf >= self.max_episode_length).unsqueeze(-1)
         self.truncated = timeout_truncate
 

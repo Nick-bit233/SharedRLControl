@@ -69,8 +69,6 @@ class NavigationEnv(IsaacEnv):
         self.user_model = UserModel(
             num_envs=self.num_envs,
             cfg=cfg, 
-            lidar=self.lidar, 
-            lidar_resolution=self.lidar_resolution
         ) 
         
         # history action buffer for memory

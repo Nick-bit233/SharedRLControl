@@ -1,526 +1,385 @@
 import torch
+import numpy as np
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
+from noise import pnoise1  # TODO: use perlin-1d lib instead for better performance
 
-def generate_action_from_stick_profile_batched(
-        dt: float, 
-        total_steps: int, 
-        action_scale: torch.Tensor,
-        right_target: dict[str, torch.Tensor], 
-        left_target: dict[str, torch.Tensor], 
-        params: dict,
-        device: torch.device
-    ):
+def batched_perlin_noise(
+    time: torch.Tensor, 
+    seeds: torch.Tensor, 
+    freq: torch.Tensor,
+    device: torch.device
+):
     """
-    Generate batched action sequence (local, normalized) from joystick profile.
-    Uses Minimum Jerk Trajectory for human-like smooth control.
+    Generate batched 1D Perlin-like Gradient Noise.
     Args:
-        dt: time step
-        total_steps: total number of steps to generate
-        action_scale: scaling factor for (vel_x,vel_y,vel_z,yaw) (4,)
-        right_target: dict of right joystick target values (pitch, roll) (N,)
-        left_target: dict of left joystick target values (throttle, yaw) (N,)
-        params: dict of timing parameters (delay, rise, hold, fall times)
-        device: torch device
+        time: (N, T) time tensor
+        seeds: (N, 4) seeds for 4 channels
+        freq: (N, 1) frequency scaling
     Returns:
-        actions: (num_envs, max_steps, 4) tensor
+        noise: (N, T, 4) values in approx [-1, 1]
     """
-    num_envs = right_target['pitch'].shape[0]
+    # Expand dims for broadcasting
+    # time: (N, T) -> (N, T, 1)
+    t = time.unsqueeze(-1) * freq.unsqueeze(1) # (N, T, 4)
     
-    # Time vector (1, T)
-    t = (torch.arange(total_steps, device=device, dtype=torch.float32) * dt).unsqueeze(0) # (1, T)
+    t_floor = t.floor().long()
+    t_ceil = t_floor + 1
     
-    # Helper for Minimum Jerk profile generation
-    def get_minimum_jerk_profile(target_val, delay, rise, hold, fall):
-        # target_val, delay, rise, hold, fall: (N, 1)
-        # t: (1, T)
-        
-        profile = torch.zeros(num_envs, total_steps, device=device)
-        
-        # Rise phase: 0 -> target
-        t_start_rise = delay
-        t_end_rise = delay + rise
-        
-        # Mask (N, T)
-        mask_rise = (t >= t_start_rise) & (t < t_end_rise)
-        
-        # Compute polynomial for rise
-        rise_safe = torch.where(rise > 1e-6, rise, torch.ones_like(rise) * 1e-6)
-        tau_rise = (t - t_start_rise) / rise_safe
-        poly_rise = 10 * tau_rise**3 - 15 * tau_rise**4 + 6 * tau_rise**5
-        val_rise = target_val * poly_rise
-        
-        # Hold phase: target
-        t_start_hold = t_end_rise
-        t_end_hold = t_start_hold + hold
-        mask_hold = (t >= t_start_hold) & (t < t_end_hold)
-        
-        # Fall phase: target -> 0
-        t_start_fall = t_end_hold
-        t_end_fall = t_start_fall + fall
-        mask_fall = (t >= t_start_fall) & (t < t_end_fall)
-        
-        fall_safe = torch.where(fall > 1e-6, fall, torch.ones_like(fall) * 1e-6)
-        tau_fall = (t - t_start_fall) / fall_safe
-        poly_fall = 10 * tau_fall**3 - 15 * tau_fall**4 + 6 * tau_fall**5
-        val_fall = target_val * (1.0 - poly_fall)
-        
-        # Combine phases
-        # Initialize with zeros (already done)
-        # Apply masks
-        profile = torch.where(mask_rise, val_rise, profile)
-        profile = torch.where(mask_hold, target_val, profile)
-        profile = torch.where(mask_fall, val_fall, profile)
-            
-        return profile
+    # Hash function to get gradients
+    # We use a simple pseudo-random hash based on seeds and integer time
+    def get_grad(t_int):
+        # (N, T, 4)
+        # Mix seed and time
+        h = (seeds.unsqueeze(1) + t_int * 1327217881) ^ 0x5DEECE66D
+        h = (h ^ (h >> 13)) * 1274126177
+        h = h ^ (h >> 16)
+        # Map to [-1, 1]
+        grad = ((h & 0x7FFFFFFF).float() / 0x7FFFFFFF) * 2.0 - 1.0
+        return grad
 
-    # Extract params
-    delay_L = params['delay_time_L']
-    delay_R = params['delay_time_R']
-    rise_L = params['rise_time_L']
-    rise_R = params['rise_time_R']
-    hold_L = params['hold_time_L']
-    hold_R = params['hold_time_R']
-    fall_L = params['fall_time_L']
-    fall_R = params['fall_time_R']
-    noise_hf = params['noise_hf']
-    noise_lf = params['noise_lf']
-
-    # Generate base profiles
-    vx = get_minimum_jerk_profile(right_target.get('pitch', 0.0), delay_R, rise_R, hold_R, fall_R)
-    vy = get_minimum_jerk_profile(right_target.get('roll', 0.0), delay_R, rise_R, hold_R, fall_R)
-    vz = get_minimum_jerk_profile(left_target.get('throttle', 0.0), delay_L, rise_L, hold_L, fall_L)
-    yaw = get_minimum_jerk_profile(left_target.get('yaw', 0.0), delay_L, rise_L, hold_L, fall_L)
-
-    actions = torch.stack([vx, vy, vz, yaw], dim=2) # (N, T, 4)
-    actions = actions * action_scale.unsqueeze(0).unsqueeze(0)  # scale to physical units
-
-    # Add Human-like Noise
-    # High Frequency Noise
-    if (noise_hf > 0).any():
-        actions += torch.randn_like(actions) * noise_hf.unsqueeze(2)
-
-    # Low Frequency Noise
-    if (noise_lf > 0).any():
-        freq1, freq2 = 0.3, 0.7 # Hz
-        phase = torch.rand(num_envs, 4, device=device) * 2 * torch.pi
-        
-        t_exp = t.unsqueeze(2) # (1, T, 1)
-        phase_exp = phase.unsqueeze(1) # (N, 1, 4)
-        
-        drift = (torch.sin(2 * torch.pi * freq1 * t_exp + phase_exp) + 
-                 0.5 * torch.sin(2 * torch.pi * freq2 * t_exp))
-        actions += drift * noise_lf.unsqueeze(2)
-
-    return actions
+    g0 = get_grad(t_floor)
+    g1 = get_grad(t_ceil)
     
-
-def sample_joystick_profile_batched(num_envs, style, noise_level, device, min_duration=3.0, max_duration=5.0):
-    """
-    Sample random joystick profile parameters based on human style (Batched).
-    """
-    # style parameters (N, 1)
-    agg = style.get('aggressiveness', torch.full((num_envs, 1), 0.5, device=device))
-    dex = style.get('dexterity', torch.full((num_envs, 1), 0.5, device=device))
-    nl = noise_level
-
-    # 1. Duration
-    t_total = torch.rand(num_envs, 1, device=device) * (max_duration - min_duration) + min_duration
-
-    # 2. Targets
-
-    # fixed 50% probability of activation  # TODO: adjust based on style parameters
-    prob_activation = torch.full((num_envs, 1), 0.5, device=device)
+    dt = t - t_floor.float()
     
-    def get_target_val_batched():
-        # TODO：参考当前无人机的状态（世界坐标），防止生成的动作飞离边界（暂时考虑上下边界）
-        # Activation mask
-        active = torch.rand(num_envs, 1, device=device) <= prob_activation
-        
-        # Value in [0.2, 1] based on agg
-        # val = random.uniform(0.2, 0.5 + 0.5 * agg)
-        val_mag = 0.2 + torch.rand(num_envs, 1, device=device) * (0.3 + 0.5 * agg)
-        
-        # Direction
-        sign = torch.where(torch.rand(num_envs, 1, device=device) > 0.5, 1.0, -1.0)
-        
-        # if active, set to signed value, else 0
-        return torch.where(active, val_mag * sign, torch.zeros_like(val_mag))
+    # Fade function (smootherstep)
+    u = dt * dt * dt * (dt * (dt * 6 - 15) + 10)
+    
+    # Interpolate
+    # Dot product of gradient and distance vector (1D, so just mult)
+    n0 = g0 * dt
+    n1 = g1 * (dt - 1)
+    
+    noise = n0 + u * (n1 - n0)
+    return noise
 
-    right_target = {
-        'pitch': get_target_val_batched(),
-        'roll': get_target_val_batched(),
-    }
-    left_target = {
-        'throttle': get_target_val_batched(), 
-        'yaw': get_target_val_batched()
-    }
-
-    # 3. Timing Params
-    delay_base = 0.1 + 0.3 * (1.0 - agg) # range from [0.1, 0.4]
-    rise_base = 0.2 + 0.6 * (1.0 - agg)  # range from [0.2, 0.8]
-    
-    def rand_range(low, high):
-        return low + torch.rand(num_envs, 1, device=device) * (high - low)
-    
-    delay_time_L = rand_range(torch.zeros_like(delay_base), delay_base)
-    delay_time_R = rand_range(torch.zeros_like(delay_base), delay_base)
-    
-    rise_time_L = rand_range(rise_base * 0.8, rise_base * 1.2)
-    rise_time_R = rand_range(rise_base * 0.8, rise_base * 1.2)
-    
-    # Hold time limits
-    # limit = max(0.5, t_total - rise_base - delay_base)
-    limit_L = torch.clamp(t_total - rise_base - delay_base, min=0.5)
-    limit_R = torch.clamp(t_total - rise_base - delay_base, min=0.5)
-    # TODO: check the hold time model
-    hold_time_L = rand_range(torch.zeros_like(limit_L), limit_L)
-    hold_time_R = rand_range(torch.full_like(limit_R, 0.5), limit_R)
-    
-    fall_time_L = rand_range(torch.full_like(agg, 0.2), torch.full_like(agg, 0.5))
-    fall_time_R = rand_range(torch.full_like(agg, 0.2), torch.full_like(agg, 0.5))
-    
-    params = {
-        'delay_time_L': delay_time_L,
-        'delay_time_R': delay_time_R,
-        'rise_time_L': rise_time_L,
-        'rise_time_R': rise_time_R,
-        'hold_time_L': hold_time_L,
-        'hold_time_R': hold_time_R,
-        'fall_time_L': fall_time_L,
-        'fall_time_R': fall_time_R,
-        'noise_hf': nl * (1.0 - dex), 
-        'noise_lf': nl * 4.0 * (1.0 - dex)
-    }
-    
-    return t_total, right_target, left_target, params
-
-
-# User Model to simulate human actions
-# TODO: Gengerate action based on a trajectory pre-sampling
 class UserModel:
-    def __init__(self, num_envs, cfg, lidar, lidar_resolution):
+    def __init__(self, num_envs, cfg, use_lib_noise=False):
         self.num_envs = num_envs
         self.cfg = cfg
-        
-        # Init cfg parameters
-        self.env_map_range = torch.tensor(cfg.env.map_range, dtype=torch.float32, device=cfg.device)  # half extents of the env map
+        self.use_lib_noise = use_lib_noise
+        if self.use_lib_noise:
+            print("[Warning]: Using 'noise' library for Perlin noise generation. This runs on cpu and may be slower than the batched implementation.")
         self.device = cfg.device
-        self.lidar_range = cfg.sensor.lidar_range
-        self.max_speed = cfg.algo.actor.action_limit  # max speed limit during training
-
         self.dt = cfg.sim.dt
-        self.min_duration = cfg.user_model.min_duration
-        self.max_duration = cfg.user_model.max_duration
-
-        # Get RayCaster Lidar object from env
-        self.lidar = lidar
-        self.lidar_resolution = lidar_resolution  # (hbeams, vbeams)
-
-        # sample random style parameters for the user model
-        self.human_style = {
-            'conformance': torch.rand(self.num_envs, 1, device=self.device),  # alpha
-            'aggressiveness': torch.rand(self.num_envs, 1, device=self.device) , # beta
-            'dexterity': torch.rand(self.num_envs, 1, device=self.device) # gamma
+        
+        # Map boundaries for APF [x, y, z]
+        # Assuming map_range is half-extents
+        self.env_map_range = torch.tensor(
+            cfg.env.map_range, dtype=torch.float32, device=self.device
+        )
+        
+        # Parameters
+        # training frame num or max_episode_length ?
+        self.buffer_size = cfg.algo.training_frame_num # steps (e.g. 128 frames is about 2 seconds)
+        self.repulsive_gain = 1.0
+        self.max_speed = cfg.algo.actor.action_limit
+        
+        # State
+        self.action_buffer = torch.zeros(num_envs, self.buffer_size, 4, device=self.device)
+        self.buffer_read_idx = torch.zeros(num_envs, dtype=torch.long, device=self.device)
+        self.noise_time = torch.zeros(num_envs, device=self.device)
+        
+        # Random seeds for noise (N, 4)
+        self.noise_seeds = torch.randint(0, 100000, (num_envs, 4), device=self.device)
+        
+        # Style parameters (randomized per env)
+        self.styles = {
+            'noise_freq': torch.rand(num_envs, 1, device=self.device) * 0.05 + 0.05, # 0.05 - 0.1
+            'smoothness': torch.rand(num_envs, 1, device=self.device) * 0.5 + 0.2, # 0.2 - 0.7
+            'laziness': torch.rand(num_envs, 1, device=self.device) * 0.2, # Deadband threshold 0 - 0.2
         }
-        # TODO: more style params ...
-        self.speed_delta = torch.rand(self.num_envs, 1, device=self.device)  # delta
-        self.noise_level = 0.05 * torch.rand(self.num_envs, 1, device=self.device)  # noise level range [0.00, 0.05]
-
-        # batched buffers
-        self.intent_goals = torch.zeros(self.num_envs, 3, device=self.device)
-        # self.intent_timers = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        # height range limit: [minz, maxz] * envs
-        self.height_range = torch.zeros(self.num_envs, 1, 2, device=self.device)
-
-        # self.prev_joystick_action = torch.zeros(self.num_envs, 4, device=self.device) # user action output (simulate joystick) last step
-        self.prev_actual_action = torch.zeros(self.num_envs, 4, device=self.device) # actual action taken by the policy last step
-
-        # Buffer for pre-sampled trajectories
-
-        self.max_traj_steps = int(self.max_duration / self.dt)  # max steps per trajectory
-        self.current_trajectory_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)  # total steps in current trajectory (<= max_traj_steps)
-
-        # 初始化预采样轨迹的缓冲区，每组轨迹的最大步数为max_traj_steps，实际读取时，长度(即[1])依据current_trajectory_steps决定，剩下的部分以0填充
-        self.action_trajectories = torch.zeros(self.num_envs, self.max_traj_steps, 4, device=self.device)  # pre-sampled action trajectories
-        self.traj_step_indices = torch.zeros(self.num_envs, dtype=torch.long, device=self.device) # current step index in trajectory
-
-    # def _init_beam_angles(self):
-    #     H = self.lidar_resolution[0]
-    #     # evenly spread in [-pi, pi)
-    #     self.beam_angles = torch.linspace(-torch.pi, torch.pi, steps=H+1, device=self.device)[:-1]
-
+        
+        # Previous action for smoothing (Low Pass Filter)
+        self.prev_filtered_action = torch.zeros(num_envs, 4, device=self.device)
+        
     def reset(self, pos, quat, env_ids):
         """
-        Reset timers and batched buffers, 
-        resample new intent trajectory for the given env ids
-        called whenever the environment resets.
-
-        Args:
-            pos: (K,1,3) or (K,3) positions of the reset envs in world frame.
-            quat: (K,1,4) or (K,4) orientations of the reset envs in world frame.
-            env_ids: (K,) long tensor, indices in [0, num_envs).
-            lidar_scan: (K,1,H,V) lidar scan for the reset envs, or None.
+        Reset state for env_ids
         """
-        # ------- make sure get shape as (K,3)/(K,4) -------
-        if pos.ndim == 3:
-            pos_k = pos.squeeze(1)
-        else:
-            pos_k = pos
-
-        if quat.ndim == 3:
-            quat_k = quat.squeeze(1)
-        else:
-            quat_k = quat
-
-        K = env_ids.numel()
-
-        # Resample style parameters for these envs (optional)
-        self.human_style['conformance'][env_ids] = torch.rand(K, 1, device=self.device)
-        self.human_style['aggressiveness'][env_ids] = torch.rand(K, 1, device=self.device)
-        self.human_style['dexterity'][env_ids] = torch.rand(K, 1, device=self.device)
-        self.speed_delta[env_ids] = torch.rand(K, 1, device=self.device)
-        self.noise_level[env_ids] = 0.05 + 0.1 * torch.rand(K, 1, device=self.device)
-
-        # Sample the first batch of intent trajectories
-        new_traj = self._sample_intent_traj(env_ids=env_ids)
+        if pos.ndim == 3: pos = pos.squeeze(1)
+        if quat.ndim == 3: quat = quat.squeeze(1)
         
-        # Calculate approximate goal position from velocity trajectory
-        # Integrate velocity considering yaw rotation
-        pos_delta = self._integrate_trajectory(new_traj, quat_k)
-        new_goals = pos_k + pos_delta
-
-        self.intent_goals[env_ids] = new_goals
-
-        # Update height range based on current pos and new goals
-        self.height_range[env_ids, 0, 0] = torch.min(pos[:, 0, 2], new_goals[:, 2])
-        self.height_range[env_ids, 0, 1] = torch.max(pos[:, 0, 2], new_goals[:, 2])
-
-        # Reset previous actions buffers
-        # self.prev_joystick_action[env_ids] = 0.0
-        self.prev_actual_action[env_ids] = 0.0
+        K = len(env_ids)
         
-        # Reset trajectory indices
-        self.traj_step_indices[env_ids] = 0
-
-    def _integrate_trajectory(self, actions, init_quat):
-        """
-        Integrate action trajectory (velocities in Heading Frame) to get world displacement.
-        Args:
-            actions: (K, T, 4) tensor [vx, vy, vz, yaw_rate]
-            init_quat: (K, 4) tensor, initial orientation
-        Returns:
-            pos_delta: (K, 3) tensor, total displacement in world frame
-        """
-        dt = self.dt
-        K = actions.shape[0]
+        # Reset time and indices
+        self.noise_time[env_ids] = 0
+        self.buffer_read_idx[env_ids] = 0
         
-        # 1. Get initial yaw from quaternion
-        # Rotate X-axis (1,0,0) by init_quat to get heading vector
-        unit_x = torch.zeros(K, 3, device=self.device)
-        unit_x[:, 0] = 1.0
-        heading_vec = quat_rotate(init_quat, unit_x)
-        init_yaw = torch.atan2(heading_vec[:, 1], heading_vec[:, 0]) # (K,)
+        # New seeds
+        self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, 4), device=self.device)
         
-        # 2. Calculate yaw sequence
-        # actions: (K, T, 4) -> [vx, vy, vz, yaw_rate]
-        yaw_rates = actions[..., 3]
-        # Cumulative yaw change: cumsum(yaw_rate * dt)
-        yaw_deltas = torch.cumsum(yaw_rates * dt, dim=1) # (K, T)
+        # Randomize styles
+        # freq range: 0.05 - 0.1 for lower change rate
+        self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * 0.05 + 0.05
+        self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.5 + 0.2
+        self.styles['laziness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.2
         
-        # Yaw at start of each step t (approximate for integration)
-        # yaw_t[i] = init_yaw + sum(yaw_rate[0:i]) * dt
-        # We shift yaw_deltas to get the yaw at the beginning of the interval
-        yaw_t_end = init_yaw.unsqueeze(1) + yaw_deltas
-        yaw_t_start = yaw_t_end - (yaw_rates * dt)
+        self.prev_filtered_action[env_ids] = 0.0
         
-        # 3. Rotate velocities to world frame
-        # Assuming vx, vy are in the Heading Frame (Level, Yaw-rotated)
-        vx = actions[..., 0]
-        vy = actions[..., 1]
-        vz = actions[..., 2]
-        
-        cos_yaw = torch.cos(yaw_t_start)
-        sin_yaw = torch.sin(yaw_t_start)
-        
-        # Rotate (vx, vy) in 2D plane
-        vx_w = vx * cos_yaw - vy * sin_yaw
-        vy_w = vx * sin_yaw + vy * cos_yaw
-        
-        # 4. Sum up displacements
-        dx = torch.sum(vx_w, dim=1) * dt
-        dy = torch.sum(vy_w, dim=1) * dt
-        dz = torch.sum(vz, dim=1) * dt
-        
-        return torch.stack([dx, dy, dz], dim=1)
-
-    def _sample_intent_traj(self, env_ids=None):
-        """
-        Sample human actions by simulate controlller input.
-        Returns:
-            trajectories: (K, MaxSteps, 4) tensor of actions
-        """
-        if env_ids is None:
-            ids = torch.arange(self.num_envs, device=self.device)
-        elif isinstance(env_ids, int):
-            # Fallback if int is passed
-            ids = torch.tensor([env_ids], device=self.device)
-        else:
-            ids = env_ids
-            
-        K = ids.numel()
-        if K == 0:
-            return torch.empty(0, self.max_traj_steps, 4, device=self.device)
-        
-        # Get style for this env
-        style = {k: v[ids] for k, v in self.human_style.items()}
-        nl = self.noise_level[ids]
-        
-        # sample target action profile
-        t_total, right_target, left_target, params = sample_joystick_profile_batched(K, style, nl, self.device)
-
-        # Calculate actual duration for each env based on params
-        duration_R = params['delay_time_R'] + params['rise_time_R'] + params['hold_time_R'] + params['fall_time_R']
-        duration_L = params['delay_time_L'] + params['rise_time_L'] + params['hold_time_L'] + params['fall_time_L']
-        actual_duration = torch.max(duration_R, duration_L) # (K, 1)
-        
-        # Convert to steps
-        traj_steps = (actual_duration / self.dt).ceil().long().squeeze(1) # (K,)
-        
-        # Clamp to max_traj_steps
-        batch_steps = torch.clamp(traj_steps, max=self.max_traj_steps)
-        
-        # get action trajectory from joystick profile
-        # batch_trajs shape: (K, steps, 4)
-        max_steps_in_batch = int(batch_steps.max().item())
-        # make scale of only x,y to max_speed, z,yaw remain unchanged
-        scale_factor = torch.tensor(
-            [self.max_speed, self.max_speed, 1., 1.], 
-            dtype=torch.float32, 
-            device=self.device
-        )
-        batch_trajs = generate_action_from_stick_profile_batched(
-            dt=self.dt,
-            total_steps=max_steps_in_batch,
-            action_scale=scale_factor,
-            right_target=right_target,
-            left_target=left_target,
-            params=params,
-            device=self.device
-        )
-        
-        # Store in the main buffer
-        self.current_trajectory_steps[ids] = batch_steps
-
-        # Pad batch_trajs to max_traj_steps and store
-        current_len = batch_trajs.shape[1]
-        if current_len < self.max_traj_steps:
-            padding = torch.zeros(K, self.max_traj_steps - current_len, 4, device=self.device)
-            self.action_trajectories[ids] = torch.cat([batch_trajs, padding], dim=1)
-        else:
-            self.action_trajectories[ids] = batch_trajs[:, :self.max_traj_steps]
-
-        self.traj_step_indices[ids] = 0 # Reset indices for these envs
-        
-        return batch_trajs
+        # Refill buffer
+        self._refill_buffer(env_ids, pos, quat)
 
     def step(self, drone_state, prev_agent_action):
-        # print(f"UserModel step called. Indices[0]: {self.traj_step_indices[0]}")
+        # drone_state: (N, 13) -> pos, vel, quat, ang_vel
+        pos = drone_state[..., :3]
+        quat = drone_state[..., 6:10]
         
-        # Get drone state from environment
-        N = self.num_envs
-        drone_pos_w = drone_state[:, 0:3]  # (N,3)
-        drone_vel_w = drone_state[:, 3:6]  # (N,3)
-        drone_orientation_q = drone_state[:, 6:10]  # (N,4)
-
-        # get previous actual actions from environment history
-        self.prev_actual_action = prev_agent_action.detach()
-
-        # 1. Check if need new intent trajectory
-        # Simple Condition: a trajectory finished
-        traj_finished = self.traj_step_indices >= self.current_trajectory_steps
+        if pos.ndim == 3: pos = pos.squeeze(1)
+        if quat.ndim == 3: quat = quat.squeeze(1)
         
-        # Filter out drones that have reached current goal and need new intent
-        need_new_intent = traj_finished  # (N) boolean tensor
-        if need_new_intent.any():
-            # idx = if need_new_intent is True
-            idx = need_new_intent.nonzero(as_tuple=False).squeeze(-1)
+        # Check refill
+        needs_refill = self.buffer_read_idx >= self.buffer_size
+        if needs_refill.any():
+            idxs = needs_refill.nonzero(as_tuple=False).squeeze(-1)
+            # For refill, we need current pos/quat to start integration
+            self._refill_buffer(idxs, pos[idxs], quat[idxs])
+            self.buffer_read_idx[idxs] = 0
             
-            # Resample trajectory for these envs
-            new_traj = self._sample_intent_traj(env_ids=idx)
+        # Read action from buffer
+        # action_buffer: (N, T, 4)
+        # We need to select [i, read_idx[i], :]
+        # Use gather
+        read_indices = self.buffer_read_idx.view(-1, 1, 1).expand(-1, 1, 4)
+        action = torch.gather(self.action_buffer, 1, read_indices).squeeze(1)
+        
+        self.buffer_read_idx += 1
+        
+        # Update intent goals (just for visualization/compatibility, set to current pos + action direction)
+        # self.intent_goals = pos + quat_rotate(quat, action[..., :3])
+        
+        return action, needs_refill
+
+    def _generate_lib_noise(self, time_grid, seeds, freq):
+        K, T = time_grid.shape
+        time_np = time_grid.cpu().numpy()
+        seeds_np = seeds.cpu().numpy()
+        freq_np = freq.cpu().numpy()
+        
+        noise_data = np.zeros((K, T, 4), dtype=np.float32)
+        
+        for k in range(K):
+            f = freq_np[k, 0]
+            for ch in range(4):
+                base = int(seeds_np[k, ch] % 256)
+                for t in range(T):
+                    noise_data[k, t, ch] = pnoise1(time_np[k, t] * f, base=base)
+                    
+        return torch.from_numpy(noise_data).to(self.device)
+
+    def _refill_buffer(self, env_ids, start_pos, start_quat):
+        """
+        Generate a trajectory of actions using Perlin noise and APF.
+        """
+        K = len(env_ids)
+        T = self.buffer_size
+        dt = self.dt
+        
+        # 1. Generate Perlin Noise for the whole batch (K, T, 4)
+        # Time vector
+        t_start = self.noise_time[env_ids].unsqueeze(1) # (K, 1)
+        t_steps = torch.arange(T, device=self.device).unsqueeze(0) * dt # (1, T)
+        time_grid = t_start + t_steps # (K, T)
+        
+        seeds = self.noise_seeds[env_ids] # (K, 4)
+        freq = self.styles['noise_freq'][env_ids] # (K, 1)
+        
+        # Generate raw noise (Target Velocities)
+        # (K, T, 4)
+        if self.use_lib_noise:
+            raw_noise = self._generate_lib_noise(time_grid, seeds, freq)
+            # check if raw_noise is in [-1, 1]
+            assert torch.all(raw_noise >= -1.0) and torch.all(raw_noise <= 1.0), "Raw noise out of expected range [-1, 1]"
+        else:
+            raw_noise = batched_perlin_noise(time_grid, seeds, freq, self.device)
+        
+        # Scale noise to physical units
+        # vx, vy, vz, yaw_rate
+        # Assume output is [-1, 1], scale to max_speed
+        scale = torch.tensor([self.max_speed, self.max_speed, self.max_speed, 2.0], device=self.device)
+        target_vels = raw_noise * scale
+        
+        # 2. Apply Human Filters (Low Pass & Deadband)
+        # We can do this on the whole trajectory
+        # Low Pass: y[i] = alpha * x[i] + (1-alpha) * y[i-1]
+        # This is sequential, but T is small (100).
+        
+        alpha = 1.0 - self.styles['smoothness'][env_ids] # (K, 1)
+        laziness = self.styles['laziness'][env_ids] # (K, 1)
+        
+        # Initialize filtered trajectory
+        filtered_traj = torch.zeros_like(target_vels)
+        last_val = self.prev_filtered_action[env_ids] # (K, 4)
+        
+        # 3. Integration loop for APF and Filter
+        # We need to track position to apply APF
+        curr_pos = start_pos.clone() # (K, 3)
+        curr_quat = start_quat.clone() # (K, 4)
+        
+        # Pre-compute rotation for efficiency? No, quat changes with yaw rate.
+        # We assume simplified kinematics: pos += rotate(vel) * dt, yaw += yaw_rate * dt
+        
+        for t in range(T):
+            # a. Get raw target for this step
+            raw_v = target_vels[:, t] # (K, 4)
             
-            # Update goals based on new trajectory
-            # Use current orientation to integrate the new trajectory
-            # TODO：计算intent goal时，是否考虑无人机当前的速度和位置（因为实际动作会有误差累积）
-            current_quat = drone_orientation_q[idx]
-            pos_delta = self._integrate_trajectory(new_traj, current_quat)
+            # b. Apply Deadband (Laziness)
+            # If raw input is small, set to 0
+            mask_dead = raw_v.abs() < laziness
+            raw_v = torch.where(mask_dead, torch.zeros_like(raw_v), raw_v)
             
-            self.intent_goals[idx] = drone_pos_w[idx] + pos_delta
+            # c. Apply Low Pass Filter
+            # val = alpha * raw + (1-alpha) * last
+            # Note: alpha is (K, 1)
+            curr_v = alpha * raw_v + (1.0 - alpha) * last_val
+            last_val = curr_v
+            
+            # d. Apply APF (Artificial Potential Field)
+            # Calculate repulsion based on curr_pos
+            repulsion = self._calculate_apf(curr_pos) # (K, 3)
+            
+            # Add repulsion to linear velocity (local frame or world frame?)
+            # APF is usually in World Frame.
+            # curr_v is in Body Frame (Joystick input).
+            # We need to project APF to Body Frame to modify joystick input, 
+            # OR modify the result of integration.
+            # The user wants "stick inputs" modified.
+            # So we rotate APF (World) -> Body
+            
+            # Rotate repulsion to body frame
+            # quat_rotate_inverse rotates World -> Body
+            repulsion_b = quat_rotate_inverse(curr_quat, repulsion)
+            
+            # Add to linear parts (0:3)
+            curr_v_modified = curr_v.clone()
+            curr_v_modified[:, :3] += repulsion_b
+            
+            # Calculate proposed world velocity
+            vel_world = quat_rotate(curr_quat, curr_v_modified[:, :3])
+            
+            # Propose next position
+            next_pos = curr_pos + vel_world * dt
+            
+            # Clamp position to map boundaries to ensure trajectory validity
+            # This prevents the generated trajectory from going through walls/floor
+            # Note: Z-axis limit is 2 * map_range[2] consistent with APF calculation (assuming map_range is half-extents)
+            next_pos[:, 0] = torch.clamp(next_pos[:, 0], -self.env_map_range[0], self.env_map_range[0])
+            next_pos[:, 1] = torch.clamp(next_pos[:, 1], -self.env_map_range[1], self.env_map_range[1])
+            next_pos[:, 2] = torch.clamp(next_pos[:, 2], 1.0, 2.0 * self.env_map_range[2])
+            
+            # Calculate effective world velocity based on clamped position
+            effective_vel_world = (next_pos - curr_pos) / dt
+            
+            # --- DEBUG PROBE START ---
+            # Check for velocity spikes
+            # vel_norm = torch.norm(effective_vel_world, dim=-1)
+            # if (vel_norm > self.max_speed * 4.0).any():
+            #     idx = torch.argmax(vel_norm).item()
+            #     print(f"[DEBUG] Spike detected at t={t} for env {idx}")
+            #     print(f"  dt: {dt}")
+            #     print(f"  curr_pos: {curr_pos[idx].detach().cpu().numpy()}")
+            #     print(f"  next_pos (unclamped): {(curr_pos + vel_world * dt)[idx].detach().cpu().numpy()}")
+            #     print(f"  next_pos (clamped): {next_pos[idx].detach().cpu().numpy()}")
+            #     print(f"  effective_vel_world: {effective_vel_world[idx].detach().cpu().numpy()}")
+            #     print(f"  vel_world (pre-clamp): {vel_world[idx].detach().cpu().numpy()}")
+            #     print(f"  repulsion: {repulsion[idx].detach().cpu().numpy() if 'repulsion' in locals() else 'N/A'}")
+            #     print(f"  curr_v: {curr_v[idx].detach().cpu().numpy()}")
+            #     print(f"  curr_quat: {curr_quat[idx].detach().cpu().numpy()}")
+            # --- DEBUG PROBE END ---
 
-        # 2. Get action from pre-sampled trajectory
-        # indices: (N,)
-        # trajectories: (N, MaxSteps, 4)
-        # We need to gather: trajectories[i, indices[i], :]
+            # Clamp effective velocity to prevent explosions (e.g. if correcting from out-of-bounds)
+            # Allow slightly higher than max_speed for correction, but not infinite
+            limit = self.max_speed * 2.0
+            effective_vel_world = torch.clamp(effective_vel_world, -limit, limit)
+            
+            # Convert effective velocity back to body frame for storage
+            effective_vel_body = quat_rotate_inverse(curr_quat, effective_vel_world)
+            
+            # Update the linear part of the action to be stored
+            curr_v_modified[:, :3] = effective_vel_body
+            
+            # e. Store in buffer
+            filtered_traj[:, t] = curr_v_modified
+            
+            # Update curr_pos for next iteration
+            curr_pos = next_pos
+            
+            # f. Integrate Yaw for next step
+            # Update Yaw
+            yaw_rate = curr_v_modified[:, 3]
+            
+            # Update yaw in quaternion (approximate)
+            # Create a rotation quaternion for Z axis
+            half_angle = yaw_rate * dt * 0.5
+            s = torch.sin(half_angle)
+            c = torch.cos(half_angle)
+            
+            qx, qy, qz, qw = curr_quat[:, 0], curr_quat[:, 1], curr_quat[:, 2], curr_quat[:, 3]
+            
+            nqx = qx * c + qy * s
+            nqy = qy * c - qx * s
+            nqz = qz * c + qw * s
+            nqw = qw * c - qz * s
+            curr_quat = torch.stack([nqx, nqy, nqz, nqw], dim=1)
+            # Normalize quaternion to prevent drift
+            curr_quat = curr_quat / torch.norm(curr_quat, dim=1, keepdim=True)
+            
+        # Store trajectory
+        self.action_buffer[env_ids] = filtered_traj
         
-        # Clamp indices to avoid out of bound (though we reset them)
-        safe_indices = self.traj_step_indices.clamp(max=self.max_traj_steps - 1)
-        
-        # Gather actions
-        # (N, 1, 4)
-        action_local = torch.gather(
-            self.action_trajectories, 
-            1, 
-            safe_indices.view(-1, 1, 1).expand(-1, 1, 4)
-        ).squeeze(1)
-        
-        # Increment indices
-        self.traj_step_indices += 1
+        # Update state
+        self.prev_filtered_action[env_ids] = last_val
+        self.noise_time[env_ids] += T * dt
 
-        # Use action directly (noise is already in profile)
-        # TODO: 添加alpha参数（conformance）对user动作的影响
-        au_local_noisy = action_local
-
-        # # 3. Convert local action to world frame
-        # # Split linear and vertical components
-        # vels_u_b_noisy = au_local_noisy[:, 0:3]
-        # au_world_noisy = torch.cat([quat_rotate(drone_orientation_q, vels_u_b_noisy), au_local_noisy[:, 3:4]], dim=-1)
-
-        # # Update previous joystick action based on current noisy action
-        # self.prev_joystick_action = au_world_noisy.detach() # Store for next step
+    def _calculate_apf(self, pos):
+        """
+        Calculate Artificial Potential Field force.
+        pos: (K, 3)
+        """
+        force = torch.zeros_like(pos)
+        margin = 0.5
+        gain = self.repulsive_gain
         
-        return au_local_noisy, need_new_intent, self.intent_goals
-    
+        # Map limits
+        # self.env_map_range is [Lx, Ly, Lz]
+        # Bounds: [-Lx, Lx], [-Ly, Ly], [0.1, 2Lz] (z is half height)
+        
+        limits = self.env_map_range
+        
+        # X axis
+        # if pos < -Lx + margin: force += gain * (margin - (pos - (-Lx)))
+        # dist to min: pos - (-Lx) = pos + Lx
+        d_min_x = pos[:, 0] + limits[0]
+        mask_min_x = d_min_x < margin
+        force[mask_min_x, 0] += gain * (margin - d_min_x[mask_min_x])
+        
+        # dist to max: Lx - pos
+        d_max_x = limits[0] - pos[:, 0]
+        mask_max_x = d_max_x < margin
+        force[mask_max_x, 0] -= gain * (margin - d_max_x[mask_max_x])
+        
+        # Y axis
+        d_min_y = pos[:, 1] + limits[1]
+        mask_min_y = d_min_y < margin
+        force[mask_min_y, 1] += gain * (margin - d_min_y[mask_min_y])
+        
+        d_max_y = limits[1] - pos[:, 1]
+        mask_max_y = d_max_y < margin
+        force[mask_max_y, 1] -= gain * (margin - d_max_y[mask_max_y])
+        
+        # Z axis (Floor and Ceiling)
+        # Floor at 1.0 (to avoid ground collision)
+        d_floor = pos[:, 2] - 1.0
+        mask_floor = d_floor < margin
+        force[mask_floor, 2] += gain * (margin - d_floor[mask_floor])
+        
+        # Ceiling at 2Lz
+        d_ceil = 2 * limits[2] - pos[:, 2]
+        mask_ceil = d_ceil < margin
+        force[mask_ceil, 2] -= gain * (margin - d_ceil[mask_ceil])
+        
+        return force
+
+    @DeprecationWarning
     def get_height_range(self):
-        """
-        Get the height range [minz, maxz] for each env based on current pos and intent goal
-        Returns:
-            height_range: (num_envs, 2) tensor, minz and maxz for each env
-        """
-        return self.height_range
-    
-    # def _visualize_single_env(self, env_idx, pos, goal, action_b):
-    #     """
-    #     Visualize the drone position and intent goal in the environment using debug drawing
-    #     Inputs: 
-    #         env_idx: int, index of the environment to visualize
-    #         pos: (3,) tensor, drone position in world frame
-    #         goal: (3,) tensor, intent goal position in world frame
-    #     """
-    #     if self.debug_draw is None:
-    #         return
-
-    #     p0 = pos.reshape(1, 3)
-    #     g = goal.reshape(1, 3)
-    #     vel_b = action_b[0:3].reshape(1, 3)
-
-    #     self.debug_draw.clear()
-    #     g_top = g + torch.tensor([0, 0, 0.5], device=self.device) # 向上 0.5m
-    #     line_points = torch.cat([g, g_top], dim=0) # (2, 3)
-        
-    #     # draw goal (red)
-    #     self.debug_draw.plot(x=line_points, size=12.0, color=(1.0,0.0,0.0,1.0))
-
-    #     # draw goal vector (green)
-    #     self.debug_draw.vector(p0, (g - p0), size=2.0, color=(0.1,1.0,0.1,1.0))
-
-    #     # draw current velocity vector (blue)
-    #     self.debug_draw.vector(p0, vel_b, size=2.0, color=(0.1,0.1,1.0,1.0))
+        return torch.zeros(self.num_envs, 1, 2, device=self.device) # Dummy

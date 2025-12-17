@@ -57,7 +57,7 @@ def main(cfg):
     print("[SimpleRunner] Starting Simple Environment...")
 
     # === 覆盖配置 ===
-    cfg.env.num_envs = 256           # 无人机数量
+    cfg.env.num_envs = 1024           # 无人机数量
     # cfg.env.num_obstacles = 0     # 已经在 env_simple.py 中强制设为 0
     # cfg.env_dyn.num_obstacles = 0   # 已经在 env_simple.py 中强制设为 0
     
@@ -68,7 +68,7 @@ def main(cfg):
     cfg.algo.rnn.enable = False
 
     cfg.algo.training_frame_num = 128  # 每个采集批次帧数
-    cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 20000  # 最大采集帧数 = frame_num * N * Batches
+    cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 10000  # 最大采集帧数 = frame_num * N * Batches
     cfg.debug_mode = False
     cfg.global_view = True      # 是否使用全局视角
     one_step_only = False         # 是否只跑一步

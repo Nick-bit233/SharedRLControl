@@ -19,7 +19,7 @@ save_interval: 800
 # Training Environment
 env:
   num_envs: 1024 # Number of drones for training
-  max_episode_length: 2000
+  max_episode_length: 1000
   env_spacing: 8.0 
   num_obstacles: 512
   map_range: [40.0, 40.0, 4.5] # [x, y, z], half extents
