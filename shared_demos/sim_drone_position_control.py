@@ -58,9 +58,9 @@ class KeyboardInput:
         self._sub = self._input.subscribe_to_keyboard_events(
             self._keyboard, self._on_event
         )
-        self.manual_mode = True # False = Hover, True = Manual
-        self.world_frame = True # True = World Frame, False = Body Frame
-        self.use_joystick = False # Default to Keyboard
+        self.manual_mode = False # False = Hover, True = Manual
+        self.world_frame = False # True = World Frame, False = Body Frame
+        self.use_joystick = True # Default to Keyboard
         self.key_states = {
             "W": 0.0, "S": 0.0, # Pitch (Forward/Backward)
             "A": 0.0, "D": 0.0, # Roll (Left/Right)
@@ -235,7 +235,7 @@ def main():
                 target_pos=target_pos,
                 target_yaw=target_yaw
             )
-            print(f"[DEBUG] Root state shape: {root_state.shape}, action shape: {action.shape}")
+            # print(f"[DEBUG] Root state shape: {root_state.shape}, action shape: {action.shape}")
             
             # D. 应用控制指令
             drone.apply_action(action)

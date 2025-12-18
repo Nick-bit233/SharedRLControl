@@ -275,7 +275,8 @@ class FollowingEnvSimple(IsaacEnv):
             self.viz_human_pos = pos[idx, 0].clone()
         
     def _pre_sim_step(self, tensordict: TensorDictBase):
-        actions = tensordict[("agents", "action")]  # action in world frame (transformed in ppo __call__)
+        # TODO：修改了ppo模型的定义，要求action均输出为body frame，这里的转换需要修正。
+        actions = tensordict[("agents", "action")]  # action in body frame
 
         # store applied action so that the subsequent observation (next step) sees it as prev_action
         # sometimes actions may be shape (num_envs, 1, 4) or (num_envs, 4). Normalize:
@@ -284,11 +285,16 @@ class FollowingEnvSimple(IsaacEnv):
         else:
             actions_flat = actions
 
-        # prev_action: world frame (should transform back to body frame when feeding into tensor dict)
+        # store as prev_action
         self.prev_agent_action = actions_flat.clone()  # clone to avoid in-place aliasing
 
-
-        self.drone.apply_action(actions) 
+        # transform action from body frame to world frame in order to apply to drone
+        # get current drone orientation
+        drone_orientation_q = self.root_state[..., 3:7].squeeze(1)  # TODO: chceck if need to call drone.get_state
+        actions_world = vec_to_world(
+            actions_flat, drone_orientation_q
+        )  # shape: (N, 4), convert vel_b to vel_w
+        self.drone.apply_action(actions_world) 
 
     def _post_sim_step(self, tensordict: TensorDictBase):
         # No dynamic obstacles
@@ -333,9 +339,7 @@ class FollowingEnvSimple(IsaacEnv):
 
         # ---------Network Input IV: Previous drone action--------
         
-        prev_action_local = vec_to_body(
-            self.prev_agent_action, drone_state
-        )  # shape: (N, 4), new vec to body function can handle 4D action
+        prev_action_local = self.prev_agent_action  # shape: (N, 4)
 
         # ---------Network Input V: Human control action--------
 
@@ -431,7 +435,7 @@ class FollowingEnvSimple(IsaacEnv):
         # No collision check needed as there are no obstacles, but ground collision is below_bound
         
         self.terminated = below_bound | above_bound
-        # TODO: 检查progress_buf（step次数）是否永远不会超过max_episode_length（由于帧数限制）
+        # progress_buf 会不断累积，达到 max_episode_length 时触发截断（每次取batch训练时不会重置）
         timeout_truncate = (self.progress_buf >= self.max_episode_length).unsqueeze(-1)
         self.truncated = timeout_truncate
 

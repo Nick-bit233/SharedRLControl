@@ -177,12 +177,6 @@ def main():
             # Integrate
             target_pos += vel_world * dt
             target_yaw += yaw_rate.unsqueeze(1) * dt
-            
-            # 简单的边界限制 (Clamping target to map range to avoid drifting too far if APF fails)
-            # map_range = mock_cfg.env.map_range
-            # target_pos[..., 0] = torch.clamp(target_pos[..., 0], -map_range[0], map_range[0])
-            # target_pos[..., 1] = torch.clamp(target_pos[..., 1], -map_range[1], map_range[1])
-            # target_pos[..., 2] = torch.clamp(target_pos[..., 2], 0.1, map_range[2])
 
             # D. 计算控制指令
             control_action = controller.compute(
