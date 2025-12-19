@@ -1,56 +1,230 @@
 import torch
 import numpy as np
+import math
+from enum import Enum
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
-from noise import pnoise1  # TODO: use perlin-1d lib instead for better performance
+
+
+class InterpType(Enum):
+    LINEAR = 1
+    COSINE = 2
+    CUBIC = 3
+
+
+class BatchedPerlinNoise:
+    """
+    GPU-batched Perlin Noise generator using PyTorch.
+    Algorithmically identical to the PerlinNoise class in perlin_noise.py.
+    """
+    
+    def __init__(
+        self,
+        seeds: torch.Tensor,
+        amplitude: float = 1.0,
+        frequency: float = 1.0,
+        octaves: int = 1,
+        interp: InterpType = InterpType.COSINE,
+        use_fade: bool = False,
+        device: torch.device = None
+    ):
+        """
+        Args:
+            seeds: (N,) tensor of seeds for N independent noise generators
+            amplitude: Base amplitude
+            frequency: Base frequency
+            octaves: Number of octaves for fractal noise
+            interp: Interpolation type
+            use_fade: Whether to use fade function (useful for linear interp)
+            device: Torch device
+        """
+        self.device = device if device is not None else seeds.device
+        self.amplitude = amplitude
+        self.frequency = frequency
+        self.octaves = octaves
+        self.interp = interp
+        self.use_fade = use_fade
+        
+        # Transform seeds similar to: random.Random(seed).random()
+        # We use a deterministic hash to get a float in [0, 1)
+        self.base_seeds = self._hash_to_float(seeds.to(self.device))  # (N,)
+    
+    def _hash_to_float(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Deterministic hash function to convert integer seeds to floats in [0, 1).
+        Mimics random.Random(seed).random() behavior.
+        """
+        # Use a simple but effective hash based on the same constants Python's random uses
+        # This creates a deterministic mapping from seed to a float in [0, 1)
+        x = x.double()
+        # Constants inspired by linear congruential generator
+        a = 6364136223846793005
+        c = 1442695040888963407
+        m = 2**63
+        hashed = ((x * a + c) % m) / m
+        return hashed.float()
+    
+    def _noise(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Generate deterministic noise value for integer positions.
+        Mimics: random.Random(self.seed + x).uniform(-1, 1)
+        
+        Args:
+            x: (N, T) integer positions
+        Returns:
+            (N, T) noise values in [-1, 1]
+        """
+        # Combine base_seed with position x to get unique seed per position
+        # base_seeds: (N,) -> (N, 1)
+        combined = self.base_seeds.unsqueeze(1) + x.float()
+        
+        # Hash to get value in [0, 1), then scale to [-1, 1]
+        # Use multiple hash rounds for better distribution
+        h = combined
+        h = torch.sin(h * 12.9898) * 43758.5453
+        h = h - h.floor()  # Fractional part, now in [0, 1)
+        
+        # Convert to [-1, 1]
+        return h * 2.0 - 1.0
+    
+    def _fade(self, x: torch.Tensor) -> torch.Tensor:
+        """Fade function: 6x^5 - 15x^4 + 10x^3"""
+        return (6 * x**5) - (15 * x**4) + (10 * x**3)
+    
+    def _linear_interp(self, a: torch.Tensor, b: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Linear interpolation: a + x * (b - a)"""
+        return a + x * (b - a)
+    
+    def _cosine_interp(self, a: torch.Tensor, b: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Cosine interpolation"""
+        x2 = (1 - torch.cos(x * math.pi)) / 2
+        return a * (1 - x2) + b * x2
+    
+    def _cubic_interp(
+        self, v0: torch.Tensor, v1: torch.Tensor, 
+        v2: torch.Tensor, v3: torch.Tensor, x: torch.Tensor
+    ) -> torch.Tensor:
+        """Cubic interpolation"""
+        p = (v3 - v2) - (v0 - v1)
+        q = (v0 - v1) - p
+        r = v2 - v0
+        s = v1
+        return p * x**3 + q * x**2 + r * x + s
+    
+    def _interpolated_noise(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Get interpolated noise at continuous positions.
+        
+        Args:
+            x: (N, T) continuous positions
+        Returns:
+            (N, T) interpolated noise values
+        """
+        prev_x = x.floor().long()  # Previous integer
+        next_x = prev_x + 1  # Next integer
+        frac_x = x - prev_x.float()  # Fractional part
+        
+        if self.use_fade:
+            frac_x = self._fade(frac_x)
+        
+        if self.interp == InterpType.LINEAR:
+            result = self._linear_interp(
+                self._noise(prev_x),
+                self._noise(next_x),
+                frac_x
+            )
+        elif self.interp == InterpType.COSINE:
+            result = self._cosine_interp(
+                self._noise(prev_x),
+                self._noise(next_x),
+                frac_x
+            )
+        else:  # CUBIC
+            result = self._cubic_interp(
+                self._noise(prev_x - 1),
+                self._noise(prev_x),
+                self._noise(next_x),
+                self._noise(next_x + 1),
+                frac_x
+            )
+        
+        return result
+    
+    def get(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Get Perlin noise value at positions x.
+        
+        Args:
+            x: (N, T) or (N,) positions to sample
+        Returns:
+            Same shape as x, noise values
+        """
+        squeeze_output = False
+        if x.dim() == 1:
+            x = x.unsqueeze(1)
+            squeeze_output = True
+        
+        frequency = self.frequency
+        amplitude = self.amplitude
+        result = torch.zeros_like(x)
+        
+        for _ in range(self.octaves):
+            result = result + self._interpolated_noise(x * frequency) * amplitude
+            frequency *= 2
+            amplitude /= 2
+        
+        if squeeze_output:
+            result = result.squeeze(1)
+        
+        return result
+
 
 def batched_perlin_noise(
     time: torch.Tensor, 
     seeds: torch.Tensor, 
     freq: torch.Tensor,
     device: torch.device
-):
+) -> torch.Tensor:
     """
     Generate batched 1D Perlin-like Gradient Noise.
+    
     Args:
         time: (N, T) time tensor
-        seeds: (N, 4) seeds for 4 channels
+        seeds: (N, 4) seeds for 4 channels, each is independent 1D noise
         freq: (N, 1) frequency scaling
+        device: torch device
+        
     Returns:
         noise: (N, T, 4) values in approx [-1, 1]
     """
-    # Expand dims for broadcasting
-    # time: (N, T) -> (N, T, 1)
-    t = time.unsqueeze(-1) * freq.unsqueeze(1) # (N, T, 4)
+    N, T = time.shape
+    num_channels = 4
     
-    t_floor = t.floor().long()
-    t_ceil = t_floor + 1
+    # Output tensor
+    noise = torch.zeros(N, T, num_channels, device=device)
     
-    # Hash function to get gradients
-    # We use a simple pseudo-random hash based on seeds and integer time
-    def get_grad(t_int):
-        # (N, T, 4)
-        # Mix seed and time
-        h = (seeds.unsqueeze(1) + t_int * 1327217881) ^ 0x5DEECE66D
-        h = (h ^ (h >> 13)) * 1274126177
-        h = h ^ (h >> 16)
-        # Map to [-1, 1]
-        grad = ((h & 0x7FFFFFFF).float() / 0x7FFFFFFF) * 2.0 - 1.0
-        return grad
-
-    g0 = get_grad(t_floor)
-    g1 = get_grad(t_ceil)
+    # Sample each channel independently
+    for ch in range(num_channels):
+        # Create noise generator for this channel with per-env seeds
+        channel_seeds = seeds[:, ch]  # (N,)
+        
+        # Create batched perlin noise generator
+        perlin = BatchedPerlinNoise(
+            seeds=channel_seeds,
+            amplitude=1.0,
+            frequency=1.0,  # Base frequency, actual freq applied via time scaling
+            octaves=1,
+            interp=InterpType.COSINE,
+            use_fade=False,
+            device=device
+        )
+        
+        # Scale time by frequency (freq is per-env)
+        # time: (N, T), freq: (N, 1)
+        scaled_time = time * freq  # (N, T)
+        
+        # Get noise values
+        noise[:, :, ch] = perlin.get(scaled_time)
     
-    dt = t - t_floor.float()
-    
-    # Fade function (smootherstep)
-    u = dt * dt * dt * (dt * (dt * 6 - 15) + 10)
-    
-    # Interpolate
-    # Dot product of gradient and distance vector (1D, so just mult)
-    n0 = g0 * dt
-    n1 = g1 * (dt - 1)
-    
-    noise = n0 + u * (n1 - n0)
     return noise
 
 class UserModel:
