@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import math
+import logging
 from enum import Enum
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
 
@@ -15,6 +16,10 @@ class BatchedPerlinNoise:
     """
     GPU-batched Perlin Noise generator using PyTorch.
     Algorithmically identical to the PerlinNoise class in perlin_noise.py.
+    
+    Note: The original PerlinNoise uses `random.Random(self.seed + x).uniform(-1, 1)` 
+    which is essentially a hash function mapping (seed, position) -> deterministic value.
+    We replicate this behavior using a GPU-friendly deterministic hash.
     """
     
     def __init__(
@@ -44,43 +49,31 @@ class BatchedPerlinNoise:
         self.interp = interp
         self.use_fade = use_fade
         
-        # Transform seeds similar to: random.Random(seed).random()
-        # We use a deterministic hash to get a float in [0, 1)
-        self.base_seeds = self._hash_to_float(seeds.to(self.device))  # (N,)
-    
-    def _hash_to_float(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Deterministic hash function to convert integer seeds to floats in [0, 1).
-        Mimics random.Random(seed).random() behavior.
-        """
-        # Use a simple but effective hash based on the same constants Python's random uses
-        # This creates a deterministic mapping from seed to a float in [0, 1)
-        x = x.double()
-        # Constants inspired by linear congruential generator
-        a = 6364136223846793005
-        c = 1442695040888963407
-        m = 2**63
-        hashed = ((x * a + c) % m) / m
-        return hashed.float()
+        # Store original seeds for deterministic noise generation
+        # Seed need random generated before initialization, or use torch.Generator to make it fixed when evaluating
+        self.seeds = seeds.to(self.device).float()  # (N,)
     
     def _noise(self, x: torch.Tensor) -> torch.Tensor:
         """
         Generate deterministic noise value for integer positions.
         Mimics: random.Random(self.seed + x).uniform(-1, 1)
         
+        This is a hash function, not sequential RNG. Given the same (seed, position),
+        it must always return the same value. torch.rand() cannot do this because
+        it depends on generator state that changes with each call.
+        
         Args:
             x: (N, T) integer positions
         Returns:
             (N, T) noise values in [-1, 1]
         """
-        # Combine base_seed with position x to get unique seed per position
-        # base_seeds: (N,) -> (N, 1)
-        combined = self.base_seeds.unsqueeze(1) + x.float()
+        # Combine seed with position: seeds (N,) -> (N, 1), x (N, T)
+        combined = self.seeds.unsqueeze(1) + x.float()  # (N, T)
         
-        # Hash to get value in [0, 1), then scale to [-1, 1]
-        # Use multiple hash rounds for better distribution
-        h = combined
-        h = torch.sin(h * 12.9898) * 43758.5453
+        # Deterministic hash function (GPU-friendly)
+        # This mimics random.Random(seed).uniform(-1, 1) behavior
+        # Using sine-based hash for good distribution
+        h = torch.sin(combined * 12.9898 + 78.233) * 43758.5453
         h = h - h.floor()  # Fractional part, now in [0, 1)
         
         # Convert to [-1, 1]
@@ -228,12 +221,19 @@ def batched_perlin_noise(
     return noise
 
 class UserModel:
-    def __init__(self, num_envs, cfg, use_lib_noise=False):
+    def __init__(self, num_envs, cfg, use_lib_noise=False, logger=None):
         self.num_envs = num_envs
         self.cfg = cfg
-        self.use_lib_noise = use_lib_noise
-        if self.use_lib_noise:
-            print("[Warning]: Using 'noise' library for Perlin noise generation. This runs on cpu and may be slower than the batched implementation.")
+        # Setup logger (use provided logger or create a null logger)
+        if logger is not None:
+            self.logger = logger
+        else:
+            # Create a null logger that discards all messages
+            self.logger = logging.getLogger("user_model_null")
+            self.logger.addHandler(logging.NullHandler())
+        # self.use_lib_noise = use_lib_noise
+        # if self.use_lib_noise:
+        #     print("[Warning]: Using 'noise' library for Perlin noise generation. This runs on cpu and may be slower than the batched implementation.")
         self.device = cfg.device
         self.dt = cfg.sim.dt
         
@@ -246,8 +246,10 @@ class UserModel:
         # Parameters
         # training frame num or max_episode_length ?
         self.buffer_size = cfg.algo.training_frame_num # steps (e.g. 128 frames is about 2 seconds)
-        self.repulsive_gain = 1.0
+        self.repulsive_gain = 2.0  # Maxium repulsive force gain for APF (2.0m/s)
         self.max_speed = cfg.algo.actor.action_limit
+        self.max_speed_z = self.max_speed / 2.0  # TEST: limit z speed to half for stability
+        self.max_speed_yaw = torch.pi / 2  # 1.57 rad/s
         
         # State
         self.action_buffer = torch.zeros(num_envs, self.buffer_size, 4, device=self.device)
@@ -256,7 +258,7 @@ class UserModel:
         
         # Random seeds for noise (N, 4)
         self.noise_seeds = torch.randint(0, 100000, (num_envs, 4), device=self.device)
-        
+
         # Style parameters (randomized per env)
         self.styles = {
             'noise_freq': torch.rand(num_envs, 1, device=self.device) * 0.05 + 0.05, # 0.05 - 0.1
@@ -301,7 +303,7 @@ class UserModel:
             self.styles['laziness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.2
             
         else:
-            # Training Mode: Random
+            # Training Mode: Random generate seeds and styles
             self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, 4), device=self.device)
             self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * 0.05 + 0.05
             self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.5 + 0.2
@@ -342,23 +344,6 @@ class UserModel:
         
         return action, needs_refill
 
-    def _generate_lib_noise(self, time_grid, seeds, freq):
-        K, T = time_grid.shape
-        time_np = time_grid.cpu().numpy()
-        seeds_np = seeds.cpu().numpy()
-        freq_np = freq.cpu().numpy()
-        
-        noise_data = np.zeros((K, T, 4), dtype=np.float32)
-        
-        for k in range(K):
-            f = freq_np[k, 0]
-            for ch in range(4):
-                base = int(seeds_np[k, ch] % 256)
-                for t in range(T):
-                    noise_data[k, t, ch] = pnoise1(time_np[k, t] * f, base=base)
-                    
-        return torch.from_numpy(noise_data).to(self.device)
-
     def _refill_buffer(self, env_ids, start_pos, start_quat):
         """
         Generate a trajectory of actions using Perlin noise and APF.
@@ -378,17 +363,13 @@ class UserModel:
         
         # Generate raw noise (Target Velocities)
         # (K, T, 4)
-        if self.use_lib_noise:
-            raw_noise = self._generate_lib_noise(time_grid, seeds, freq)
-            # check if raw_noise is in [-1, 1]
-            assert torch.all(raw_noise >= -1.0) and torch.all(raw_noise <= 1.0), "Raw noise out of expected range [-1, 1]"
-        else:
-            raw_noise = batched_perlin_noise(time_grid, seeds, freq, self.device)
+        raw_noise = batched_perlin_noise(time_grid, seeds, freq, self.device)
         
         # Scale noise to physical units
         # vx, vy, vz, yaw_rate
         # Assume output is [-1, 1], scale to max_speed
-        scale = torch.tensor([self.max_speed, self.max_speed, self.max_speed, 2.0], device=self.device)
+        scale = torch.tensor(
+            [self.max_speed, self.max_speed, self.max_speed_z, self.max_speed_yaw], device=self.device)
         target_vels = raw_noise * scale
         
         # 2. Apply Human Filters (Low Pass & Deadband)
@@ -464,19 +445,20 @@ class UserModel:
             
             # --- DEBUG PROBE START ---
             # Check for velocity spikes
-            # vel_norm = torch.norm(effective_vel_world, dim=-1)
-            # if (vel_norm > self.max_speed * 4.0).any():
-            #     idx = torch.argmax(vel_norm).item()
-            #     print(f"[DEBUG] Spike detected at t={t} for env {idx}")
-            #     print(f"  dt: {dt}")
-            #     print(f"  curr_pos: {curr_pos[idx].detach().cpu().numpy()}")
-            #     print(f"  next_pos (unclamped): {(curr_pos + vel_world * dt)[idx].detach().cpu().numpy()}")
-            #     print(f"  next_pos (clamped): {next_pos[idx].detach().cpu().numpy()}")
-            #     print(f"  effective_vel_world: {effective_vel_world[idx].detach().cpu().numpy()}")
-            #     print(f"  vel_world (pre-clamp): {vel_world[idx].detach().cpu().numpy()}")
-            #     print(f"  repulsion: {repulsion[idx].detach().cpu().numpy() if 'repulsion' in locals() else 'N/A'}")
-            #     print(f"  curr_v: {curr_v[idx].detach().cpu().numpy()}")
-            #     print(f"  curr_quat: {curr_quat[idx].detach().cpu().numpy()}")
+            vel_norm = torch.norm(effective_vel_world, dim=-1)
+            if (vel_norm > self.max_speed * 4.0).any():
+                idx = torch.argmax(vel_norm).item()
+                self.logger.info(f"Spike detected at t={t} for env {idx}")
+                self.logger.debug(f"  dt: {dt}")
+                self.logger.debug(f"  target_v: {target_vels[idx, t].detach().cpu().numpy()}")
+                self.logger.debug(f"  curr_pos: {curr_pos[idx].detach().cpu().numpy()}")
+                self.logger.debug(f"  next_pos (unclamped): {(curr_pos + vel_world * dt)[idx].detach().cpu().numpy()}")
+                self.logger.debug(f"  next_pos (clamped): {next_pos[idx].detach().cpu().numpy()}")
+                self.logger.debug(f"  effective_vel_world: {effective_vel_world[idx].detach().cpu().numpy()}")
+                self.logger.debug(f"  vel_world (pre-clamp): {vel_world[idx].detach().cpu().numpy()}")
+                self.logger.debug(f"  repulsion: {repulsion[idx].detach().cpu().numpy() if 'repulsion' in locals() else 'N/A'}")
+                self.logger.debug(f"  curr_v: {curr_v[idx].detach().cpu().numpy()}")
+                self.logger.debug(f"  curr_quat: {curr_quat[idx].detach().cpu().numpy()}")
             # --- DEBUG PROBE END ---
 
             # Clamp effective velocity to prevent explosions (e.g. if correcting from out-of-bounds)
@@ -529,7 +511,7 @@ class UserModel:
         pos: (K, 3)
         """
         force = torch.zeros_like(pos)
-        margin = 0.5
+        margin = 4.0  # Distance threshold to start applying repulsion
         gain = self.repulsive_gain
         
         # Map limits

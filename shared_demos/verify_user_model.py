@@ -10,6 +10,8 @@ import torch
 import numpy as np
 import sys
 import os
+import logging
+from datetime import datetime
 import isaacsim.core.utils.prims as prim_utils
 import isaaclab.sim as sim_utils
 from isaaclab.sim import SimulationContext
@@ -26,6 +28,33 @@ from omni_drones.utils.torch import quat_rotate
 
 drone_model_name = "Hummingbird" 
 drone_controller_name = "LeePositionController"
+
+# --- 配置日志 ---
+def setup_logger(log_dir="logs"):
+    """Setup logger with file and console handlers."""
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"verify_user_model_{timestamp}.log")
+    
+    logger = logging.getLogger("verify_user_model")
+    logger.setLevel(logging.DEBUG)
+    
+    # File handler for all debug output
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    
+    # Console handler for INFO and above
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(levelname)s: %(message)s')
+    console_handler.setFormatter(console_formatter)
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger, log_file
 
 class TrajectoryVisualizer:
     def __init__(self, max_steps=200):
@@ -67,18 +96,18 @@ class TrajectoryVisualizer:
 
 class MockConfig:
     # Verification Settings
-    use_lib_noise = False # Set to False to test GPU implementation
     num_frames = 20000
 
     class Sim:
         dt = 1.0 / 60.0
         z_spawn = 4.0
     class Env:
-        map_range = [20.0, 20.0, 4.0] # Half extents [x, y, z]
+        map_range = [20.0, 20.0, 10.0] # Half extents [x, y, z]
         max_episode_length = 500
     class Algo:
         class actor:
             action_limit = 2.0 # m/s
+        training_frame_num = 128
     
     def __init__(self, device):
         self.device = device
@@ -87,6 +116,11 @@ class MockConfig:
         self.algo = self.Algo()
 
 def main():
+    # 初始化日志
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    logger, log_file = setup_logger(log_dir)
+    logger.info(f"Log file created at: {log_file}")
+    
     # 初始化 PyTorch 设备
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dt = 1.0 / 60.0
@@ -112,8 +146,8 @@ def main():
     z_spawn = mock_cfg.sim.z_spawn
     drone.spawn(translations=torch.tensor([[0.0, 0.0, z_spawn]], device=device))
 
-    # 初始化 User Model
-    user_model = UserModel(num_envs=1, cfg=mock_cfg, use_lib_noise=mock_cfg.use_lib_noise)
+    # 初始化 User Model (传入日志记录器)
+    user_model = UserModel(num_envs=1, cfg=mock_cfg, logger=logger)
     
     traj_vis = TrajectoryVisualizer(max_steps=500)
 
@@ -129,8 +163,7 @@ def main():
     init_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device) # w, x, y, z
     user_model.reset(init_pos, init_quat, torch.tensor([0], device=device))
 
-    print(f"[INFO]: Setup complete. Using Library Noise: {mock_cfg.use_lib_noise}")
-    print(f"[INFO]: Simulating for {mock_cfg.num_frames} frames...")
+    logger.info(f"Simulating for {mock_cfg.num_frames} frames...")
 
     # 状态变量 (unsqueeze batch and env dims for controller)
     target_pos = init_pos.unsqueeze(1).clone()
@@ -142,7 +175,7 @@ def main():
     frame_count = 0
     while simulation_app.is_running():
         if frame_count >= mock_cfg.num_frames:
-            print("[INFO]: Simulation finished.")
+            logger.info("Simulation finished.")
             break
 
         if sim.is_playing():
@@ -169,7 +202,7 @@ def main():
             vel_world = quat_rotate(current_quat, vel_body)
             to_print_vel = vel_world.squeeze().detach().cpu().numpy()
             to_print_pos = current_pos.squeeze().detach().cpu().numpy()
-            print(f"[DEBUG]: frame: {frame_count}, Pos: {to_print_pos}, Vel_world: {to_print_vel}")
+            logger.debug(f"frame: {frame_count}, Pos: {to_print_pos}, Vel_world: {to_print_vel}")
             
             # 更新轨迹可视化
             traj_vis.update(current_pos, vel_world, yaw_rate)
