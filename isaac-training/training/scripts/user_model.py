@@ -246,10 +246,10 @@ class UserModel:
         # Parameters
         # training frame num or max_episode_length ?
         self.buffer_size = cfg.algo.training_frame_num # steps (e.g. 128 frames is about 2 seconds)
-        self.repulsive_gain = 2.0  # Maxium repulsive force gain for APF (2.0m/s)
+        self.repulsive_gain = 1.0  # Maxium repulsive force gain for APF
         self.max_speed = cfg.algo.actor.action_limit
         self.max_speed_z = self.max_speed / 2.0  # TEST: limit z speed to half for stability
-        self.max_speed_yaw = torch.pi / 2  # 1.57 rad/s
+        self.max_speed_yaw = torch.pi / 4
         
         # State
         self.action_buffer = torch.zeros(num_envs, self.buffer_size, 4, device=self.device)
@@ -273,6 +273,8 @@ class UserModel:
         """
         Reset state for env_ids
         Args:
+            pos: (K, 3) start positions (world frame)
+            quat: (K, 4) start orientations (world frame)
             seed: (int, optional) If provided, forces deterministic behavior for evaluation.
         """
         if pos.ndim == 3: pos = pos.squeeze(1)
@@ -314,9 +316,10 @@ class UserModel:
         # Refill buffer
         self._refill_buffer(env_ids, pos, quat)
 
-    def step(self, drone_state, prev_agent_action):
-        # drone_state: (N, 13) -> pos, vel, quat, ang_vel
-        pos = drone_state[..., :3]
+    def step(self, drone_state, drone_pos_w):
+        # drone_state: (N, 10) -> vel, ang_vel, quat, in body frame
+        # drone_pos_w: (N, 3) position in world frame (need to be passed from outside since drone_state is body frame)
+        pos = drone_pos_w
         quat = drone_state[..., 6:10]
         
         if pos.ndim == 3: pos = pos.squeeze(1)
@@ -511,7 +514,7 @@ class UserModel:
         pos: (K, 3)
         """
         force = torch.zeros_like(pos)
-        margin = 4.0  # Distance threshold to start applying repulsion
+        margin = 2.0  # Distance threshold to start applying repulsion
         gain = self.repulsive_gain
         
         # Map limits

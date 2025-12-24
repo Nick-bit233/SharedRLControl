@@ -246,17 +246,22 @@ def vec_to_new_frame(vec, goal_direction):
 
     return vec_new
 
-def vec_to_world(vec, drone_state):
+def vec_to_world(vec, drone_state, orientation_only=False):
     """
     Convert vector from body frame to world frame.
     vec: (N, 3) or (N, 4)
-    drone_state: (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)]
+    drone_state: 
+        (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)] default
+     or (N, 4) -> orientation_q(4) if orientation_only=True
     """
-    # Extract quaternion
-    if drone_state.dim() == 3:
-        q = drone_state[..., 0, 6:10]
+    if orientation_only:
+        q = drone_state
     else:
-        q = drone_state[..., 6:10]
+        # Extract quaternion
+        if drone_state.dim() == 3:
+            q = drone_state[..., 0, 6:10]
+        else:
+            q = drone_state[..., 6:10]
     
     # Handle 3D or 4D vector
     if vec.shape[-1] == 3:
@@ -269,17 +274,22 @@ def vec_to_world(vec, drone_state):
     else:
         raise ValueError(f"Unsupported vector shape: {vec.shape}")
 
-def vec_to_body(vec, drone_state):
+def vec_to_body(vec, drone_state, orientation_only=False):
     """
     Convert vector from world frame to body frame.
     vec: (N, 3) or (N, 4)
-    drone_state: (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)]
+    drone_state:         
+        (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)] default
+     or (N, 4) -> orientation_q(4) if orientation_only=True
     """
-    # Extract quaternion
-    if drone_state.dim() == 3:
-        q = drone_state[..., 0, 6:10]
+    if orientation_only:
+        q = drone_state
     else:
-        q = drone_state[..., 6:10]
+        # Extract quaternion
+        if drone_state.dim() == 3:
+            q = drone_state[..., 0, 6:10]
+        else:
+            q = drone_state[..., 6:10]
         
     # Handle 3D or 4D vector
     if vec.shape[-1] == 3:

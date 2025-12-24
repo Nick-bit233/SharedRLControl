@@ -240,6 +240,19 @@ class FollowingEnvSimple(IsaacEnv):
             pos[:, 0, 1] = 0
             pos[:, 0, 2] = min(2.5, sz)
 
+                # 临时插入：强制检查生成的 pos 是否合法
+        
+        # 如果 Z < 0.1 (考虑到地面是 0，留一点余量)，则打印警告并强制修正
+        if (pos[..., 2] < 0.0).any():
+            bad_indices = torch.nonzero(pos[..., 2] < 0.0).squeeze()
+            print(f"\n[CRITICAL WARNING] Found {len(bad_indices)} drones spawned UNDERGROUND in _reset_idx!")
+            print(f"  Bad Z values: {pos[bad_indices, 2]}")
+            print(f"  Map Range (sz): {sz}")
+            
+            # 强制修正，防止报错，但这说明上面的生成逻辑有 bug
+            print("  -> Force fixing spawn height to 1.0m")
+            pos[..., 2] = torch.clamp(pos[..., 2], min=1.0)
+
         self.start_pos = pos.clone()  # record start pos for debug
         
         # (randomlize the drone's facing direction because there's no goal to face now)
@@ -279,7 +292,8 @@ class FollowingEnvSimple(IsaacEnv):
         actions = tensordict[("agents", "action")]  # action in body frame
 
         # store applied action so that the subsequent observation (next step) sees it as prev_action
-        # sometimes actions may be shape (num_envs, 1, 4) or (num_envs, 4). Normalize:
+        # actions may be shape (num_envs, 1, 4) or (num_envs, 4).
+        # but remember that drone.apply_action only accepts shape (num_envs, 1, 4)
         if actions.ndim > 2:
             actions_flat = actions.reshape(self.num_envs, -1)[..., :4]  # be careful: assume first 4 are vel+yaw
         else:
@@ -292,8 +306,10 @@ class FollowingEnvSimple(IsaacEnv):
         # get current drone orientation
         drone_orientation_q = self.root_state[..., 3:7].squeeze(1)  # TODO: chceck if need to call drone.get_state
         actions_world = vec_to_world(
-            actions_flat, drone_orientation_q
+            actions_flat, drone_orientation_q, orientation_only=True
         )  # shape: (N, 4), convert vel_b to vel_w
+        # unsqueeze to shape (N, 1, 4) for drone apply_action
+        actions_world = actions_world.unsqueeze(1)
         self.drone.apply_action(actions_world) 
 
     def _post_sim_step(self, tensordict: TensorDictBase):
@@ -324,16 +340,18 @@ class FollowingEnvSimple(IsaacEnv):
         # (Changed: remove all tensors about target(goal) from internal states)
 
         # get drone's internal states with velocity and angular velocity in world frame
-        vel_w = self.root_state[..., 7:10].squeeze(1)     # (N, 3) world_vel
-        ang_vel_w = self.root_state[..., 10:13].squeeze(1) # (N, 3) world_angular
+        drone_pos_w = self.root_state[..., :3].squeeze(1)   # (N, 3)
+        drone_vel_w = self.root_state[..., 7:10].squeeze(1)     # (N, 3) world_vel
+        drone_ang_vel_w = self.root_state[..., 10:13].squeeze(1) # (N, 3) world_angular
         drone_orientation_q = self.root_state[..., 3:7].squeeze(1) # (N, 4) orientation(quat)
 
         # calculate drone's velocity and angular velocity in body frame
-        vel_b = quat_rotate_inverse(drone_orientation_q, vel_w)
-        ang_vel_b = quat_rotate_inverse(drone_orientation_q, ang_vel_w)
+        vel_b = quat_rotate_inverse(drone_orientation_q, drone_vel_w)
+        ang_vel_b = quat_rotate_inverse(drone_orientation_q, drone_ang_vel_w)
 
         # use body frame velocities for better generalization
-        drone_state = torch.cat([vel_b, ang_vel_b, drone_orientation_q], dim=-1)
+        # drone_state_b: (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)]
+        drone_state_b = torch.cat([vel_b, ang_vel_b, drone_orientation_q], dim=-1)
 
         # ---------Network Input III: Dynamic obstacle states (Removed)--------
 
@@ -342,12 +360,7 @@ class FollowingEnvSimple(IsaacEnv):
         prev_action_local = self.prev_agent_action  # shape: (N, 4)
 
         # ---------Network Input V: Human control action--------
-
-        # squeeze drone current state for user model input
-        drone_pos_w = self.root_state[..., :3].squeeze(1)   # (B, 3)
-        drone_vel_w = self.root_state[..., 7:10].squeeze(1) # (B, 3)
-        drone_orientation_q = self.root_state[..., 3:7].squeeze(1) # (B, 4)
-        user_input_drone_state = torch.cat([drone_pos_w, drone_orientation_q, drone_vel_w], dim=-1) # (B, 10)
+        user_input_drone_state = drone_state_b.clone()  # (N, 10)
 
         human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)  # (N, 4)
         intent_completed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
@@ -359,12 +372,12 @@ class FollowingEnvSimple(IsaacEnv):
             # Step the simulated user model to get human action input
             human_actions_local, intent_completed = self.user_model.step(
                 user_input_drone_state,
-                prev_action_local,
+                drone_pos_w
             )
 
         # -----------------Network Input Final--------------
         obs = {
-            "state": drone_state,
+            "state": drone_state_b,
             "human_action": human_actions_local,
             "prev_action": prev_action_local
         }

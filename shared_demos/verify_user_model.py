@@ -23,8 +23,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaa
 from user_model import UserModel
 
 from omni_drones.robots.drone import MultirotorBase
-from omni_drones.controllers import LeePositionController
-from omni_drones.utils.torch import quat_rotate
+from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
 
 drone_model_name = "Hummingbird" 
 drone_controller_name = "LeePositionController"
@@ -181,12 +180,21 @@ def main():
         if sim.is_playing():
             # A. 获取无人机状态
             root_state = drone.get_state()[..., :13]  # (1, 1, 13)
-            current_pos = root_state[..., :3]  # (1, 1, 3)
-            current_quat = root_state[..., 3:7]  # (1, 1, 4)
+
+            drone_pos_w = root_state[..., :3].squeeze(1)   # (N, 3)
+            drone_vel_w = root_state[..., 7:10].squeeze(1)     # (N, 3) world_vel
+            drone_ang_vel_w = root_state[..., 10:13].squeeze(1) # (N, 3) world_angular
+            drone_orientation_q = root_state[..., 3:7].squeeze(1) # (N, 4) orientation(quat)
+
+            # calculate drone's velocity and angular velocity in body frame
+            vel_b = quat_rotate_inverse(drone_orientation_q, drone_vel_w)
+            ang_vel_b = quat_rotate_inverse(drone_orientation_q, drone_ang_vel_w)
+
+            drone_state_b = torch.cat([vel_b, ang_vel_b, drone_orientation_q], dim=-1)
             
             # B. 获取 User Model 生成的控制信号
             # action: (1, 4) -> [vx_b, vy_b, vz_b, yaw_rate]
-            action, _ = user_model.step(root_state, prev_action)
+            action, _ = user_model.step(drone_state_b, drone_pos_w)
             # unsqueeze actions to (1, 1, 4) for controller
             action = action.unsqueeze(1)
             prev_action = action
@@ -195,21 +203,24 @@ def main():
             # action[..., :3] 是 Body Frame 速度
             # action[..., 3] 是 Yaw Rate
             
-            vel_body = action[..., :3]  # (1, 1, 3)
-            yaw_rate = action[..., 3]  # (1, 1, )
+            action_vel_b = action[..., :3]  # (1, 1, 3)
+            action_yaw_rate = action[..., 3]  # (1, 1, )
             
             # Rotate velocity to world frame
-            vel_world = quat_rotate(current_quat, vel_body)
-            to_print_vel = vel_world.squeeze().detach().cpu().numpy()
-            to_print_pos = current_pos.squeeze().detach().cpu().numpy()
-            logger.debug(f"frame: {frame_count}, Pos: {to_print_pos}, Vel_world: {to_print_vel}")
+            to_rotate_q = drone_orientation_q.unsqueeze(1)  # unsqueeze to (N, 1, 4) for using quat_rotate()
+            action_vel_w = quat_rotate(to_rotate_q, action_vel_b)
+
+            to_print_d_vel = drone_vel_w.squeeze().detach().cpu().numpy()
+            to_print_a_vel = action_vel_w.squeeze().detach().cpu().numpy()
+            to_print_pos = drone_pos_w.squeeze().detach().cpu().numpy()
+            logger.debug(f"frame: {frame_count}, pos_w: {to_print_pos}, vel_w:{to_print_d_vel}, action_vel_w: {to_print_a_vel}")
             
             # 更新轨迹可视化
-            traj_vis.update(current_pos, vel_world, yaw_rate)
+            traj_vis.update(drone_pos_w, action_vel_w, action_yaw_rate)
             
             # Integrate
-            target_pos += vel_world * dt
-            target_yaw += yaw_rate.unsqueeze(1) * dt
+            target_pos += action_vel_w * dt
+            target_yaw += action_yaw_rate.unsqueeze(1) * dt
 
             # D. 计算控制指令
             control_action = controller.compute(
