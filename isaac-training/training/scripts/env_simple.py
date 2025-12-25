@@ -23,6 +23,7 @@ from user_model import UserModel
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import RigidObject, RigidObjectCfg
 import time
+from profiler import get_profiler
 
 class FollowingEnvSimple(IsaacEnv):
 
@@ -288,37 +289,44 @@ class FollowingEnvSimple(IsaacEnv):
             self.viz_human_pos = pos[idx, 0].clone()
         
     def _pre_sim_step(self, tensordict: TensorDictBase):
-        # TODO：修改了ppo模型的定义，要求action均输出为body frame，这里的转换需要修正。
-        actions = tensordict[("agents", "action")]  # action in body frame
+        profiler = get_profiler()
+        with profiler.timer("env/_pre_sim_step"):
+            # TODO：修改了ppo模型的定义，要求action均输出为body frame，这里的转换需要修正。
+            actions = tensordict[("agents", "action")]  # action in body frame
 
-        # store applied action so that the subsequent observation (next step) sees it as prev_action
-        # actions may be shape (num_envs, 1, 4) or (num_envs, 4).
-        # but remember that drone.apply_action only accepts shape (num_envs, 1, 4)
-        if actions.ndim > 2:
-            actions_flat = actions.reshape(self.num_envs, -1)[..., :4]  # be careful: assume first 4 are vel+yaw
-        else:
-            actions_flat = actions
+            # store applied action so that the subsequent observation (next step) sees it as prev_action
+            # actions may be shape (num_envs, 1, 4) or (num_envs, 4).
+            # but remember that drone.apply_action only accepts shape (num_envs, 1, 4)
+            if actions.ndim > 2:
+                actions_flat = actions.reshape(self.num_envs, -1)[..., :4]  # be careful: assume first 4 are vel+yaw
+            else:
+                actions_flat = actions
 
-        # store as prev_action
-        self.prev_agent_action = actions_flat.clone()  # clone to avoid in-place aliasing
+            # store as prev_action
+            self.prev_agent_action = actions_flat.clone()  # clone to avoid in-place aliasing
 
-        # transform action from body frame to world frame in order to apply to drone
-        # get current drone orientation
-        drone_orientation_q = self.root_state[..., 3:7].squeeze(1)  # TODO: chceck if need to call drone.get_state
-        actions_world = vec_to_world(
-            actions_flat, drone_orientation_q, orientation_only=True
-        )  # shape: (N, 4), convert vel_b to vel_w
-        # unsqueeze to shape (N, 1, 4) for drone apply_action
-        actions_world = actions_world.unsqueeze(1)
-        self.drone.apply_action(actions_world) 
+            # transform action from body frame to world frame in order to apply to drone
+            # get current drone orientation
+            drone_orientation_q = self.root_state[..., 3:7].squeeze(1)  # TODO: chceck if need to call drone.get_state
+            actions_world = vec_to_world(
+                actions_flat, drone_orientation_q, orientation_only=True
+            )  # shape: (N, 4), convert vel_b to vel_w
+            # unsqueeze to shape (N, 1, 4) for drone apply_action
+            actions_world = actions_world.unsqueeze(1)
+            self.drone.apply_action(actions_world) 
 
     def _post_sim_step(self, tensordict: TensorDictBase):
-        # No dynamic obstacles
-        if self.enable_lidar:
-            self.lidar.update(self.dt)
+        profiler = get_profiler()
+        with profiler.timer("env/_post_sim_step"):
+            # No dynamic obstacles
+            if self.enable_lidar:
+                self.lidar.update(self.dt)
     
     # get current states/observation
     def _compute_state_and_obs(self):
+        profiler = get_profiler()
+        profiler.start("env/_compute_state_and_obs")
+        
         self.root_state = self.drone.get_state(env_frame=False)  # get drone's root state in world frame
         # explaination of root state:  
         # (world_pos[3], orientation (quat)[4], world_vel_and_angular[3+3], heading, up, 4motorsthrust)
@@ -370,10 +378,11 @@ class FollowingEnvSimple(IsaacEnv):
             human_actions_local = self.manual_action.clone()
         else:
             # Step the simulated user model to get human action input
-            human_actions_local, intent_completed = self.user_model.step(
-                user_input_drone_state,
-                drone_pos_w
-            )
+            with profiler.timer("env/user_model_step"):
+                human_actions_local, intent_completed = self.user_model.step(
+                    user_input_drone_state,
+                    drone_pos_w
+                )
 
         # -----------------Network Input Final--------------
         obs = {
@@ -385,6 +394,7 @@ class FollowingEnvSimple(IsaacEnv):
             obs["lidar"] = self.lidar_scan
 
         # -----------------Reward Calculation-----------------
+        profiler.start("env/reward_calculation")
         # Only reward for correct following human input velocity
         
         current_vel_w = self.drone.vel_w[..., :3] # (N, 1, 3)
@@ -440,6 +450,7 @@ class FollowingEnvSimple(IsaacEnv):
             - 0.05 * penalty_smooth 
             - 1.0 * penalty_height
         )
+        profiler.stop("env/reward_calculation")
 
         # Terminate Conditions
         below_bound = self.drone.pos[..., 2] < 0.2
@@ -456,6 +467,7 @@ class FollowingEnvSimple(IsaacEnv):
         self.prev_drone_vel_w = current_vel_w.clone()
 
         # ----------------- Visualization and Debugging -----------------
+        profiler.start("env/visualization")
         if self._should_render(0):
             self.debug_draw.clear()
             
@@ -541,6 +553,7 @@ class FollowingEnvSimple(IsaacEnv):
                 starts_h = points_h[:-1]
                 ends_h = points_h[1:]
                 self.debug_draw.vector(starts_h, ends_h - starts_h, color=(0,1,0,1), size=2.0)
+        profiler.stop("env/visualization")
 
         # if self.debug_mode:
         #     # 写入 CSV 日志
@@ -569,6 +582,8 @@ class FollowingEnvSimple(IsaacEnv):
         self.stats["intent_completion"] = self.intent_complete_counts.float()
         self.stats["collision"] = torch.zeros_like(self.stats["collision"]) # No collision
         self.stats["truncated"] = self.truncated.float()
+        
+        profiler.stop("env/_compute_state_and_obs")
 
         # === Probe: Check for NaNs in Observation and Reward ===
         if torch.isnan(self.reward).any():
