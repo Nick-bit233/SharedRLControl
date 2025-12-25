@@ -448,20 +448,20 @@ class UserModel:
             
             # --- DEBUG PROBE START ---
             # Check for velocity spikes
-            vel_norm = torch.norm(effective_vel_world, dim=-1)
-            if (vel_norm > self.max_speed * 4.0).any():
-                idx = torch.argmax(vel_norm).item()
-                self.logger.info(f"Spike detected at t={t} for env {idx}")
-                self.logger.debug(f"  dt: {dt}")
-                self.logger.debug(f"  target_v: {target_vels[idx, t].detach().cpu().numpy()}")
-                self.logger.debug(f"  curr_pos: {curr_pos[idx].detach().cpu().numpy()}")
-                self.logger.debug(f"  next_pos (unclamped): {(curr_pos + vel_world * dt)[idx].detach().cpu().numpy()}")
-                self.logger.debug(f"  next_pos (clamped): {next_pos[idx].detach().cpu().numpy()}")
-                self.logger.debug(f"  effective_vel_world: {effective_vel_world[idx].detach().cpu().numpy()}")
-                self.logger.debug(f"  vel_world (pre-clamp): {vel_world[idx].detach().cpu().numpy()}")
-                self.logger.debug(f"  repulsion: {repulsion[idx].detach().cpu().numpy() if 'repulsion' in locals() else 'N/A'}")
-                self.logger.debug(f"  curr_v: {curr_v[idx].detach().cpu().numpy()}")
-                self.logger.debug(f"  curr_quat: {curr_quat[idx].detach().cpu().numpy()}")
+            # vel_norm = torch.norm(effective_vel_world, dim=-1)
+            # if (vel_norm > self.max_speed * 4.0).any():
+            #     idx = torch.argmax(vel_norm).item()
+            #     self.logger.info(f"Spike detected at t={t} for env {idx}")
+            #     self.logger.debug(f"  dt: {dt}")
+            #     self.logger.debug(f"  target_v: {target_vels[idx, t].detach().cpu().numpy()}")
+            #     self.logger.debug(f"  curr_pos: {curr_pos[idx].detach().cpu().numpy()}")
+            #     self.logger.debug(f"  next_pos (unclamped): {(curr_pos + vel_world * dt)[idx].detach().cpu().numpy()}")
+            #     self.logger.debug(f"  next_pos (clamped): {next_pos[idx].detach().cpu().numpy()}")
+            #     self.logger.debug(f"  effective_vel_world: {effective_vel_world[idx].detach().cpu().numpy()}")
+            #     self.logger.debug(f"  vel_world (pre-clamp): {vel_world[idx].detach().cpu().numpy()}")
+            #     self.logger.debug(f"  repulsion: {repulsion[idx].detach().cpu().numpy() if 'repulsion' in locals() else 'N/A'}")
+            #     self.logger.debug(f"  curr_v: {curr_v[idx].detach().cpu().numpy()}")
+            #     self.logger.debug(f"  curr_quat: {curr_quat[idx].detach().cpu().numpy()}")
             # --- DEBUG PROBE END ---
 
             # Clamp effective velocity to prevent explosions (e.g. if correcting from out-of-bounds)

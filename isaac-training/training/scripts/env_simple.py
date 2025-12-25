@@ -240,20 +240,8 @@ class FollowingEnvSimple(IsaacEnv):
             pos[:, 0, 1] = 0
             pos[:, 0, 2] = min(2.5, sz)
 
-                # 临时插入：强制检查生成的 pos 是否合法
-        
-        # 如果 Z < 0.1 (考虑到地面是 0，留一点余量)，则打印警告并强制修正
-        if (pos[..., 2] < 0.0).any():
-            bad_indices = torch.nonzero(pos[..., 2] < 0.0).squeeze()
-            print(f"\n[CRITICAL WARNING] Found {len(bad_indices)} drones spawned UNDERGROUND in _reset_idx!")
-            print(f"  Bad Z values: {pos[bad_indices, 2]}")
-            print(f"  Map Range (sz): {sz}")
-            
-            # 强制修正，防止报错，但这说明上面的生成逻辑有 bug
-            print("  -> Force fixing spawn height to 1.0m")
-            pos[..., 2] = torch.clamp(pos[..., 2], min=1.0)
-
-        self.start_pos = pos.clone()  # record start pos for debug
+        # Fix: Update start_pos with correct indexing (start_pos is (num_envs, 3))
+        self.start_pos[env_ids] = pos[:, 0, :].clone()  # record start pos for debug
         
         # (randomlize the drone's facing direction because there's no goal to face now)
         rpy = torch.zeros(len(env_ids), 1, 3, device=self.device)
@@ -288,29 +276,26 @@ class FollowingEnvSimple(IsaacEnv):
             self.viz_human_pos = pos[idx, 0].clone()
         
     def _pre_sim_step(self, tensordict: TensorDictBase):
-        # TODO：修改了ppo模型的定义，要求action均输出为body frame，这里的转换需要修正。
-        actions = tensordict[("agents", "action")]  # action in body frame
+        # 这里的action为最终传递给VelController并计算模拟运动的速度指令，默认为world frame
+        # 这里不可做任何变换，因为torchrl会直接把转换后的action传递给drone.apply_action()
+        # 对actions坐标系等的转换提前在ppo.__call__里完成
+        actions = tensordict[("agents", "action")]
 
-        # store applied action so that the subsequent observation (next step) sees it as prev_action
+        # store applied action (TODO： 确定这里存储的action数值是速度指令还是推力指令，必要时做转换)
         # actions may be shape (num_envs, 1, 4) or (num_envs, 4).
         # but remember that drone.apply_action only accepts shape (num_envs, 1, 4)
         if actions.ndim > 2:
             actions_flat = actions.reshape(self.num_envs, -1)[..., :4]  # be careful: assume first 4 are vel+yaw
         else:
             actions_flat = actions
-
-        # store as prev_action
         self.prev_agent_action = actions_flat.clone()  # clone to avoid in-place aliasing
 
-        # transform action from body frame to world frame in order to apply to drone
-        # get current drone orientation
-        drone_orientation_q = self.root_state[..., 3:7].squeeze(1)  # TODO: chceck if need to call drone.get_state
-        actions_world = vec_to_world(
-            actions_flat, drone_orientation_q, orientation_only=True
-        )  # shape: (N, 4), convert vel_b to vel_w
-        # unsqueeze to shape (N, 1, 4) for drone apply_action
-        actions_world = actions_world.unsqueeze(1)
-        self.drone.apply_action(actions_world) 
+        # Apply rotor commands directly to the drone
+        # drone.apply_action expects rotor throttle commands, not velocity
+        # Ensure actions shape is compatible with drone.shape (num_envs, 1, 4)
+        if actions.ndim == 2:
+            actions = actions.unsqueeze(1)  # (num_envs, 4) -> (num_envs, 1, 4)
+        self.drone.apply_action(actions) 
 
     def _post_sim_step(self, tensordict: TensorDictBase):
         # No dynamic obstacles
