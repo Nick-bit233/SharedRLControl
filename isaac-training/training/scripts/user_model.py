@@ -4,6 +4,7 @@ import math
 import logging
 from enum import Enum
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
+from profiler import get_profiler
 
 
 class InterpType(Enum):
@@ -317,6 +318,9 @@ class UserModel:
         self._refill_buffer(env_ids, pos, quat)
 
     def step(self, drone_state, drone_pos_w):
+        profiler = get_profiler()
+        profiler.start("user_model/step")
+        
         # drone_state: (N, 10) -> vel, ang_vel, quat, in body frame
         # drone_pos_w: (N, 3) position in world frame (need to be passed from outside since drone_state is body frame)
         pos = drone_pos_w
@@ -328,10 +332,11 @@ class UserModel:
         # Check refill
         needs_refill = self.buffer_read_idx >= self.buffer_size
         if needs_refill.any():
-            idxs = needs_refill.nonzero(as_tuple=False).squeeze(-1)
-            # For refill, we need current pos/quat to start integration
-            self._refill_buffer(idxs, pos[idxs], quat[idxs])
-            self.buffer_read_idx[idxs] = 0
+            with profiler.timer("user_model/refill_buffer"):
+                idxs = needs_refill.nonzero(as_tuple=False).squeeze(-1)
+                # For refill, we need current pos/quat to start integration
+                self._refill_buffer(idxs, pos[idxs], quat[idxs])
+                self.buffer_read_idx[idxs] = 0
             
         # Read action from buffer
         # action_buffer: (N, T, 4)
@@ -345,35 +350,39 @@ class UserModel:
         # Update intent goals (just for visualization/compatibility, set to current pos + action direction)
         # self.intent_goals = pos + quat_rotate(quat, action[..., :3])
         
+        profiler.stop("user_model/step")
         return action, needs_refill
 
     def _refill_buffer(self, env_ids, start_pos, start_quat):
         """
         Generate a trajectory of actions using Perlin noise and APF.
         """
+        profiler = get_profiler()
+        
         K = len(env_ids)
         T = self.buffer_size
         dt = self.dt
         
         # 1. Generate Perlin Noise for the whole batch (K, T, 4)
-        # Time vector
-        t_start = self.noise_time[env_ids].unsqueeze(1) # (K, 1)
-        t_steps = torch.arange(T, device=self.device).unsqueeze(0) * dt # (1, T)
-        time_grid = t_start + t_steps # (K, T)
-        
-        seeds = self.noise_seeds[env_ids] # (K, 4)
-        freq = self.styles['noise_freq'][env_ids] # (K, 1)
-        
-        # Generate raw noise (Target Velocities)
-        # (K, T, 4)
-        raw_noise = batched_perlin_noise(time_grid, seeds, freq, self.device)
-        
-        # Scale noise to physical units
-        # vx, vy, vz, yaw_rate
-        # Assume output is [-1, 1], scale to max_speed
-        scale = torch.tensor(
-            [self.max_speed, self.max_speed, self.max_speed_z, self.max_speed_yaw], device=self.device)
-        target_vels = raw_noise * scale
+        with profiler.timer("user_model/perlin_noise"):
+            # Time vector
+            t_start = self.noise_time[env_ids].unsqueeze(1) # (K, 1)
+            t_steps = torch.arange(T, device=self.device).unsqueeze(0) * dt # (1, T)
+            time_grid = t_start + t_steps # (K, T)
+            
+            seeds = self.noise_seeds[env_ids] # (K, 4)
+            freq = self.styles['noise_freq'][env_ids] # (K, 1)
+            
+            # Generate raw noise (Target Velocities)
+            # (K, T, 4)
+            raw_noise = batched_perlin_noise(time_grid, seeds, freq, self.device)
+            
+            # Scale noise to physical units
+            # vx, vy, vz, yaw_rate
+            # Assume output is [-1, 1], scale to max_speed
+            scale = torch.tensor(
+                [self.max_speed, self.max_speed, self.max_speed_z, self.max_speed_yaw], device=self.device)
+            target_vels = raw_noise * scale
         
         # 2. Apply Human Filters (Low Pass & Deadband)
         # We can do this on the whole trajectory
@@ -395,6 +404,8 @@ class UserModel:
         # Pre-compute rotation for efficiency? No, quat changes with yaw rate.
         # We assume simplified kinematics: pos += rotate(vel) * dt, yaw += yaw_rate * dt
         
+        # === PROFILING: Time the sequential loop (potential bottleneck) ===
+        profiler.start("user_model/integration_loop")
         for t in range(T):
             # a. Get raw target for this step
             raw_v = target_vels[:, t] # (K, 4)
@@ -500,7 +511,9 @@ class UserModel:
             curr_quat = torch.stack([nqx, nqy, nqz, nqw], dim=1)
             # Normalize quaternion to prevent drift
             curr_quat = curr_quat / torch.norm(curr_quat, dim=1, keepdim=True)
-            
+        
+        profiler.stop("user_model/integration_loop")
+        
         # Store trajectory
         self.action_buffer[env_ids] = filtered_traj
         

@@ -23,6 +23,7 @@ from user_model import UserModel
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import RigidObject, RigidObjectCfg
 import time
+from profiler import get_profiler
 
 class FollowingEnvSimple(IsaacEnv):
 
@@ -105,22 +106,6 @@ class FollowingEnvSimple(IsaacEnv):
         self.viz_traj_human = []
         self.viz_traj_agent = []
         self.viz_human_pos = None
-
-        # Debug mode
-        self.debug_mode = cfg.get("debug_mode", False)
-        # if self.debug_mode:
-        #     import os
-        #     log_output_dir = cfg.get("log_output_dir", os.path.join(os.getcwd(), "outputs"))
-        #     print("[NavigationEnv]: Debug Mode is ON!")
-        #     log_file_path = os.path.join(log_output_dir, "debug_log.csv")
-        #     self.debug_log_file = open(log_file_path, "w", newline="")
-        #     self.csv_writer = csv.writer(self.debug_log_file)
-        #     # 写入表头
-        #     self.csv_writer.writerow([
-        #         "step", "env_id", "mode", "start_pos_x", "start_pos_y", "start_pos_z",
-        #         "reward_total", "reward_vel", "reward_intent_complete", "reward_safe", "reward_penalty_smooth","reward_penalty_height", 
-        #         "human_vel_x", "drone_vel_x",
-        #     ])
 
     def _design_scene(self):
         import omni_drones.utils.kit as kit_utils
@@ -298,12 +283,17 @@ class FollowingEnvSimple(IsaacEnv):
         self.drone.apply_action(actions) 
 
     def _post_sim_step(self, tensordict: TensorDictBase):
-        # No dynamic obstacles
-        if self.enable_lidar:
-            self.lidar.update(self.dt)
+        profiler = get_profiler()
+        with profiler.timer("env/_post_sim_step"):
+            # No dynamic obstacles
+            if self.enable_lidar:
+                self.lidar.update(self.dt)
     
     # get current states/observation
     def _compute_state_and_obs(self):
+        profiler = get_profiler()
+        profiler.start("env/_compute_state_and_obs")
+        
         self.root_state = self.drone.get_state(env_frame=False)  # get drone's root state in world frame
         # explaination of root state:  
         # (world_pos[3], orientation (quat)[4], world_vel_and_angular[3+3], heading, up, 4motorsthrust)
@@ -355,10 +345,11 @@ class FollowingEnvSimple(IsaacEnv):
             human_actions_local = self.manual_action.clone()
         else:
             # Step the simulated user model to get human action input
-            human_actions_local, intent_completed = self.user_model.step(
-                user_input_drone_state,
-                drone_pos_w
-            )
+            with profiler.timer("env/user_model_step"):
+                human_actions_local, intent_completed = self.user_model.step(
+                    user_input_drone_state,
+                    drone_pos_w
+                )
 
         # -----------------Network Input Final--------------
         obs = {
@@ -370,6 +361,7 @@ class FollowingEnvSimple(IsaacEnv):
             obs["lidar"] = self.lidar_scan
 
         # -----------------Reward Calculation-----------------
+        profiler.start("env/reward_calculation")
         # Only reward for correct following human input velocity
         
         current_vel_w = self.drone.vel_w[..., :3] # (N, 1, 3)
@@ -425,6 +417,7 @@ class FollowingEnvSimple(IsaacEnv):
             - 0.05 * penalty_smooth 
             - 1.0 * penalty_height
         )
+        profiler.stop("env/reward_calculation")
 
         # Terminate Conditions
         below_bound = self.drone.pos[..., 2] < 0.2
@@ -441,6 +434,7 @@ class FollowingEnvSimple(IsaacEnv):
         self.prev_drone_vel_w = current_vel_w.clone()
 
         # ----------------- Visualization and Debugging -----------------
+        profiler.start("env/visualization")
         if self._should_render(0):
             self.debug_draw.clear()
             
@@ -526,6 +520,7 @@ class FollowingEnvSimple(IsaacEnv):
                 starts_h = points_h[:-1]
                 ends_h = points_h[1:]
                 self.debug_draw.vector(starts_h, ends_h - starts_h, color=(0,1,0,1), size=2.0)
+        profiler.stop("env/visualization")
 
         # if self.debug_mode:
         #     # 写入 CSV 日志
@@ -554,6 +549,8 @@ class FollowingEnvSimple(IsaacEnv):
         self.stats["intent_completion"] = self.intent_complete_counts.float()
         self.stats["collision"] = torch.zeros_like(self.stats["collision"]) # No collision
         self.stats["truncated"] = self.truncated.float()
+        
+        profiler.stop("env/_compute_state_and_obs")
 
         # === Probe: Check for NaNs in Observation and Reward ===
         if torch.isnan(self.reward).any():

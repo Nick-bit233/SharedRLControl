@@ -7,6 +7,7 @@ import torch
 import imageio
 import numpy as np
 from omegaconf import OmegaConf
+from profiler import get_profiler, reset_profiler
 # from omni.isaac.kit import SimulationApp  # @Deprecation
 # from isaacsim import SimulationApp
 from omni_drones import init_simulation_app # use omni_drones init_simulation_app interface to avoid importing isaacsim
@@ -75,8 +76,29 @@ def main(cfg):
     eval_interval = 500            # 每 i 个 batch 评估一次
     save_interval = 500          # 每 i 个 batch 保存一次模型
 
+    # === Profiling Configuration ===
+    profiling_mode = cfg.get("profiling_mode", False)  # Enable via CLI: profiling_mode=true
+    profiling_batches = cfg.get("profiling_batches", 10)  # Number of batches to profile
+    
+    if profiling_mode:
+        print("[SimpleRunner] === PROFILING MODE ENABLED ===")
+        print(f"[SimpleRunner] Will run {profiling_batches} batches for profiling analysis")
+        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * profiling_batches
+        cfg.wandb.mode = "online"  # ensure wandb is online to log profiling data
+        eval_interval = 0  # Disable evaluation during profiling
+        save_interval = profiling_batches + 1  # Don't save during profiling
+
     hydra_cfg = HydraConfig.get()
     cfg.log_output_dir = hydra_cfg.runtime.output_dir  # 使用 Hydra 日志输出目录
+
+    # === Initialize Profiler ===
+    profiler_log_file = os.path.join(cfg.log_output_dir, "profiler.log") if profiling_mode else None
+    profiler = get_profiler(
+        enabled=profiling_mode,
+        cuda_sync=True,
+        device=cfg.device,
+        log_file=profiler_log_file
+    )
 
     # 打印配置确认
     print(OmegaConf.to_yaml(cfg))
@@ -84,7 +106,7 @@ def main(cfg):
     # === 初始化环境 ===
     base_env = FollowingEnvSimple(cfg)
     
-    # 启用渲染 (这对录像至关重要)
+    # 启用渲染
     base_env.enable_render(True)
 
     # === Transforms (保持与 train.py 一致) ===
@@ -253,7 +275,16 @@ def main(cfg):
         return info
 
     # === 主训练循环 ===
+    import time as time_module
+    batch_start_time = time_module.perf_counter()
+    
     for i, data in enumerate(collector):
+        # === Profiling: Measure batch timing ===
+        batch_elapsed = time_module.perf_counter() - batch_start_time
+        profiler.record("batch_total", batch_elapsed)
+        profiler.increment_batch()
+        batch_start_time = time_module.perf_counter()
+        
         # data: TensorDict 包含采集到的一个 batch 的数据
         info = {
             "batch": i,
@@ -267,18 +298,19 @@ def main(cfg):
         #         print("[SimpleRunner] One step only mode, exiting after first step.")
         #         break
 
-
-        episode_stats.add(data.to_tensordict())
-        # 每当有足够的 episode 结束时，计算并更新以此统计数据
-        if len(episode_stats) >= base_env.num_envs:
-            stats = {}
-            for k, v in episode_stats.pop().items(include_nested=True, leaves_only=True):
-                key_name = k if isinstance(k, str) else "_".join(k)  # key可能是str或tuple
-                stats[f"episode/{key_name}"] = torch.mean(v.float()).item()
-            info.update(stats)
+        with profiler.timer("episode_stats"):
+            episode_stats.add(data.to_tensordict())
+            # 每当有足够的 episode 结束时，计算并更新以此统计数据
+            if len(episode_stats) >= base_env.num_envs:
+                stats = {}
+                for k, v in episode_stats.pop().items(include_nested=True, leaves_only=True):
+                    key_name = k if isinstance(k, str) else "_".join(k)  # key可能是str或tuple
+                    stats[f"episode/{key_name}"] = torch.mean(v.float()).item()
+                info.update(stats)
 
         # 进行一次策略更新
-        training_infos = policy.train_op(data.to_tensordict())
+        with profiler.timer("ppo_train_op"):
+            training_infos = policy.train_op(data.to_tensordict())
         # 将策略网络内部的训练信息添加到 info 中
         info.update({f"ppo_train/{k}": v for k, v in training_infos.items()})
 
@@ -291,14 +323,26 @@ def main(cfg):
             base_env.train()
             env.reset()
 
+        # === Profiling: Log timing stats to wandb ===
+        if profiling_mode and i > 0 and i % 5 == 0:
+            profiler.log_to_wandb(run)
+        
         # 记录到 Wandb
         run.log(info)
 
-        # Save Model
-        if i % save_interval == 0:
-            ckpt_path = os.path.join(run.dir, f"checkpoint_{i}.pt")
+        # Save Model (skip in profiling mode or if wandb is disabled)
+        if i % save_interval == 0 and not profiling_mode:
+            save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
+            os.makedirs(save_dir, exist_ok=True)
+            ckpt_path = os.path.join(save_dir, f"checkpoint_{i}.pt")
             torch.save(policy.state_dict(), ckpt_path)
             print("[RunnerSimple]: model saved at training step: ", i)
+
+    # === Profiling: Print final summary ===
+    if profiling_mode:
+        profiler.print_summary()
+        profiler.log_to_wandb(run)
+        print(f"[SimpleRunner] Profiling complete. Log saved to: {profiler_log_file}")
 
     wandb.finish()
     sim_app.close()
