@@ -78,12 +78,13 @@ def main(cfg):
 
     # === Profiling Configuration ===
     profiling_mode = cfg.get("profiling_mode", False)  # Enable via CLI: profiling_mode=true
-    profiling_batches = cfg.get("profiling_batches", 20)  # Number of batches to profile
+    profiling_batches = cfg.get("profiling_batches", 10)  # Number of batches to profile
     
     if profiling_mode:
         print("[SimpleRunner] === PROFILING MODE ENABLED ===")
         print(f"[SimpleRunner] Will run {profiling_batches} batches for profiling analysis")
         cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * profiling_batches
+        cfg.wandb.mode = "online"  # ensure wandb is online to log profiling data
         eval_interval = 0  # Disable evaluation during profiling
         save_interval = profiling_batches + 1  # Don't save during profiling
 
@@ -105,7 +106,7 @@ def main(cfg):
     # === 初始化环境 ===
     base_env = FollowingEnvSimple(cfg)
     
-    # 启用渲染 (这对录像至关重要)
+    # 启用渲染
     base_env.enable_render(True)
 
     # === Transforms (保持与 train.py 一致) ===

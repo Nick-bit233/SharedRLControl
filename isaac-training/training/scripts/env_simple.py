@@ -107,22 +107,6 @@ class FollowingEnvSimple(IsaacEnv):
         self.viz_traj_agent = []
         self.viz_human_pos = None
 
-        # Debug mode
-        self.debug_mode = cfg.get("debug_mode", False)
-        # if self.debug_mode:
-        #     import os
-        #     log_output_dir = cfg.get("log_output_dir", os.path.join(os.getcwd(), "outputs"))
-        #     print("[NavigationEnv]: Debug Mode is ON!")
-        #     log_file_path = os.path.join(log_output_dir, "debug_log.csv")
-        #     self.debug_log_file = open(log_file_path, "w", newline="")
-        #     self.csv_writer = csv.writer(self.debug_log_file)
-        #     # 写入表头
-        #     self.csv_writer.writerow([
-        #         "step", "env_id", "mode", "start_pos_x", "start_pos_y", "start_pos_z",
-        #         "reward_total", "reward_vel", "reward_intent_complete", "reward_safe", "reward_penalty_smooth","reward_penalty_height", 
-        #         "human_vel_x", "drone_vel_x",
-        #     ])
-
     def _design_scene(self):
         import omni_drones.utils.kit as kit_utils
         import isaacsim.core.utils.prims as prim_utils
