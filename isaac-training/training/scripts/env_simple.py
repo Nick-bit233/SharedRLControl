@@ -338,7 +338,7 @@ class FollowingEnvSimple(IsaacEnv):
         user_input_drone_state = drone_state_b.clone()  # (N, 10)
 
         human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)  # (N, 4)
-        intent_completed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
+        need_refill = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
  
         if getattr(self, "manual_mode", False):
             # Use manual action input as human input
@@ -346,7 +346,7 @@ class FollowingEnvSimple(IsaacEnv):
         else:
             # Step the simulated user model to get human action input
             with profiler.timer("env/user_model_step"):
-                human_actions_local, intent_completed = self.user_model.step(
+                human_actions_local, need_refill = self.user_model.step(
                     user_input_drone_state,
                     drone_pos_w
                 )

@@ -1,3 +1,2 @@
 user_model:
-  min_duration: 3.0  # minimum trajectory duration when sampling user intent
-  max_duration: 5.0  # maximum trajectory duration when sampling user intent
+  simple_mode: true # whether to use simple step function for user model

@@ -6,7 +6,7 @@ defaults:
   - user_model
 
 headless: True
-debug_mode: False
+profiling_mode: True
 log_output_dir: "./outputs"
 device: "cuda:0"
 seed: 0

@@ -31,6 +31,12 @@ def main(cfg):
     from env_simple import FollowingEnvSimple
     from ppo_simple import SimplePPO
 
+    # === Profiling Configuration ===
+    profiling_mode = cfg.get("profiling_mode", False)  # Enable via CLI: profiling_mode=true
+    profiling_batches = cfg.get("profiling_batches", 10)  # Number of batches to profile
+    if profiling_mode:
+        cfg.wandb.mode = "disabled"  # Disable wandb in profiling mode
+
     # Use Wandb to monitor training
     # Convert OmegaConf to dict to avoid serialization errors with wandb/dataclasses
     wandb_config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
@@ -68,25 +74,22 @@ def main(cfg):
     # 设置是否启用 RNN
     cfg.algo.rnn.enable = False
 
-    cfg.algo.training_frame_num = 128  # 每个采集批次帧数
-    cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 20000  # 最大采集帧数 = frame_num * N * Batches
-    cfg.debug_mode = False
-    cfg.global_view = True      # 是否使用全局视角
-    one_step_only = False         # 是否只跑一步
-    eval_interval = 500            # 每 i 个 batch 评估一次
-    save_interval = 500          # 每 i 个 batch 保存一次模型
-
-    # === Profiling Configuration ===
-    profiling_mode = cfg.get("profiling_mode", False)  # Enable via CLI: profiling_mode=true
-    profiling_batches = cfg.get("profiling_batches", 10)  # Number of batches to profile
+    # 是否使用全局视角
+    cfg.global_view = True      
     
     if profiling_mode:
         print("[SimpleRunner] === PROFILING MODE ENABLED ===")
         print(f"[SimpleRunner] Will run {profiling_batches} batches for profiling analysis")
         cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * profiling_batches
-        cfg.wandb.mode = "online"  # ensure wandb is online to log profiling data
         eval_interval = 0  # Disable evaluation during profiling
         save_interval = profiling_batches + 1  # Don't save during profiling
+    else:
+        cfg.algo.training_frame_num = 128  # 每个采集批次帧数
+        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 20000  # 最大采集帧数 = frame_num * N * Batches
+        one_step_only = False         # 是否只跑一步
+        eval_interval = 500            # 每 i 个 batch 评估一次
+        save_interval = 500          # 每 i 个 batch 保存一次模型
+
 
     hydra_cfg = HydraConfig.get()
     cfg.log_output_dir = hydra_cfg.runtime.output_dir  # 使用 Hydra 日志输出目录
