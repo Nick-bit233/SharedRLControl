@@ -40,6 +40,9 @@ class FollowingEnvSimple(IsaacEnv):
         # Force remove obstacles
         cfg.env.num_obstacles = 0
         cfg.env_dyn.num_obstacles = 0
+
+        # observation related configs
+        self.obs_add_prev = cfg.algo.observation_cat_prev_action
         
         # Check if lidar is enabled (default to False if not specified)
         self.enable_lidar = cfg.env.get("enable_lidar", False)
@@ -100,6 +103,7 @@ class FollowingEnvSimple(IsaacEnv):
             self.height_range = torch.zeros(self.num_envs, 1, 2)
 
         # visualize options
+        self.disable_visualization = True
         self.render_lidar = False
         
         # Visualization Trajectory Buffers
@@ -149,13 +153,18 @@ class FollowingEnvSimple(IsaacEnv):
         human_action_dim = 4  # (vel_b[3] + yaw_rate_b[1])
 
         # Observation Spec
-        # === Fix: Use new Spec classes ===
-        obs_dict = {
-            "state": Unbounded((drone_state_dim,), device=self.device), 
-            "prev_action": Unbounded((prev_action_dim,), device=self.device),
-            "human_action": Unbounded((human_action_dim,), device=self.device),
-        }
-        
+        if self.obs_add_prev:
+            obs_dict = {
+                "state": Unbounded((drone_state_dim,), device=self.device), 
+                "prev_action": Unbounded((prev_action_dim,), device=self.device),
+                "human_action": Unbounded((human_action_dim,), device=self.device),
+            }
+        else:
+            obs_dict = {
+                "state": Unbounded((drone_state_dim,), device=self.device), 
+                "human_action": Unbounded((human_action_dim,), device=self.device),
+            }
+            
         if self.enable_lidar:
              obs_dict["lidar"] = Unbounded((1, self.lidar_hbeams, self.lidar_vbeams), device=self.device)
 
@@ -259,7 +268,29 @@ class FollowingEnvSimple(IsaacEnv):
             # Find the index of env 0 in env_ids
             idx = (env_ids == 0).nonzero(as_tuple=True)[0].item()
             self.viz_human_pos = pos[idx, 0].clone()
+
+    # === Override _step to add profiling for sim.step() without modifying isaac_env.py ===
+    def _step(self, tensordict: TensorDictBase) -> TensorDictBase:
+        """
+        Override parent _step to add profiling for Isaac Sim physics step.
+        This avoids modifying the third-party isaac_env.py dependency.
+        """
+        profiler = get_profiler()
         
+        for substep in range(self.substeps):
+            with profiler.timer("env/_pre_sim_step"):
+                self._pre_sim_step(tensordict)
+            with profiler.timer("env/sim_step"):
+                self.sim.step(self._should_render(substep))
+
+        self._post_sim_step(tensordict)
+        self.progress_buf += 1
+
+        tensordict = TensorDict({}, self.batch_size, device=self.device)
+        tensordict.update(self._compute_state_and_obs())
+        tensordict.update(self._compute_reward_and_done())
+        return tensordict
+
     def _pre_sim_step(self, tensordict: TensorDictBase):
         # 这里的action为最终传递给VelController并计算模拟运动的速度指令，默认为world frame
         # 这里不可做任何变换，因为torchrl会直接把转换后的action传递给drone.apply_action()
@@ -355,11 +386,11 @@ class FollowingEnvSimple(IsaacEnv):
         obs = {
             "state": drone_state_b,
             "human_action": human_actions_local,
-            "prev_action": prev_action_local
         }
+        if self.obs_add_prev:
+            obs["prev_action"] = prev_action_local
         if self.enable_lidar:
             obs["lidar"] = self.lidar_scan
-
         # -----------------Reward Calculation-----------------
         profiler.start("env/reward_calculation")
         # Only reward for correct following human input velocity
@@ -435,7 +466,7 @@ class FollowingEnvSimple(IsaacEnv):
 
         # ----------------- Visualization and Debugging -----------------
         profiler.start("env/visualization")
-        if self._should_render(0):
+        if self._should_render(0) and not self.disable_visualization:
             self.debug_draw.clear()
             
             # get the first (env_id=0) lidar position
@@ -585,6 +616,18 @@ class FollowingEnvSimple(IsaacEnv):
             },
             self.batch_size,
         )
+
+    def set_visualization(self, enabled: bool):
+        """
+        Enable or disable visualization.
+        Use this to temporarily enable visualization during evaluation.
+        :param enabled: bool - True to enable visualization, False to disable
+        """
+        self.disable_visualization = not enabled
+        if enabled:
+            print("[FollowingEnvSimple] Visualization ENABLED")
+        else:
+            print("[FollowingEnvSimple] Visualization DISABLED")
 
     def set_manual_mode(self, enabled: bool):
         """

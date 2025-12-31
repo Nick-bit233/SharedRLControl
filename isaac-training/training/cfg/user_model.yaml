@@ -1,2 +1,3 @@
 user_model:
   simple_mode: true # whether to use simple step function for user model
+  enable_yaw_rate: false # whether to enable yaw rate commands in simple mode

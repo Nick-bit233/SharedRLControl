@@ -244,11 +244,6 @@ class UserModel:
             cfg.env.map_range, dtype=torch.float32, device=self.device
         )
 
-        self.simple_mode = cfg.user_model.simple_mode
-        if self.simple_mode:
-            print("[UserModel] Using simple step function (linear velocity commands).")
-            self.theta = torch.rand(num_envs, device=self.device) * 2.0 * math.pi
-
         # Parameters
         # training frame num or max_episode_length ?
         self.buffer_size = cfg.algo.training_frame_num # steps (e.g. 128 frames is about 2 seconds)
@@ -256,6 +251,14 @@ class UserModel:
         self.max_speed = cfg.algo.actor.action_limit
         self.max_speed_z = self.max_speed / 2.0  # TEST: limit z speed to half for stability
         self.max_speed_yaw = torch.pi / 4
+
+        self.simple_mode = cfg.user_model.simple_mode
+        self.enable_yaw_rate = cfg.user_model.enable_yaw_rate
+        if self.simple_mode:
+            print("[UserModel] Using simple step function (linear velocity commands).")
+            self.xy_speed = torch.rand(num_envs, device=self.device) * self.max_speed
+            self.yaw_rate_speed = torch.rand(num_envs, device=self.device) * self.max_speed_yaw
+            self.theta = torch.rand(num_envs, device=self.device) * 2.0 * math.pi
         
         # State
         self.action_buffer = torch.zeros(num_envs, self.buffer_size, 4, device=self.device)
@@ -312,6 +315,8 @@ class UserModel:
 
             if self.simple_mode:
                 self.theta[env_ids] = torch.rand(K, device=self.device, generator=gen) * 2.0 * math.pi
+                self.xy_speed[env_ids] = torch.rand(K, device=self.device, generator=gen) * self.max_speed
+                self.yaw_rate_speed[env_ids] = torch.rand(K, device=self.device, generator=gen) * self.max_speed_yaw
             
         else:
             # Training Mode: Random generate seeds and styles
@@ -322,6 +327,8 @@ class UserModel:
 
             if self.simple_mode:
                 self.theta[env_ids] = torch.rand(K, device=self.device) * 2.0 * math.pi
+                self.xy_speed[env_ids] = torch.rand(K, device=self.device) * self.max_speed
+                self.yaw_rate_speed[env_ids] = torch.rand(K, device=self.device) * self.max_speed_yaw
 
         self.prev_filtered_action[env_ids] = 0.0
         
@@ -341,17 +348,17 @@ class UserModel:
             needs_refill: (N,) boolean tensor (always False in simple mode)
         """
         N = drone_state.shape[0]
-        
-        # Random speed magnitude (up to max_speed)
-        speed = torch.rand(N, device=self.device) * self.max_speed
-        
+
         # Compute XY velocities
-        vx = speed * torch.cos(theta)
-        vy = speed * torch.sin(theta)
+        vx = self.xy_speed * torch.cos(theta)
+        vy = self.xy_speed * torch.sin(theta)
         
         # Z and yaw_rate are zero
         vz = torch.zeros(N, device=self.device)
-        yaw_rate = torch.zeros(N, device=self.device)
+        if self.enable_yaw_rate:
+            yaw_rate = self.yaw_rate_speed
+        else:
+            yaw_rate = torch.zeros(N, device=self.device)
         
         # Stack into action tensor
         action = torch.stack([vx, vy, vz, yaw_rate], dim=-1)  # (N, 4)

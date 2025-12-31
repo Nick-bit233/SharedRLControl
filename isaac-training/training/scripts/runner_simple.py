@@ -85,7 +85,7 @@ def main(cfg):
         save_interval = profiling_batches + 1  # Don't save during profiling
     else:
         cfg.algo.training_frame_num = 128  # 每个采集批次帧数
-        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 20000  # 最大采集帧数 = frame_num * N * Batches
+        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 2000  # 最大采集帧数 = frame_num * N * Batches
         one_step_only = False         # 是否只跑一步
         eval_interval = 500            # 每 i 个 batch 评估一次
         save_interval = 500          # 每 i 个 batch 保存一次模型
@@ -202,6 +202,10 @@ def main(cfg):
         exploration_type = ExplorationType.MODE
         # 评估时，固定随机种子
         env.set_seed(seed)
+        
+        # 评估时临时开启可视化以录制视频
+        if cfg.get("eval_visualization", False):
+            env.set_visualization(enabled=True)
 
         render_callback = RenderCallback(interval=1) # 每一帧记录渲染
 
@@ -238,6 +242,9 @@ def main(cfg):
             for k, v in traj_stats.items()
         }
         logging.info(f"[Eval] eval info: {info}")
+        
+        # 评估结束后关闭可视化
+        env.set_visualization(enabled=False)
 
         # 保存评估视频
         info["recording"] = wandb.Video(

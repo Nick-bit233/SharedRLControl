@@ -17,6 +17,7 @@ algo:
     gru_hidden_dim: 256
     gru_num_layers: 1
 
+  observation_cat_prev_action: False  # whether to concatenate previous action to observation
   entropy_loss_coefficient: 1e-3 # encourage exploration
   training_frame_num: 128
   training_epoch_num: 10
