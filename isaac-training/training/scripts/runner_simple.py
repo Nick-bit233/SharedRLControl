@@ -1,4 +1,20 @@
 import os
+
+# =============================================================================
+# Isaac Sim Single-GPU Training Runner
+# =============================================================================
+#
+# IMPORTANT: Isaac Sim does NOT support CUDA_VISIBLE_DEVICES!
+# Do NOT set CUDA_VISIBLE_DEVICES - it causes crashes and "CUDA bad state" errors.
+#
+# To use a specific GPU, pass it via config:
+#   python runner_simple.py sim.device=cuda:3 device=cuda:3
+#
+# For faster training, increase the number of parallel environments:
+#   python runner_simple.py env.num_envs=1024
+#
+# =============================================================================
+
 import logging
 import hydra
 import datetime

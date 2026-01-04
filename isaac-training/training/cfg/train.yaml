@@ -43,3 +43,11 @@ wandb:
   entity: nickbit_ipec_group
   mode: offline 
   run_id: 
+
+# Distributed training configuration (set via command line)
+distributed:
+  enabled: false
+  rank: 0
+  world_size: 1
+  master_addr: "localhost"
+  master_port: 29500
