@@ -243,7 +243,7 @@ class UserModel:
         self.env_map_range = torch.tensor(
             cfg.env.map_range, dtype=torch.float32, device=self.device
         )
-        
+
         # Parameters
         # training frame num or max_episode_length ?
         self.buffer_size = cfg.algo.training_frame_num # steps (e.g. 128 frames is about 2 seconds)
@@ -251,6 +251,14 @@ class UserModel:
         self.max_speed = cfg.algo.actor.action_limit
         self.max_speed_z = self.max_speed / 2.0  # TEST: limit z speed to half for stability
         self.max_speed_yaw = torch.pi / 4
+
+        self.simple_mode = cfg.user_model.simple_mode
+        self.enable_yaw_rate = cfg.user_model.enable_yaw_rate
+        if self.simple_mode:
+            print("[UserModel] Using simple step function (linear velocity commands).")
+            self.xy_speed = torch.rand(num_envs, device=self.device) * self.max_speed
+            self.yaw_rate_speed = torch.rand(num_envs, device=self.device) * self.max_speed_yaw
+            self.theta = torch.rand(num_envs, device=self.device) * 2.0 * math.pi
         
         # State
         self.action_buffer = torch.zeros(num_envs, self.buffer_size, 4, device=self.device)
@@ -304,6 +312,11 @@ class UserModel:
             self.styles['noise_freq'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.05 + 0.05
             self.styles['smoothness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.5 + 0.2
             self.styles['laziness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.2
+
+            if self.simple_mode:
+                self.theta[env_ids] = torch.rand(K, device=self.device, generator=gen) * 2.0 * math.pi
+                self.xy_speed[env_ids] = torch.rand(K, device=self.device, generator=gen) * self.max_speed
+                self.yaw_rate_speed[env_ids] = torch.rand(K, device=self.device, generator=gen) * self.max_speed_yaw
             
         else:
             # Training Mode: Random generate seeds and styles
@@ -312,14 +325,57 @@ class UserModel:
             self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.5 + 0.2
             self.styles['laziness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.2
 
+            if self.simple_mode:
+                self.theta[env_ids] = torch.rand(K, device=self.device) * 2.0 * math.pi
+                self.xy_speed[env_ids] = torch.rand(K, device=self.device) * self.max_speed
+                self.yaw_rate_speed[env_ids] = torch.rand(K, device=self.device) * self.max_speed_yaw
+
         self.prev_filtered_action[env_ids] = 0.0
         
-        # Refill buffer
-        self._refill_buffer(env_ids, pos, quat)
+        if not self.simple_mode:
+            # Refill buffer
+            self._refill_buffer(env_ids, pos, quat)
+        else:
+            pass
+
+    def step_simple(self, drone_state, theta):
+        """
+        Simple step function: outputs random XY velocity with Z=0 and yaw_rate=0.
+        Velocity direction is fixed by theta.
+        
+        Returns:
+            action: (N, 4) velocity commands [vx, vy, vz, yaw_rate] in body frame
+            needs_refill: (N,) boolean tensor (always False in simple mode)
+        """
+        N = drone_state.shape[0]
+
+        # Compute XY velocities
+        vx = self.xy_speed * torch.cos(theta)
+        vy = self.xy_speed * torch.sin(theta)
+        
+        # Z and yaw_rate are zero
+        vz = torch.zeros(N, device=self.device)
+        if self.enable_yaw_rate:
+            yaw_rate = self.yaw_rate_speed
+        else:
+            yaw_rate = torch.zeros(N, device=self.device)
+        
+        # Stack into action tensor
+        action = torch.stack([vx, vy, vz, yaw_rate], dim=-1)  # (N, 4)
+        
+        # No refill needed in simple mode
+        needs_refill = torch.zeros(N, dtype=torch.bool, device=self.device)
+
+        return action, needs_refill
 
     def step(self, drone_state, drone_pos_w):
         profiler = get_profiler()
         profiler.start("user_model/step")
+
+        if self.simple_mode:
+            action, needs_refill = self.step_simple(drone_state, self.theta)
+            profiler.stop("user_model/step")
+            return action, needs_refill
         
         # drone_state: (N, 10) -> vel, ang_vel, quat, in body frame
         # drone_pos_w: (N, 3) position in world frame (need to be passed from outside since drone_state is body frame)

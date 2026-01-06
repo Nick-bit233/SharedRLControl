@@ -80,6 +80,12 @@ class NavigationEnv(IsaacEnv):
             # use this 4D action instaed of the prev_drone_vel_w in user model and GRU network.
             self.prev_agent_action = torch.zeros(self.num_envs, 4, device=self.device)  
             self.intent_complete_counts = torch.zeros(self.num_envs, 1, device=self.device)
+            # Cumulative following error for early termination (方案C - 动态阈值)
+            self.cumulative_error = torch.zeros(self.num_envs, 1, device=self.device)
+            self.error_ema_alpha = 0.995  # Exponential moving average decay factor
+            self.error_threshold_base = 2.0  # Base threshold (strict, for no-obstacle case)
+            self.error_threshold_max = 5.0   # Max threshold (relaxed, when obstacles are very close)
+            self.safety_margin = 1.5  # Distance within which we start relaxing the threshold
 
         # visualize options
         self.render_lidar = False
@@ -454,6 +460,7 @@ class NavigationEnv(IsaacEnv):
         # Reset previous step variables
         self.prev_drone_vel_w[env_ids] = 0.
         self.prev_agent_action[env_ids] = 0.
+        self.cumulative_error[env_ids] = 0.
 
         # Update lidar sensor when reset
         # self.lidar.update(self.cfg.sim.dt)
@@ -738,7 +745,39 @@ class NavigationEnv(IsaacEnv):
         below_bound = self.drone.pos[..., 2] < 0.2
         above_bound = self.drone.pos[..., 2] > 4.
 
-        self.terminated = below_bound | above_bound | collision
+        # === Dynamic threshold for cumulative error termination ===
+        # Calculate 4D action difference (velocity + yaw rate)
+        action_diff = torch.cat([
+            current_vel_w - target_vel_w,  # (N, 3)
+            current_yaw_rate - target_yaw_rate  # (N, 1)
+        ], dim=-1).norm(dim=-1, keepdim=True)  # (N, 1)
+        
+        # Update cumulative error with EMA
+        self.cumulative_error = (
+            self.error_ema_alpha * self.cumulative_error + 
+            (1 - self.error_ema_alpha) * action_diff
+        )
+        
+        # Compute dynamic threshold based on obstacle proximity
+        # min_obstacle_dist: minimum distance to any obstacle from lidar
+        min_obstacle_dist = (self.lidar_range - self.lidar_scan).min(dim=(2, 3)).values  # (N, 1)
+        
+        # Proximity factor: 1.0 when obstacle at safety_margin, 0.0 when far
+        proximity_factor = torch.clamp(
+            (self.safety_margin - min_obstacle_dist) / self.safety_margin, 
+            min=0.0, max=1.0
+        )  # (N, 1)
+        
+        # Dynamic threshold: relaxes when obstacles are close
+        dynamic_threshold = (
+            self.error_threshold_base + 
+            (self.error_threshold_max - self.error_threshold_base) * proximity_factor
+        )
+        
+        # Poor following: cumulative error exceeds dynamic threshold
+        poor_following = self.cumulative_error > dynamic_threshold
+
+        self.terminated = below_bound | above_bound | collision | poor_following
         timeout_truncate = (self.progress_buf >= self.max_episode_length).unsqueeze(-1)
         self.truncated = timeout_truncate
 

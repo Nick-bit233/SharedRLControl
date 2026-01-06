@@ -43,11 +43,13 @@ class SimplePPO(TensorDictModuleBase):
         self.device = device
 
         self.using_rnn = cfg.rnn.enable
+        self.obs_add_prev = cfg.observation_cat_prev_action
 
         # Get obs spec dims
         state_dim = observation_spec["agents", "observation", "state"].shape[-1]
         human_action_dim = observation_spec["agents", "observation", "human_action"].shape[-1]
-        prev_action_dim = observation_spec["agents", "observation", "prev_action"].shape[-1]
+        if self.obs_add_prev:
+            prev_action_dim = observation_spec["agents", "observation", "prev_action"].shape[-1]
         
         # Check if lidar is present in observation spec
         self.has_lidar = "lidar" in observation_spec["agents", "observation"]
@@ -63,18 +65,22 @@ class SimplePPO(TensorDictModuleBase):
             cat_keys.append("_cnn_feature")
             cnn_feature_dim = 128
 
-        if self.using_rnn:
-            # Add prev_action keys to concatenation
-            cat_keys.extend([
-                ("agents", "observation", "state"), 
-                ("agents", "observation", "human_action"),
-                ("agents", "observation", "prev_action")
-            ])
+        # Add keys, depending on whether prev_action is included
+        cat_keys.extend([
+            ("agents", "observation", "state"), 
+            ("agents", "observation", "human_action"),
+        ])
+        if self.obs_add_prev:
+            cat_keys.append(("agents", "observation", "prev_action"))
 
+        if self.using_rnn:
             # ====== add GRU Module in feature_extractor ======
             # TODO: GRU module only embeds the prev states & actions, defined before the current state & human action.
             # RNN network dims for temporal information of observations
-            gru_input_dim = cnn_feature_dim + state_dim + human_action_dim + prev_action_dim
+            if self.obs_add_prev:
+                gru_input_dim = cnn_feature_dim + state_dim + human_action_dim + prev_action_dim
+            else:
+                gru_input_dim = cnn_feature_dim + state_dim + human_action_dim
             gru_hidden_dim = cfg.algo.rnn.gru_hidden_dim
 
             self.gru_num_layers = cfg.algo.rnn.gru_num_layers
@@ -106,11 +112,6 @@ class SimplePPO(TensorDictModuleBase):
             # 4. Add a GRU network
             modules.append(self.gru_model)
         else:
-            cat_keys.extend([
-                ("agents", "observation", "state"), 
-                ("agents", "observation", "human_action"),
-            ])
-
             # ====== Only concatenate features, no GRU ======
             modules.append(CatTensors(
                 in_keys=cat_keys, 
@@ -242,6 +243,10 @@ class SimplePPO(TensorDictModuleBase):
             values = tensordict["state_value"] # This is calculated stored when we called forward to obtain actions
             values = self.value_norm.denormalize(values) # denomalize values based on running mean and var of return
             next_values = self.value_norm.denormalize(next_values)
+
+            # OPTIONAL: deal with truncated episodes
+            # truncated = tensordict["next", "truncated"]s
+            # next_values = torch.where(truncated, values, next_values)
 
             # calculate GAE: Generalized Advantage Estimation
             adv, ret = self.gae(rewards, dones, values, next_values)

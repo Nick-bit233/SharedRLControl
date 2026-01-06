@@ -31,6 +31,12 @@ def main(cfg):
     from env_simple import FollowingEnvSimple
     from ppo_simple import SimplePPO
 
+    # === Profiling Configuration ===
+    profiling_mode = cfg.get("profiling_mode", False)  # Enable via CLI: profiling_mode=true
+    profiling_batches = cfg.get("profiling_batches", 10)  # Number of batches to profile
+    if profiling_mode:
+        cfg.wandb.mode = "disabled"  # Disable wandb in profiling mode
+
     # Use Wandb to monitor training
     # Convert OmegaConf to dict to avoid serialization errors with wandb/dataclasses
     wandb_config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
@@ -59,6 +65,7 @@ def main(cfg):
 
     # === 覆盖配置 ===
     cfg.env.num_envs = 256           # 无人机数量
+    cfg.env.max_episode_length = 4000  # 每个 episode 最大步数
     # cfg.env.num_obstacles = 0     # 已经在 env_simple.py 中强制设为 0
     # cfg.env_dyn.num_obstacles = 0   # 已经在 env_simple.py 中强制设为 0
     
@@ -68,25 +75,22 @@ def main(cfg):
     # 设置是否启用 RNN
     cfg.algo.rnn.enable = False
 
-    cfg.algo.training_frame_num = 128  # 每个采集批次帧数
-    cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 20000  # 最大采集帧数 = frame_num * N * Batches
-    cfg.debug_mode = False
-    cfg.global_view = True      # 是否使用全局视角
-    one_step_only = False         # 是否只跑一步
-    eval_interval = 500            # 每 i 个 batch 评估一次
-    save_interval = 500          # 每 i 个 batch 保存一次模型
-
-    # === Profiling Configuration ===
-    profiling_mode = cfg.get("profiling_mode", False)  # Enable via CLI: profiling_mode=true
-    profiling_batches = cfg.get("profiling_batches", 10)  # Number of batches to profile
+    # 是否使用全局视角
+    cfg.global_view = True      
     
     if profiling_mode:
         print("[SimpleRunner] === PROFILING MODE ENABLED ===")
         print(f"[SimpleRunner] Will run {profiling_batches} batches for profiling analysis")
         cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * profiling_batches
-        cfg.wandb.mode = "online"  # ensure wandb is online to log profiling data
         eval_interval = 0  # Disable evaluation during profiling
         save_interval = profiling_batches + 1  # Don't save during profiling
+    else:
+        cfg.algo.training_frame_num = 128  # 每个采集批次帧数
+        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 10010  # 最大采集帧数 = frame_num * N * Batches
+        one_step_only = False         # 是否只跑一步
+        eval_interval = 500           # 每 i 个 batch 评估一次
+        save_interval = 500          # 每 i 个 batch 保存一次模型
+
 
     hydra_cfg = HydraConfig.get()
     cfg.log_output_dir = hydra_cfg.runtime.output_dir  # 使用 Hydra 日志输出目录
@@ -143,11 +147,11 @@ def main(cfg):
     # === 初始化 SimplePPO ===
     policy = SimplePPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
     
-    print("[SimpleRunner] Environment structure.")
-    print(env)
+    # print("[SimpleRunner] Environment structure.")
+    # print(env)
 
-    print("[SimpleRunner] Policy structure.")
-    print(policy(env.reset()))
+    # print("[SimpleRunner] Policy structure.")
+    # print(policy(env.reset()))
 
     def save_env_image(frame_idx: int):
         # === 保存帧用于检查 ===
@@ -185,7 +189,7 @@ def main(cfg):
 
     # === 数据统计器(torchrl) ===
     stats_keys = [
-        k for k in base_env.observation_spec.keys(True, True) 
+        k for k in env.observation_spec.keys(True, True) 
         if isinstance(k, tuple) and k[0]=="stats"
     ]
     episode_stats = EpisodeStats(in_keys=stats_keys)
@@ -193,26 +197,29 @@ def main(cfg):
     # === 评估函数 ===
     @torch.no_grad()
     def evaluate(seed: int=42):
-        base_env.eval()
         env.eval()
         # 评估时，固定探索类型为确定性
-        exploration_type = ExplorationType.MODE
+        exploration_type = ExplorationType.MEAN
         # 评估时，固定随机种子
         env.set_seed(seed)
+        
+        # 评估时临时开启可视化以录制视频
+        if cfg.get("eval_visualization", False):
+            env.set_visualization(enabled=True)
 
         render_callback = RenderCallback(interval=1) # 每一帧记录渲染
 
         with set_exploration_type(exploration_type):
             # 手动进行一次完整的 rollout
             trajs = env.rollout(
-                max_steps=base_env.max_episode_length,
+                max_steps=env.max_episode_length,
                 policy=policy,
                 callback=render_callback,
                 auto_reset=True,
                 break_when_any_done=False,
                 return_contiguous=False,
             )
-        save_env_image(collector._frames)
+        # save_env_image(collector._frames)
         env.reset()
 
         logging.info(f"[Eval] trajs keys: {trajs.keys()}")
@@ -235,6 +242,9 @@ def main(cfg):
             for k, v in traj_stats.items()
         }
         logging.info(f"[Eval] eval info: {info}")
+        
+        # 评估结束后关闭可视化
+        env.set_visualization(enabled=False)
 
         # 保存评估视频
         info["recording"] = wandb.Video(
@@ -272,6 +282,7 @@ def main(cfg):
         # else:
         #     logging.info("No frames captured!")
         
+        env.train()
         return info
 
     # === 主训练循环 ===
@@ -298,30 +309,32 @@ def main(cfg):
         #         print("[SimpleRunner] One step only mode, exiting after first step.")
         #         break
 
-        with profiler.timer("episode_stats"):
-            episode_stats.add(data.to_tensordict())
-            # 每当有足够的 episode 结束时，计算并更新以此统计数据
-            if len(episode_stats) >= base_env.num_envs:
-                stats = {}
-                for k, v in episode_stats.pop().items(include_nested=True, leaves_only=True):
-                    key_name = k if isinstance(k, str) else "_".join(k)  # key可能是str或tuple
-                    stats[f"episode/{key_name}"] = torch.mean(v.float()).item()
-                info.update(stats)
-
         # 进行一次策略更新
         with profiler.timer("ppo_train_op"):
             training_infos = policy.train_op(data.to_tensordict())
         # 将策略网络内部的训练信息添加到 info 中
         info.update({f"ppo_train/{k}": v for k, v in training_infos.items()})
 
+        # 收集 episode 统计数据
+        with profiler.timer("episode_stats"):
+            episode_stats.add(data.to_tensordict())
+            if len(episode_stats) >= env.num_envs:
+                stats = {}
+                for k, v in episode_stats.pop().items(include_nested=True, leaves_only=True):
+                    key_name = k if isinstance(k, str) else "_".join(k)  # key可能是str或tuple
+                    stats[f"episode/{key_name}"] = torch.mean(v.float()).item()
+                info.update(stats)
+
         # 每隔 eval_interval 评估一次
         if eval_interval > 0 and i % eval_interval == 0:
             logging.info(f"Eval at {collector._frames} steps.")
+            base_env.eval()
+            # 进行评估
             info.update(evaluate())
-            # 改回训练模式
-            env.train()
             base_env.train()
-            env.reset()
+            base_env.reset()
+
+            print(f"[SimpleRunner] Eval info at step {collector._frames}: DONE")
 
         # === Profiling: Log timing stats to wandb ===
         if profiling_mode and i > 0 and i % 5 == 0:
