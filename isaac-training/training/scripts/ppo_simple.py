@@ -59,7 +59,7 @@ class SimplePPO(TensorDictModuleBase):
         
         cnn_feature_dim = 0
         if self.has_lidar:
-            # 1. Extract LiDAR Feature
+            # Extract LiDAR Feature
             feature_extractor_network = _LidarCNN().to(self.device)
             modules.append(TensorDictModule(feature_extractor_network, [("agents", "observation", "lidar")], ["_cnn_feature"]))
             cat_keys.append("_cnn_feature")
@@ -119,7 +119,6 @@ class SimplePPO(TensorDictModuleBase):
                 del_keys=False
             ))
         
-        # 5. Final fusion MLP
         modules.append(TensorDictModule(make_mlp([256, 256]), ["_embed"], ["_feature"]))
         
         # Rearrange the Feature Extractor network

@@ -6,7 +6,7 @@ from tensordict.nn import TensorDictModuleBase, TensorDictSequential, TensorDict
 from einops.layers.torch import Rearrange
 from torchrl.modules import ProbabilisticActor, GRUModule
 from torchrl.envs.transforms import CatTensors
-from utils import ValueNorm, make_mlp, GAE, IndependentBeta, BetaActor, vec_to_world
+from trainning_utils import ValueNorm, make_mlp, GAE, IndependentBeta, BetaActor, vec_to_world
 
 NORM_EPS = 1e-3
 

@@ -1,9 +1,27 @@
 import os
+
+# === Single GPU Mode ===
+# Isaac Sim/PhysX requires all tensors on the same GPU device.
+# For single-process training, we force a specific GPU.
+
+# check gpu number on the machine
+import torch
+num_gpus = torch.cuda.device_count()
+
+if num_gpus > 1:
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        print("[Multi GPU Detected] CUDA_VISIBLE_DEVICES not set, defaulting to GPU 0")
+    else:
+        print(f"[Multi GPU Detected] Using GPU: {os.environ['CUDA_VISIBLE_DEVICES']}")
+else:
+    print("[Single GPU] Single GPU detected, no need to set CUDA_VISIBLE_DEVICES")
+# ========================
+
 import logging
 import hydra
 import datetime
 import wandb
-import torch
 import imageio
 import numpy as np
 from omegaconf import OmegaConf
