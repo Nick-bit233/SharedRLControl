@@ -65,7 +65,7 @@ def main(cfg):
 
     # === 覆盖配置 ===
     cfg.env.num_envs = 256           # 无人机数量
-    cfg.env.max_episode_length = 1000  # 每个 episode 最大步数
+    cfg.env.max_episode_length = 4000  # 每个 episode 最大步数
     # cfg.env.num_obstacles = 0     # 已经在 env_simple.py 中强制设为 0
     # cfg.env_dyn.num_obstacles = 0   # 已经在 env_simple.py 中强制设为 0
     
@@ -86,10 +86,10 @@ def main(cfg):
         save_interval = profiling_batches + 1  # Don't save during profiling
     else:
         cfg.algo.training_frame_num = 128  # 每个采集批次帧数
-        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 2010  # 最大采集帧数 = frame_num * N * Batches
+        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 10010  # 最大采集帧数 = frame_num * N * Batches
         one_step_only = False         # 是否只跑一步
-        eval_interval = 200            # 每 i 个 batch 评估一次
-        save_interval = 400          # 每 i 个 batch 保存一次模型
+        eval_interval = 500           # 每 i 个 batch 评估一次
+        save_interval = 500          # 每 i 个 batch 保存一次模型
 
 
     hydra_cfg = HydraConfig.get()
@@ -197,7 +197,6 @@ def main(cfg):
     # === 评估函数 ===
     @torch.no_grad()
     def evaluate(seed: int=42):
-        # 评估时，仅使用base_env
         env.eval()
         # 评估时，固定探索类型为确定性
         exploration_type = ExplorationType.MEAN
@@ -330,8 +329,8 @@ def main(cfg):
         if eval_interval > 0 and i % eval_interval == 0:
             logging.info(f"Eval at {collector._frames} steps.")
             base_env.eval()
+            # 进行评估
             info.update(evaluate())
-            # 改回训练模式
             base_env.train()
             base_env.reset()
 

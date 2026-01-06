@@ -101,6 +101,12 @@ class FollowingEnvSimple(IsaacEnv):
             self.prev_agent_action = torch.zeros(self.num_envs, 4)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
+            # Cumulative following error for early termination (方案C)
+            self.cumulative_error = torch.zeros(self.num_envs, 1)
+            self.error_ema_alpha = 0.995  # Exponential moving average decay factor
+            self.error_threshold_base = 2.0  # Base threshold (strict, for no-obstacle case)
+            self.error_threshold_max = 5.0   # Max threshold (relaxed, when obstacles are very close)
+            self.safety_margin = 1.5  # Distance within which we start relaxing the threshold
 
         # visualize options
         self.disable_visualization = True
@@ -248,6 +254,8 @@ class FollowingEnvSimple(IsaacEnv):
         # Reset previous step variables
         self.prev_drone_vel_w[env_ids] = 0.
         self.prev_agent_action[env_ids] = 0.
+        # Reset cumulative following error
+        self.cumulative_error[env_ids] = 0.
 
         if (self.training):
             self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids)
@@ -256,6 +264,17 @@ class FollowingEnvSimple(IsaacEnv):
             self.user_model.reset(pos=pos, quat=rot, env_ids=env_ids, seed=self.seed)
 
         self.stats[env_ids] = 0.  
+
+        # Randomize episode length for each env to break synchronization
+        # This prevents all envs from truncating at the same time, which causes critic loss spikes
+        if not hasattr(self, 'max_episode_per_env'):
+            self.max_episode_per_env = torch.full(
+                (self.num_envs,), float(self.max_episode_length), 
+                dtype=torch.float, device=self.device
+            )
+        # Random scale: 70% ~ 100% of max_episode_length
+        random_scale = 0.7 + 0.3 * torch.rand(len(env_ids), device=self.device)
+        self.max_episode_per_env[env_ids] = (self.max_episode_length * random_scale).floor()
 
         # Set default height range for each env
         self.height_range[env_ids, 0, 0] = 1.0  # min height
@@ -456,9 +475,40 @@ class FollowingEnvSimple(IsaacEnv):
         
         # No collision check needed as there are no obstacles, but ground collision is below_bound
         
-        self.terminated = below_bound | above_bound
-        # progress_buf 会不断累积，达到 max_episode_length 时触发截断（每次取batch训练时不会重置）
-        timeout_truncate = (self.progress_buf >= self.max_episode_length).unsqueeze(-1)
+        # 方案C: 累积跟随误差终止条件（支持动态阈值）
+        # 使用指数移动平均更新累积误差
+        self.cumulative_error = (
+            self.error_ema_alpha * self.cumulative_error + 
+            (1 - self.error_ema_alpha) * action_diff
+        )
+        
+        # 动态误差阈值：根据障碍物距离调整
+        # 在 env_simple（无障碍物）中，使用固定的基础阈值
+        if self.enable_lidar:
+            # 有lidar时，根据最近障碍物距离计算动态阈值
+            # lidar_scan: 值越大表示障碍物越近 (range - distance)
+            min_obstacle_dist = self.lidar_range - self.lidar_scan.max(dim=(2, 3)).values  # (N, 1)
+            # obstacle_proximity: 0=无障碍物/远, 1=非常近
+            obstacle_proximity = torch.clamp(
+                (self.safety_margin - min_obstacle_dist) / self.safety_margin, 
+                min=0, max=1
+            )
+            # 动态阈值：障碍物越近，阈值越宽松
+            dynamic_threshold = (
+                self.error_threshold_base + 
+                (self.error_threshold_max - self.error_threshold_base) * obstacle_proximity
+            )
+        else:
+            # 无lidar（无障碍物环境），使用固定的基础阈值
+            dynamic_threshold = self.error_threshold_base
+        
+        # 如果累积误差持续过大，视为"跟随失败"
+        poor_following = self.cumulative_error > dynamic_threshold
+        
+        self.terminated = below_bound | above_bound | poor_following
+        # progress_buf 会不断累积，达到 max_episode_per_env 时触发截断
+        # 使用随机化的 episode 长度来打破 episode 同步结束的问题
+        timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
         self.truncated = timeout_truncate
 
         # update previous velocity for smoothness calculation in the next ieteration

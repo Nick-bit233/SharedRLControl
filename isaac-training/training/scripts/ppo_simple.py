@@ -244,6 +244,10 @@ class SimplePPO(TensorDictModuleBase):
             values = self.value_norm.denormalize(values) # denomalize values based on running mean and var of return
             next_values = self.value_norm.denormalize(next_values)
 
+            # OPTIONAL: deal with truncated episodes
+            # truncated = tensordict["next", "truncated"]s
+            # next_values = torch.where(truncated, values, next_values)
+
             # calculate GAE: Generalized Advantage Estimation
             adv, ret = self.gae(rewards, dones, values, next_values)
 
