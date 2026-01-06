@@ -1,19 +1,21 @@
 import os
 
-# =============================================================================
-# Isaac Sim Single-GPU Training Runner
-# =============================================================================
+# === Single GPU Mode ===
+# Isaac Sim/PhysX requires all tensors on the same GPU device.
+# For single-process training, we force a specific GPU.
+# For multi-GPU training, use runner_simple_distributed.py with torchrun.
 #
-# IMPORTANT: Isaac Sim does NOT support CUDA_VISIBLE_DEVICES!
-# Do NOT set CUDA_VISIBLE_DEVICES - it causes crashes and "CUDA bad state" errors.
+# Usage:
+#   Single GPU (default GPU 0):     python runner_simple.py
+#   Specific GPU:                   CUDA_VISIBLE_DEVICES=3 python runner_simple.py
+#   Multi-GPU distributed:          torchrun --nproc_per_node=4 runner_simple_distributed.py
 #
-# To use a specific GPU, pass it via config:
-#   python runner_simple.py sim.device=cuda:3 device=cuda:3
-#
-# For faster training, increase the number of parallel environments:
-#   python runner_simple.py env.num_envs=1024
-#
-# =============================================================================
+if "CUDA_VISIBLE_DEVICES" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    print("[SingleGPU] CUDA_VISIBLE_DEVICES not set, defaulting to GPU 0")
+else:
+    print(f"[SingleGPU] Using GPU: {os.environ['CUDA_VISIBLE_DEVICES']}")
+# ========================
 
 import logging
 import hydra
