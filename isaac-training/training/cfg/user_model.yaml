@@ -1,3 +1,11 @@
 user_model:
+
+  style:
+    frequency_base: 0.1  # base frequency for user command changes
+    frequency_scale: 0.1  # scale for randomizing frequency
+    smoothness_base: 0.5
+    smoothness_scale: 0.45
+    laziness: 0.2
+
   simple_mode: false # whether to use simple step function for user model
   enable_yaw_rate: false # whether to enable yaw rate commands in simple mode

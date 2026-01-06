@@ -101,7 +101,7 @@ class FollowingEnvSimple(IsaacEnv):
             self.prev_agent_action = torch.zeros(self.num_envs, 4)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
-            # Cumulative following error for early termination (方案C)
+            # Cumulative following error for early termination
             self.cumulative_error = torch.zeros(self.num_envs, 1)
             self.error_ema_alpha = 0.995  # Exponential moving average decay factor
             self.error_threshold_base = 2.0  # Base threshold (strict, for no-obstacle case)
@@ -471,11 +471,11 @@ class FollowingEnvSimple(IsaacEnv):
 
         # Terminate Conditions
         below_bound = self.drone.pos[..., 2] < 0.2
-        above_bound = self.drone.pos[..., 2] > 4.
+        above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0  # 2*sz + 1, where sz is half z range of the map
         
         # No collision check needed as there are no obstacles, but ground collision is below_bound
         
-        # 方案C: 累积跟随误差终止条件（支持动态阈值）
+        # 添加累积跟随误差终止条件（支持动态阈值）
         # 使用指数移动平均更新累积误差
         self.cumulative_error = (
             self.error_ema_alpha * self.cumulative_error + 
@@ -484,26 +484,26 @@ class FollowingEnvSimple(IsaacEnv):
         
         # 动态误差阈值：根据障碍物距离调整
         # 在 env_simple（无障碍物）中，使用固定的基础阈值
-        if self.enable_lidar:
-            # 有lidar时，根据最近障碍物距离计算动态阈值
-            # lidar_scan: 值越大表示障碍物越近 (range - distance)
-            min_obstacle_dist = self.lidar_range - self.lidar_scan.max(dim=(2, 3)).values  # (N, 1)
-            # obstacle_proximity: 0=无障碍物/远, 1=非常近
-            obstacle_proximity = torch.clamp(
-                (self.safety_margin - min_obstacle_dist) / self.safety_margin, 
-                min=0, max=1
-            )
-            # 动态阈值：障碍物越近，阈值越宽松
-            dynamic_threshold = (
-                self.error_threshold_base + 
-                (self.error_threshold_max - self.error_threshold_base) * obstacle_proximity
-            )
-        else:
-            # 无lidar（无障碍物环境），使用固定的基础阈值
-            dynamic_threshold = self.error_threshold_base
+        # if self.enable_lidar:
+        #     # 有lidar时，根据最近障碍物距离计算动态阈值
+        #     # lidar_scan: 值越大表示障碍物越近 (range - distance)
+        #     min_obstacle_dist = self.lidar_range - self.lidar_scan.max(dim=(2, 3)).values  # (N, 1)
+        #     # obstacle_proximity: 0=无障碍物/远, 1=非常近
+        #     obstacle_proximity = torch.clamp(
+        #         (self.safety_margin - min_obstacle_dist) / self.safety_margin, 
+        #         min=0, max=1
+        #     )
+        #     # 动态阈值：障碍物越近，阈值越宽松
+        #     dynamic_threshold = (
+        #         self.error_threshold_base + 
+        #         (self.error_threshold_max - self.error_threshold_base) * obstacle_proximity
+        #     )
+        # else:
+        #     # 无lidar（无障碍物环境），使用固定的基础阈值
+        #     dynamic_threshold = self.error_threshold_base
         
         # 如果累积误差持续过大，视为"跟随失败"
-        poor_following = self.cumulative_error > dynamic_threshold
+        poor_following = self.cumulative_error > self.error_threshold_base
         
         self.terminated = below_bound | above_bound | poor_following
         # progress_buf 会不断累积，达到 max_episode_per_env 时触发截断
@@ -548,21 +548,21 @@ class FollowingEnvSimple(IsaacEnv):
             # 绘制向量 (转换回世界系以便绘制)
             root_pos = drone_pos_w[viz_env_id]  # root pos == view pos TODO: merge it
 
-            # A. 绘制无人机实际速度 (蓝色箭头)
+            # A. 绘制无人机实际速度 (红色箭头)
             drone_vel_w_vec = drone_vel_w[viz_env_id]
             self.debug_draw.vector(
                 x=root_pos, 
                 v=drone_vel_w_vec * 1.0, # 长度缩放
-                color=(0, 0, 1, 1), # Blue
+                color=(1, 0, 0, 1), # Red
                 size=2.0
             )
 
-            # B. 绘制人类期望速度 (绿色箭头)
+            # B. 绘制人类期望速度 (黄色箭头)
             human_vel_w_vec = target_vel_w[viz_env_id]
             self.debug_draw.vector(
                 x=root_pos, 
                 v=human_vel_w_vec * 1.0, 
-                color=(0, 1, 0, 1), # Green
+                color=(1, 1, 0, 1), # Yellow
                 size=2.0
             )
             
@@ -594,7 +594,6 @@ class FollowingEnvSimple(IsaacEnv):
                 starts = points[:-1]
                 ends = points[1:]
                 self.debug_draw.vector(starts, ends - starts, color=(0,0,1,1), size=2.0)
-                # self.debug_draw.lines(starts, ends, color=(0,0,1,1), width=2.0)
                 
                 # Draw human path (Green)
                 points_h = torch.stack(self.viz_traj_human)
@@ -602,26 +601,6 @@ class FollowingEnvSimple(IsaacEnv):
                 ends_h = points_h[1:]
                 self.debug_draw.vector(starts_h, ends_h - starts_h, color=(0,1,0,1), size=2.0)
         profiler.stop("env/visualization")
-
-        # if self.debug_mode:
-        #     # 写入 CSV 日志
-        #     self.csv_writer.writerow([
-        #         self.progress_buf[viz_env_id].item(),  # step
-        #         viz_env_id, # env id
-        #         "train" if self.training else "eval",  # mode,
-        #         self.start_pos[viz_env_id, 0, 0].item(),  # start x
-        #         self.start_pos[viz_env_id, 0, 1].item(),  # start y
-        #         self.start_pos[viz_env_id, 0, 2].item(),  # start z
-        #         self.reward[viz_env_id].item(),  # reward total
-        #         reward_vel[viz_env_id].item(),  # velocity reward
-        #         0.0,  # intent complete reward
-        #         0.0, # static safety reward
-        #         0.0, # smoothness penalty
-        #         0.0, # height penalty
-        #         human_actions_local[0, 0].item(), # human vel x
-        #         vel_b[viz_env_id, 0].item(), # drone vel x
-        #     ])
-        #     self.debug_log_file.flush() # 强制写入硬盘
 
         # # -----------------Training Stats-----------------
         # (remove reach_goal flag as no goal target is provided)

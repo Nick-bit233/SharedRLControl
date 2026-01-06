@@ -269,10 +269,15 @@ class UserModel:
         self.noise_seeds = torch.randint(0, 100000, (num_envs, 4), device=self.device)
 
         # Style parameters (randomized per env)
+        self.freq_base = cfg.user_model.style.frequency_base
+        self.freq_scale = cfg.user_model.style.frequency_scale
+        self.smooth_base = cfg.user_model.style.smoothness_base
+        self.smooth_scale = cfg.user_model.style.smoothness_scale
+        self.laziness = cfg.user_model.style.laziness
         self.styles = {
-            'noise_freq': torch.rand(num_envs, 1, device=self.device) * 0.05 + 0.05, # 0.05 - 0.1
-            'smoothness': torch.rand(num_envs, 1, device=self.device) * 0.5 + 0.2, # 0.2 - 0.7
-            'laziness': torch.rand(num_envs, 1, device=self.device) * 0.2, # Deadband threshold 0 - 0.2
+            'noise_freq': torch.rand(num_envs, 1, device=self.device) * self.freq_scale + self.freq_base,
+            'smoothness': torch.rand(num_envs, 1, device=self.device) * self.smooth_scale + self.smooth_base,
+            'laziness': torch.rand(num_envs, 1, device=self.device) * self.laziness,
         }
         
         # Previous action for smoothing (Low Pass Filter)
@@ -309,9 +314,9 @@ class UserModel:
             self.noise_seeds[env_ids] = base_seeds + env_ids.unsqueeze(1)
             
             # 确定性的风格参数
-            self.styles['noise_freq'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.05 + 0.05
-            self.styles['smoothness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.5 + 0.2
-            self.styles['laziness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * 0.2
+            self.styles['noise_freq'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * self.freq_scale + self.freq_base
+            self.styles['smoothness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * self.smooth_scale + self.smooth_base
+            self.styles['laziness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * self.laziness
 
             if self.simple_mode:
                 self.theta[env_ids] = torch.rand(K, device=self.device, generator=gen) * 2.0 * math.pi
@@ -321,9 +326,9 @@ class UserModel:
         else:
             # Training Mode: Random generate seeds and styles
             self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, 4), device=self.device)
-            self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * 0.05 + 0.05
-            self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.5 + 0.2
-            self.styles['laziness'][env_ids] = torch.rand(K, 1, device=self.device) * 0.2
+            self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * self.freq_scale + self.freq_base
+            self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * self.smooth_scale + self.smooth_base
+            self.styles['laziness'][env_ids] = torch.rand(K, 1, device=self.device) * self.laziness
 
             if self.simple_mode:
                 self.theta[env_ids] = torch.rand(K, device=self.device) * 2.0 * math.pi
@@ -625,7 +630,3 @@ class UserModel:
         force[mask_ceil, 2] -= gain * (margin - d_ceil[mask_ceil])
         
         return force
-
-    @DeprecationWarning
-    def get_height_range(self):
-        return torch.zeros(self.num_envs, 1, 2, device=self.device) # Dummy
