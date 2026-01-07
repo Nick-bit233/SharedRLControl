@@ -111,3 +111,5 @@ isaac-training/third_party/warp/_build/
 isaac-training/outputs/
 
 outputs/
+
+shared_demos/ckpts/

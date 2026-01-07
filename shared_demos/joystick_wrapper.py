@@ -11,8 +11,10 @@ class JoystickInterface:
             self.joystick = pygame.joystick.Joystick(0)
             self.joystick.init()
             print(f"已连接手柄: {self.joystick.get_name()}")
+            self.connected = True
         else:
             print("未检测到手柄，将使用默认零输入。")
+            self.connected = False
 
     def get_input(self):
         """
