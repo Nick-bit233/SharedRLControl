@@ -104,7 +104,7 @@ class FollowingEnvSimple(IsaacEnv):
             # Cumulative following error for early termination
             self.cumulative_error = torch.zeros(self.num_envs, 1)
             self.error_ema_alpha = 0.995  # Exponential moving average decay factor
-            self.error_threshold_base = 2.0  # Base threshold (strict, for no-obstacle case)
+            self.error_threshold_base = 0.5  # Base threshold (strict, for no-obstacle case)
             self.error_threshold_max = 5.0   # Max threshold (relaxed, when obstacles are very close)
             self.safety_margin = 1.5  # Distance within which we start relaxing the threshold
 
@@ -526,7 +526,8 @@ class FollowingEnvSimple(IsaacEnv):
                 view_pos = drone_pos_w[0]
 
             # set the camera to focus on the lidar position (which is the drone)
-            if self.cfg.global_view:
+            camera_mode = getattr(self, '_camera_view_mode', 'follow')
+            if camera_mode == 'global':
                 set_camera_view(
                     eye=torch.tensor([-3.0, 0.0, 20.0]),  # global top-down view
                     target=torch.tensor([0.0, 0.0, 0.0])                        
@@ -606,7 +607,10 @@ class FollowingEnvSimple(IsaacEnv):
         # (remove reach_goal flag as no goal target is provided)
         self.stats["return"] += self.reward
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
-        self.stats["intent_completion"] = self.intent_complete_counts.float()
+        self.stats["above_bound"] = above_bound.float()
+        self.stats["below_bound"] = below_bound.float()
+        self.stats["poor_following"] = poor_following.float()
+        self.stats["terminated_total"] = self.terminated.float()
         self.stats["collision"] = torch.zeros_like(self.stats["collision"]) # No collision
         self.stats["truncated"] = self.truncated.float()
         
@@ -669,3 +673,20 @@ class FollowingEnvSimple(IsaacEnv):
     def set_manual_action(self, action: torch.Tensor):
         if self.manual_mode:
             self.manual_action[:] = action
+
+    def set_camera_view_mode(self, mode: str):
+        """
+        Set the camera view mode for rendering.
+        :param mode: 'global' for top-down global view, 'follow' for drone-following view
+        """
+        if mode not in ['global', 'follow']:
+            raise ValueError(f"Invalid camera mode: {mode}. Must be 'global' or 'follow'")
+        self._camera_view_mode = mode
+        print(f"[FollowingEnvSimple] Camera view mode set to: {mode}")
+    
+    def get_camera_view_mode(self) -> str:
+        """
+        Get the current camera view mode.
+        :return: 'global' or 'follow'
+        """
+        return getattr(self, '_camera_view_mode', 'follow')

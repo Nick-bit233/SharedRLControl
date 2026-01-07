@@ -83,7 +83,7 @@ def main(cfg):
 
     # === 覆盖配置 ===
     cfg.env.num_envs = 256           # 无人机数量
-    cfg.env.max_episode_length = 4000  # 每个 episode 最大步数
+    cfg.env.max_episode_length = 2000  # 每个 episode 最大步数
     # cfg.env.num_obstacles = 0     # 已经在 env_simple.py 中强制设为 0
     # cfg.env_dyn.num_obstacles = 0   # 已经在 env_simple.py 中强制设为 0
     
@@ -104,7 +104,7 @@ def main(cfg):
         save_interval = profiling_batches + 1  # Don't save during profiling
     else:
         cfg.algo.training_frame_num = 128  # 每个采集批次帧数
-        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 10010  # 最大采集帧数 = frame_num * N * Batches
+        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 2010  # 最大采集帧数 = frame_num * N * Batches
         one_step_only = False         # 是否只跑一步
         eval_interval = 500           # 每 i 个 batch 评估一次
         save_interval = 500          # 每 i 个 batch 保存一次模型
@@ -220,25 +220,40 @@ def main(cfg):
         exploration_type = ExplorationType.MEAN
         # 评估时，固定随机种子
         env.set_seed(seed)
+
+        eval_max_steps = int(env.max_episode_length / 2) # 评估时最大步数为 episode 长度的一半
         
         # 评估时临时开启可视化以录制视频
         if cfg.get("eval_visualization", False):
             env.set_visualization(enabled=True)
 
-        render_callback = RenderCallback(interval=1) # 每一帧记录渲染
+        # Helper function to run a single rollout and record video
+        def run_rollout_with_camera(camera_mode: str):
+            """Run a rollout with specified camera mode and return frames + trajs"""
+            env.set_camera_view_mode(camera_mode)
+            render_callback = RenderCallback(interval=1)
+            
+            with set_exploration_type(exploration_type):
+                trajs = env.rollout(
+                    max_steps=eval_max_steps,
+                    policy=policy,
+                    callback=render_callback,
+                    auto_reset=True,
+                    break_when_any_done=False,
+                    return_contiguous=False,
+                )
+            env.reset()
+            return render_callback, trajs
 
-        with set_exploration_type(exploration_type):
-            # 手动进行一次完整的 rollout
-            trajs = env.rollout(
-                max_steps=env.max_episode_length,
-                policy=policy,
-                callback=render_callback,
-                auto_reset=True,
-                break_when_any_done=False,
-                return_contiguous=False,
-            )
-        # save_env_image(collector._frames)
-        env.reset()
+        # === Rollout 1: Follow camera view (always saved) ===
+        logging.info("[Eval] Running rollout with follow camera view...")
+        render_callback_follow, trajs = run_rollout_with_camera('follow')
+
+        # === Rollout 2: Global camera view (optional, controlled by cfg.global_view) ===
+        render_callback_global = None
+        if cfg.get("global_view", False):
+            logging.info("[Eval] Running rollout with global camera view...")
+            render_callback_global, _ = run_rollout_with_camera('global')
 
         logging.info(f"[Eval] trajs keys: {trajs.keys()}")
 
@@ -264,12 +279,23 @@ def main(cfg):
         # 评估结束后关闭可视化
         env.set_visualization(enabled=False)
 
-        # 保存评估视频
-        info["recording"] = wandb.Video(
-            render_callback.get_video_array(axes="t c h w"), 
-            fps=0.5 / (cfg.sim.dt * cfg.sim.substeps), 
+        # 保存评估视频 - Follow camera view (always saved)
+        video_fps = 0.5 / (cfg.sim.dt * cfg.sim.substeps)
+        info["recording_follow"] = wandb.Video(
+            render_callback_follow.get_video_array(axes="t c h w"), 
+            fps=video_fps, 
             format="mp4"
         )
+        logging.info("[Eval] Follow camera video saved to wandb")
+        
+        # 保存评估视频 - Global camera view (optional)
+        if render_callback_global is not None:
+            info["recording_global"] = wandb.Video(
+                render_callback_global.get_video_array(axes="t c h w"), 
+                fps=video_fps, 
+                format="mp4"
+            )
+            logging.info("[Eval] Global camera video saved to wandb")
         # video_path = os.path.join(cfg.log_output_dir, f"debug_eval_rollout_{collector._frames}_steps.mp4")
         # logging.info(f"[Eval] Saving eval video to {video_path}")
         # frames = render_callback.frames # 获取帧列表
