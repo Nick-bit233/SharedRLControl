@@ -17,7 +17,7 @@ import torch
 import numpy as np
 import carb
 import logging
-import datetime
+from datetime import datetime
 import omni.appwindow
 import isaacsim.core.utils.prims as prim_utils
 import isaaclab.sim as sim_utils
@@ -70,7 +70,7 @@ class Visualizer:
         self.max_steps = max_steps
         self.history = []
 
-    def update(self, pos, human_vel_w, model_vel_w):
+    def update(self, pos, human_vel_w, model_vel_w, model_yaw_rate=None):
         # pos: (3,)
         if isinstance(pos, torch.Tensor):
             pos = pos.detach().cpu().squeeze().tolist()
@@ -112,11 +112,26 @@ class Visualizer:
             colors.append((0.0, 0.0, 1.0, 1.0))
             sizes.append(4.0)
 
+        # Model yaw rate: Purple vertical line
+        if model_yaw_rate is not None:
+            if isinstance(model_yaw_rate, torch.Tensor):
+                model_yaw_rate = model_yaw_rate.detach().cpu().item()
+            end_yaw = [pos[0], pos[1], pos[2] + model_yaw_rate]
+            starts.append(pos)
+            ends.append(end_yaw)
+            colors.append((1.0, 0.0, 1.0, 1.0))
+            sizes.append(4.0)
+
         self._draw.clear_lines()
         if starts:
             self._draw.draw_lines(starts, ends, colors, sizes)
 
 def main():
+    # 初始化日志
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    logger, log_file = setup_logger(log_dir)
+    logger.info(f"Log file created at: {log_file}")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dt = 1.0 / 60.0
 
@@ -158,6 +173,7 @@ def main():
     target_pos = torch.tensor([[0.0, 0.0, 1.0]], device=device, dtype=torch.float32)
     target_yaw = torch.tensor([[0.0]], device=device, dtype=torch.float32)
 
+    frame_count = 0
     # ===== 仿真循环 =====
     while simulation_app.is_running():
         if sim.is_playing():
@@ -208,7 +224,7 @@ def main():
             
             # Update target position
             target_pos = target_pos + model_vel_w * dt
-            target_yaw = target_yaw + model_yaw_rate * dt
+            # target_yaw = target_yaw + model_yaw_rate * dt
 
             # 限制 target_pos 不要离当前位置太远 (防止积分漂移过大)
             # error_pos = target_pos - current_pos
@@ -221,7 +237,7 @@ def main():
                 target_yaw=target_yaw,
                 target_vel=model_vel_w # Feed forward velocity
             )
-            
+
             drone.apply_action(action)
 
             # 5. 可视化
@@ -230,9 +246,22 @@ def main():
             human_vel_b = human_action[..., :3]
             human_vel_w = quat_rotate(current_quat.squeeze(1), human_vel_b)
             
-            vis.update(current_pos, human_vel_w, model_vel_w)
+            vis.update(current_pos, human_vel_w, model_vel_w, model_yaw_rate)
+
+            # 6. 日志记录
+            to_print_pos = current_pos.squeeze().detach().cpu().numpy()
+            to_print_d_vel = current_vel_w.squeeze().detach().cpu().numpy()
+            to_print_d_yaw_rate = current_ang_vel_w[..., 2].squeeze().detach().cpu().item()
+            to_print_a_vel = model_vel_w.squeeze().detach().cpu().numpy()
+            to_print_a_yaw_rate = model_yaw_rate.squeeze().detach().cpu().item()
+            to_print_human_vel = human_vel_w.squeeze().detach().cpu().numpy()
+            to_print_human_yaw_rate = human_action[..., 3].squeeze().detach().cpu().item()
+            logger.debug(f"Frame {frame_count:06d} | Drone - Pos: [{to_print_pos[0]:7.3f}, {to_print_pos[1]:7.3f}, {to_print_pos[2]:7.3f}] | Vel: [{to_print_d_vel[0]:6.3f}, {to_print_d_vel[1]:6.3f}, {to_print_d_vel[2]:6.3f}] | Yaw Rate: {to_print_d_yaw_rate:6.3f}")
+            logger.debug(f"Frame {frame_count:06d} | Model - Vel: [{to_print_a_vel[0]:6.3f}, {to_print_a_vel[1]:6.3f}, {to_print_a_vel[2]:6.3f}] | Yaw Rate: {to_print_a_yaw_rate:6.3f}")
+            logger.debug(f"Frame {frame_count:06d} | Human - Vel: [{to_print_human_vel[0]:6.3f}, {to_print_human_vel[1]:6.3f}, {to_print_human_vel[2]:6.3f}] | Yaw Rate: {to_print_human_yaw_rate:6.3f}")
 
         sim.step(render=True)
+        frame_count += 1
 
     simulation_app.close()
 
