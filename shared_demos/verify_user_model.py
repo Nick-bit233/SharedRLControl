@@ -17,6 +17,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.sim import SimulationContext
 from isaacsim.core.utils.rotations import quat_to_euler_angles
 from isaacsim.util.debug_draw import _debug_draw
+from srlc_model import MockConfig
 
 # Add path to user_model
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts")))
@@ -91,28 +92,7 @@ class TrajectoryVisualizer:
         # Draw Yaw Rate Indicator (Blue Vertical Line)
         # Up for positive yaw rate, down for negative
         yaw_end = [pos[0], pos[1], pos[2] + yaw_rate]
-        self._draw.draw_lines([pos], [yaw_end], [(0.0, 0.0, 1.0, 1.0)], [3.0])
-
-class MockConfig:
-    # Verification Settings
-    num_frames = 20000
-
-    class Sim:
-        dt = 1.0 / 60.0
-        z_spawn = 4.0
-    class Env:
-        map_range = [20.0, 20.0, 10.0] # Half extents [x, y, z]
-        max_episode_length = 500
-    class Algo:
-        class actor:
-            action_limit = 2.0 # m/s
-        training_frame_num = 128
-    
-    def __init__(self, device):
-        self.device = device
-        self.sim = self.Sim()
-        self.env = self.Env()
-        self.algo = self.Algo()
+        self._draw.draw_lines([pos], [yaw_end], [(1.0, 0.0, 1.0, 1.0)], [3.0])
 
 def main():
     # 初始化日志
@@ -162,18 +142,16 @@ def main():
     init_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device) # w, x, y, z
     user_model.reset(init_pos, init_quat, torch.tensor([0], device=device))
 
-    logger.info(f"Simulating for {mock_cfg.num_frames} frames...")
-
     # 状态变量 (unsqueeze batch and env dims for controller)
     target_pos = init_pos.unsqueeze(1).clone()
     target_yaw = torch.zeros((1, 1, 1), device=device)
     
-    prev_action = torch.zeros((1, 1, 4), device=device)
-
+    NUM_FRAMES = 2000
+    logger.info(f"Simulating for {NUM_FRAMES} frames...")
     # --- 仿真循环 ---
     frame_count = 0
     while simulation_app.is_running():
-        if frame_count >= mock_cfg.num_frames:
+        if frame_count >= NUM_FRAMES:
             logger.info("Simulation finished.")
             break
 
@@ -199,16 +177,16 @@ def main():
             action = action.unsqueeze(1)
             prev_action = action
             
-            # C. 将 Body Frame 速度转换为 World Frame 并积分得到位置目标
+            # C. 将 Body Frame 速度转换为 World Frame
+            
             # action[..., :3] 是 Body Frame 速度
             # action[..., 3] 是 Yaw Rate
-            
             action_vel_b = action[..., :3]  # (1, 1, 3)
             action_yaw_rate = action[..., 3]  # (1, 1, )
             
             # Rotate velocity to world frame
             to_rotate_q = drone_orientation_q.unsqueeze(1)  # unsqueeze to (N, 1, 4) for using quat_rotate()
-            action_vel_w = quat_rotate(to_rotate_q, action_vel_b)
+            action_vel_w = quat_rotate(to_rotate_q, action_vel_b) # (1, 1, 3)
 
             to_print_d_vel = drone_vel_w.squeeze().detach().cpu().numpy()
             to_print_a_vel = action_vel_w.squeeze().detach().cpu().numpy()
@@ -218,14 +196,18 @@ def main():
             # 更新轨迹可视化
             traj_vis.update(drone_pos_w, action_vel_w, action_yaw_rate)
             
-            # Integrate
-            target_pos += action_vel_w * dt
-            target_yaw += action_yaw_rate.unsqueeze(1) * dt
+            # Integrate (pos control?)
+            # target_pos += action_vel_w * dt
+            # target_yaw += action_yaw_rate.unsqueeze(1) * dt
+
+            # same implementation as VelController
+            target_vel = action_vel_w
+            target_yaw = action_yaw_rate * torch.pi
 
             # D. 计算控制指令
-            control_action = controller.compute(
+            control_action = controller(
                 root_state=root_state,
-                target_pos=target_pos,
+                target_vel=target_vel,
                 target_yaw=target_yaw
             )
             

@@ -6,7 +6,16 @@ from torchrl.data import CompositeSpec, Unbounded
 
 # 添加 ppo_simple.py 所在路径
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts")))
-class Config:
+
+
+class MockConfig:
+    class Sim:
+        dt = 1.0 / 60.0
+        z_spawn = 4.0
+    class Env:
+        map_range = [20.0, 20.0, 10.0] # Half extents [x, y, z]
+        max_episode_length = 500
+        enable_lidar = False
     class Algo:
         class Actor:
             action_limit = 2.0
@@ -25,13 +34,27 @@ class Config:
         class FeatureExtractor:
             learning_rate = 1e-4
             dyn_obs_num = 5
+        training_frame_num = 128
         feature_extractor = FeatureExtractor()
         observation_cat_prev_action = False
         entropy_loss_coefficient = 1e-3
-    algo = Algo()
-    class Env:
-        enable_lidar = False
-    env = Env()
+
+    class UserModel:
+        class style:
+            frequency_base = 0.1  # base frequency for user command changes
+            frequency_scale = 0.1  # scale for randomizing frequency
+            smoothness_base = 0.5
+            smoothness_scale = 0.45
+            laziness = 0.2
+        simple_mode = False
+        enable_yaw_rate = True
+
+    def __init__(self, device):
+        self.device = device
+        self.sim = self.Sim()
+        self.env = self.Env()
+        self.algo = self.Algo()
+        self.user_model = self.UserModel()
 
 def load_srlc_model(checkpoint_path, device):
     """
@@ -49,7 +72,7 @@ def load_srlc_model(checkpoint_path, device):
     except ImportError:
         raise ImportError("Could not import SimplePPO. Make sure the path to ppo_simple.py is in sys.path.")
 
-    cfg_model = Config()
+    cfg_model = MockConfig(device=device)
     
     # Define observation space (State: 10, Human Action: 4)
     observation_spec = CompositeSpec({

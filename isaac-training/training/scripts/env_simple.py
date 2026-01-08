@@ -311,8 +311,8 @@ class FollowingEnvSimple(IsaacEnv):
         return tensordict
 
     def _pre_sim_step(self, tensordict: TensorDictBase):
-        # 这里的action为最终传递给VelController并计算模拟运动的速度指令，默认为world frame
-        # 这里不可做任何变换，因为torchrl会直接把转换后的action传递给drone.apply_action()
+        # 这里的action为最终传递给VelController的速度指令，默认为world frame
+        # 这里不可做任何变换，因为torchrl会直接把VelController转换后的action（此时为推力指令）传递给drone.apply_action()
         # 对actions坐标系等的转换提前在ppo.__call__里完成
         actions = tensordict[("agents", "action")]
 

@@ -250,7 +250,7 @@ class UserModel:
         self.repulsive_gain = 1.0  # Maxium repulsive force gain for APF
         self.max_speed = cfg.algo.actor.action_limit
         self.max_speed_z = self.max_speed / 2.0  # TEST: limit z speed to half for stability
-        self.max_speed_yaw = torch.pi / 4
+        self.max_speed_yaw = 0.5  # Max yaw rate (rad/s)
 
         self.simple_mode = cfg.user_model.simple_mode
         self.enable_yaw_rate = cfg.user_model.enable_yaw_rate
