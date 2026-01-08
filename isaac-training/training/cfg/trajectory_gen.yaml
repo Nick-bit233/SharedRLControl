@@ -1,0 +1,49 @@
+# Trajectory Generation Configuration
+# ====================================
+# This config is used by trajectory_generator.py for offline trajectory generation.
+#
+# Usage:
+#   GPU (fast):  python trajectory_generator.py backend=batched
+#   CPU:         python trajectory_generator.py backend=library num_workers=8
+#   Multi-GPU:   torchrun --nproc_per_node=4 trajectory_generator.py backend=batched
+
+defaults:
+  - _self_
+
+# Output settings
+output_path: "${hydra:runtime.cwd}/data/trajectories.h5"
+
+# Generation parameters
+num_trajectories: 100000    # Total number of trajectories to generate
+trajectory_length: 4096     # Steps per trajectory (allows random sub-sampling)
+action_dim: 3               # 3 = velocity only (vx, vy, vz), 4 = velocity + yaw rate
+batch_size: 1024            # Batch size for GPU generation
+
+# Backend selection
+backend: batched            # "batched" (GPU) or "library" (CPU with multiprocessing)
+device: "cuda:0"            # Device for GPU backend
+num_workers: 8              # Number of workers for CPU backend
+
+# Physical parameters (should match training config)
+dt: 0.016                   # Simulation timestep (1/62.5 Hz)
+max_speed: 2.0              # Maximum XY velocity (m/s)
+max_speed_z: 1.0            # Maximum Z velocity (m/s)  
+max_speed_yaw: 0.5          # Maximum yaw rate (rad/s)
+repulsive_gain: 1.0         # APF repulsive force gain
+
+# Reference map bounds for APF during generation
+# Trajectories are generated within these bounds
+# Can be larger than actual training map for diversity
+reference_map_bounds: [20.0, 20.0, 5.0]  # Half-extents [x, y, z]
+
+# Style parameters (inherited from user_model config)
+style:
+  frequency_base: 0.1       # Base frequency for Perlin noise
+  frequency_scale: 0.1      # Random scale added to base
+  smoothness_base: 0.5      # Base smoothness (1 - alpha for LPF)
+  smoothness_scale: 0.45    # Random scale added to base
+  laziness: 0.2             # Maximum deadband threshold
+
+# HDF5 compression settings
+compression: gzip           # Compression algorithm
+compression_level: 4        # Compression level (1-9, higher = smaller but slower)

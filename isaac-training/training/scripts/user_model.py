@@ -3,8 +3,12 @@ import numpy as np
 import math
 import logging
 from enum import Enum
+from typing import Optional, Literal, TYPE_CHECKING
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
 from profiler import get_profiler
+
+if TYPE_CHECKING:
+    from trajectory_dataset import TrajectoryDataset
 
 
 class InterpType(Enum):
@@ -222,9 +226,46 @@ def batched_perlin_noise(
     return noise
 
 class UserModel:
-    def __init__(self, num_envs, cfg, use_lib_noise=False, logger=None):
+    """
+    User Model for simulating human user inputs during drone training.
+    
+    Supports two modes:
+    - Online mode: Generate trajectories on-the-fly using Perlin noise (slower but flexible)
+    - Offline mode: Sample from pre-generated trajectory dataset (faster)
+    
+    Args:
+        num_envs: Number of parallel environments
+        cfg: Configuration object
+        use_lib_noise: Deprecated, kept for compatibility
+        logger: Optional logger instance
+        offline_mode: If True, use pre-generated trajectories from dataset
+        dataset: TrajectoryDataset instance (required if offline_mode=True)
+        sampling_mode: "scaled" (boundary-aware) or "raw" (no transforms)
+    """
+    
+    def __init__(
+        self, 
+        num_envs, 
+        cfg, 
+        use_lib_noise=False, 
+        logger=None,
+        offline_mode: bool = False,
+        dataset: Optional["TrajectoryDataset"] = None,
+        sampling_mode: Literal["scaled", "raw"] = "scaled",
+    ):
         self.num_envs = num_envs
         self.cfg = cfg
+        
+        # Offline mode settings
+        self.offline_mode = offline_mode
+        self.dataset = dataset
+        self.sampling_mode = sampling_mode
+        
+        if self.offline_mode:
+            if self.dataset is None:
+                raise ValueError("dataset must be provided when offline_mode=True")
+            print(f"[UserModel] Offline mode enabled with sampling_mode='{sampling_mode}'")
+        
         # Setup logger (use provided logger or create a null logger)
         if logger is not None:
             self.logger = logger
@@ -338,8 +379,11 @@ class UserModel:
         self.prev_filtered_action[env_ids] = 0.0
         
         if not self.simple_mode:
-            # Refill buffer
-            self._refill_buffer(env_ids, pos, quat)
+            # Refill buffer using appropriate method
+            if self.offline_mode:
+                self._refill_from_dataset(env_ids, pos, quat)
+            else:
+                self._refill_buffer(env_ids, pos, quat)
         else:
             pass
 
@@ -396,7 +440,10 @@ class UserModel:
             with profiler.timer("user_model/refill_buffer"):
                 idxs = needs_refill.nonzero(as_tuple=False).squeeze(-1)
                 # For refill, we need current pos/quat to start integration
-                self._refill_buffer(idxs, pos[idxs], quat[idxs])
+                if self.offline_mode:
+                    self._refill_from_dataset(idxs, pos[idxs], quat[idxs])
+                else:
+                    self._refill_buffer(idxs, pos[idxs], quat[idxs])
                 self.buffer_read_idx[idxs] = 0
             
         # Read action from buffer
@@ -414,9 +461,87 @@ class UserModel:
         profiler.stop("user_model/step")
         return action, needs_refill
 
+    def _refill_from_dataset(self, env_ids, start_pos, start_quat):
+        """
+        Refill action buffer by sampling from pre-generated trajectory dataset.
+        
+        Args:
+            env_ids: (K,) environment indices to refill
+            start_pos: (K, 3) starting positions in world frame
+            start_quat: (K, 4) starting orientations in world frame
+        """
+        profiler = get_profiler()
+        
+        K = len(env_ids)
+        T = self.buffer_size
+        
+        with profiler.timer("user_model/dataset_sample"):
+            if self.sampling_mode == "raw":
+                # Raw sampling: no boundary handling
+                velocities, styles = self.dataset.sample_raw(K, T)
+                # velocities: (K, T, D)
+            else:
+                # Scaled sampling: boundary-aware
+                velocities, scale_factors, styles = self.dataset.sample_scaled(
+                    K, T, start_pos, self.env_map_range
+                )
+        
+        with profiler.timer("user_model/quat_rotate"):
+            # Rotate velocities from identity frame to drone's current orientation
+            # The dataset stores velocities in a neutral frame (identity quaternion)
+            # We need to rotate them to match the current drone orientation
+            
+            # Extract linear velocity and yaw rate
+            lin_vel = velocities[..., :3]  # (K, T, 3)
+            
+            # Reshape for batch quaternion rotation
+            # quat_rotate expects (N, 3) vectors
+            K, T_len, _ = lin_vel.shape
+            lin_vel_flat = lin_vel.reshape(K * T_len, 3)  # (K*T, 3)
+            
+            # Expand quaternion to match flattened velocities
+            # start_quat: (K, 4) -> repeat for each timestep
+            quat_expanded = start_quat.unsqueeze(1).expand(-1, T_len, -1).reshape(K * T_len, 4)
+            
+            # Rotate: transform from identity frame to current body frame
+            # Since we want velocity in body frame relative to current orientation,
+            # we actually want to keep the velocity in body frame, just sample diversity
+            # The rotation here accounts for trajectory orientation diversity
+            # For simplicity, we can skip rotation if trajectories are generated in body frame
+            # OR we apply inverse rotation to go from world to body
+            
+            # Actually, the generated trajectories are in a "neutral" body frame
+            # At runtime, the velocity commands are interpreted in the drone's body frame
+            # So no rotation is needed - the velocity is already in body frame
+            
+            # However, for diversity, we can apply a random rotation based on start_quat
+            # This makes the same trajectory appear different when drone starts with different yaw
+            
+            # For now, skip rotation (velocities are already in body frame)
+            lin_vel_rotated = lin_vel_flat.reshape(K, T_len, 3)
+            
+            # Reconstruct full action tensor
+            if velocities.shape[-1] == 4:
+                yaw_rate = velocities[..., 3:4]  # (K, T, 1)
+                rotated_velocities = torch.cat([lin_vel_rotated, yaw_rate], dim=-1)
+            else:
+                # Pad with zero yaw rate if action_dim is 3
+                yaw_rate = torch.zeros(K, T_len, 1, device=self.device)
+                rotated_velocities = torch.cat([lin_vel_rotated, yaw_rate], dim=-1)
+        
+        # Store in action buffer
+        self.action_buffer[env_ids] = rotated_velocities
+        
+        # Update styles from dataset (optional, for logging/debugging)
+        # Note: We don't overwrite self.styles as it may be used elsewhere
+        # If needed, uncomment:
+        # self.styles['noise_freq'][env_ids] = styles['noise_freq'].unsqueeze(-1)
+        # self.styles['smoothness'][env_ids] = styles['smoothness'].unsqueeze(-1)
+        # self.styles['laziness'][env_ids] = styles['laziness'].unsqueeze(-1)
+
     def _refill_buffer(self, env_ids, start_pos, start_quat):
         """
-        Generate a trajectory of actions using Perlin noise and APF.
+        Generate a trajectory of actions using Perlin noise and APF (online mode).
         """
         profiler = get_profiler()
         

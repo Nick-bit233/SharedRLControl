@@ -125,8 +125,29 @@ def main(cfg):
     # 打印配置确认
     print(OmegaConf.to_yaml(cfg))
 
+    # === Load Trajectory Dataset (if offline mode enabled) ===
+    trajectory_dataset = None
+    if cfg.user_model.get("offline_mode", False):
+        from trajectory_dataset import TrajectoryDataset
+        
+        dataset_path = cfg.user_model.get("dataset_path", None)
+        if dataset_path is None:
+            raise ValueError("user_model.dataset_path must be set when offline_mode=True")
+        
+        if not os.path.exists(dataset_path):
+            raise FileNotFoundError(f"Trajectory dataset not found: {dataset_path}")
+        
+        print(f"[SimpleRunner] Loading trajectory dataset from: {dataset_path}")
+        trajectory_dataset = TrajectoryDataset(
+            dataset_path=dataset_path,
+            device=torch.device(cfg.device),
+            gpu_cache_reserve_gb=cfg.user_model.get("gpu_cache_reserve_gb", 2.0),
+            min_scale_factor=cfg.user_model.get("min_scale_factor", 0.5),
+        )
+        print(f"[SimpleRunner] Trajectory dataset loaded successfully")
+
     # === 初始化环境 ===
-    base_env = FollowingEnvSimple(cfg)
+    base_env = FollowingEnvSimple(cfg, trajectory_dataset=trajectory_dataset)
     
     # 启用渲染
     base_env.enable_render(True)
@@ -383,6 +404,12 @@ def main(cfg):
         # === Profiling: Log timing stats to wandb ===
         if profiling_mode and i > 0 and i % 5 == 0:
             profiler.log_to_wandb(run)
+        
+        # Log trajectory dataset cache stats (if using offline mode)
+        if trajectory_dataset is not None and i % 100 == 0:
+            cache_stats = trajectory_dataset.get_cache_stats()
+            info.update({f"dataset/{k}": v for k, v in cache_stats.items()})
+            trajectory_dataset.reset_cache_stats()
         
         # 记录到 Wandb
         run.log(info)

@@ -2,6 +2,7 @@ import csv
 import torch
 import einops
 import numpy as np
+from typing import Optional
 from tensordict.tensordict import TensorDict, TensorDictBase
 # === Fix: Update deprecated imports ===
 from torchrl.data import Unbounded, Composite, Categorical
@@ -20,6 +21,7 @@ from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
 from isaacsim.core.utils.viewports import set_camera_view
 from trainning_utils import vec_to_body, vec_to_world
 from user_model import UserModel
+from trajectory_dataset import TrajectoryDataset
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import RigidObject, RigidObjectCfg
 import time
@@ -34,8 +36,11 @@ class FollowingEnvSimple(IsaacEnv):
     # 4. _compute_state_and_obs (get observation and states, update stats)
     # 5. _compute_reward_and_done (update reward and calculate returns)
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, trajectory_dataset: Optional[TrajectoryDataset] = None):
         print("[Navigation Environment]: Initializing Simple Shared Autonomy Env (No Obstacles)...")
+        
+        # Store trajectory dataset for later use
+        self._trajectory_dataset = trajectory_dataset
         
         # Force remove obstacles
         cfg.env.num_obstacles = 0
@@ -85,9 +90,16 @@ class FollowingEnvSimple(IsaacEnv):
             self.lidar = None
 
         # User Model Initialization
+        # Check for offline mode configuration
+        offline_mode = cfg.user_model.get("offline_mode", False)
+        sampling_mode = cfg.user_model.get("sampling_mode", "scaled")
+        
         self.user_model = UserModel(
             num_envs=self.num_envs,
-            cfg=cfg, 
+            cfg=cfg,
+            offline_mode=offline_mode,
+            dataset=self._trajectory_dataset,
+            sampling_mode=sampling_mode,
         ) 
         self.seed = cfg.get("seed", 0)  # seed for evaluation mode
         

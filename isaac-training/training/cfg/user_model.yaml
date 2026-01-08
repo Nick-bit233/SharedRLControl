@@ -9,3 +9,10 @@ user_model:
 
   simple_mode: false # whether to use simple step function for user model
   enable_yaw_rate: false # whether to enable yaw rate commands in simple mode
+
+  # Offline trajectory dataset settings
+  offline_mode: false  # If true, use pre-generated trajectories from dataset
+  dataset_path: null   # Path to HDF5 trajectory dataset file (required if offline_mode=true)
+  sampling_mode: "scaled"  # "scaled" (boundary-aware) or "raw" (no transforms, for extreme cases)
+  gpu_cache_reserve_gb: 4.0  # GPU memory to reserve for simulator/training when loading dataset
+  min_scale_factor: 0.5  # Minimum scale factor for scaled sampling mode
