@@ -47,9 +47,9 @@ def main(cfg):
     from env import NavigationEnv
     env = NavigationEnv(cfg)
 
-    # VelController transforms 4D force action space in omni_drones to desired 4D vel action space
+    # VelController transforms motor force action space in omni_drones to desired 3D vel action space
     controller = LeePositionController(9.81, env.drone.params).to(cfg.device)
-    vel_transform = VelController(controller, yaw_control=True)
+    vel_transform = VelController(controller, yaw_control=False)  # 3D velocity only, no yaw control
     
     # temp Transformed Env only used to init policy observation_spec / action_spec
     temp_transforms = []

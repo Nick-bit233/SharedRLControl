@@ -155,7 +155,7 @@ def main(cfg):
 
     # === Transforms (保持与 train.py 一致) ===
     controller = LeePositionController(9.81, base_env.drone.params).to(cfg.device)
-    vel_transform = VelController(controller, yaw_control=True)
+    vel_transform = VelController(controller, yaw_control=False)  # 3D velocity only, no yaw control
 
     if cfg.algo.rnn.enable:
         primers_dict = {
@@ -187,11 +187,11 @@ def main(cfg):
     # === 初始化 SimplePPO ===
     policy = SimplePPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
     
-    # print("[SimpleRunner] Environment structure.")
-    # print(env)
+    print("[SimpleRunner] Environment structure.")
+    print(env)
 
-    # print("[SimpleRunner] Policy structure.")
-    # print(policy(env.reset()))
+    print("[SimpleRunner] Policy structure.")
+    print(policy(env.reset()))
 
     def save_env_image(frame_idx: int):
         # === 保存帧用于检查 ===

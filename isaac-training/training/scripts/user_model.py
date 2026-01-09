@@ -187,15 +187,15 @@ def batched_perlin_noise(
     
     Args:
         time: (N, T) time tensor
-        seeds: (N, 4) seeds for 4 channels, each is independent 1D noise
+        seeds: (N, 3) seeds for 3 channels (vx, vy, vz), each is independent 1D noise
         freq: (N, 1) frequency scaling
         device: torch device
         
     Returns:
-        noise: (N, T, 4) values in approx [-1, 1]
+        noise: (N, T, 3) values in approx [-1, 1]
     """
     N, T = time.shape
-    num_channels = 4
+    num_channels = 3  # 3D velocity only (vx, vy, vz)
     
     # Output tensor
     noise = torch.zeros(N, T, num_channels, device=device)
@@ -306,12 +306,12 @@ class UserModel:
         self.online_sample_filter = cfg.user_model.get("online_sample_filter", False)
         
         # State
-        self.action_buffer = torch.zeros(num_envs, self.buffer_size, 4, device=self.device)
+        self.action_buffer = torch.zeros(num_envs, self.buffer_size, 3, device=self.device)  # 3D velocity only
         self.buffer_read_idx = torch.zeros(num_envs, dtype=torch.long, device=self.device)
         self.noise_time = torch.zeros(num_envs, device=self.device)
         
-        # Random seeds for noise (N, 4)
-        self.noise_seeds = torch.randint(0, 100000, (num_envs, 4), device=self.device)
+        # Random seeds for noise (N, 3) - 3 channels for vx, vy, vz
+        self.noise_seeds = torch.randint(0, 100000, (num_envs, 3), device=self.device)
 
         # Style parameters (randomized per env)
         self.freq_base = cfg.user_model.style.frequency_base
@@ -326,7 +326,7 @@ class UserModel:
         }
         
         # Previous action for smoothing (Low Pass Filter)
-        self.prev_filtered_action = torch.zeros(num_envs, 4, device=self.device)
+        self.prev_filtered_action = torch.zeros(num_envs, 3, device=self.device)  # 3D velocity only
         
     def reset(self, pos, quat, env_ids, seed=None):
         """
@@ -354,7 +354,7 @@ class UserModel:
             gen.manual_seed(seed)
             
             # 为每个 env 生成一个基于 base gen 的确定性唯一种子
-            base_seeds = torch.randint(0, 100000, (K, 4), generator=gen, device=self.device)
+            base_seeds = torch.randint(0, 100000, (K, 3), generator=gen, device=self.device)  # 3 channels for vx, vy, vz
             # 为了保证不同 env_id 即使在不同 batch 也有区别，可以加上 env_ids
             self.noise_seeds[env_ids] = base_seeds + env_ids.unsqueeze(1)
             
@@ -370,7 +370,7 @@ class UserModel:
             
         else:
             # Training Mode: Random generate seeds and styles
-            self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, 4), device=self.device)
+            self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, 3), device=self.device)  # 3 channels for vx, vy, vz
             self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * self.freq_scale + self.freq_base
             self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * self.smooth_scale + self.smooth_base
             self.styles['laziness'][env_ids] = torch.rand(K, 1, device=self.device) * self.laziness
@@ -393,11 +393,11 @@ class UserModel:
 
     def step_simple(self, drone_state, theta):
         """
-        Simple step function: outputs random XY velocity with Z=0 and yaw_rate=0.
+        Simple step function: outputs random XY velocity with Z=0.
         Velocity direction is fixed by theta.
         
         Returns:
-            action: (N, 4) velocity commands [vx, vy, vz, yaw_rate] in body frame
+            action: (N, 3) velocity commands [vx, vy, vz] in body frame
             needs_refill: (N,) boolean tensor (always False in simple mode)
         """
         N = drone_state.shape[0]
@@ -406,15 +406,11 @@ class UserModel:
         vx = self.xy_speed * torch.cos(theta)
         vy = self.xy_speed * torch.sin(theta)
         
-        # Z and yaw_rate are zero
+        # Z is zero (yaw_rate removed from action space)
         vz = torch.zeros(N, device=self.device)
-        if self.enable_yaw_rate:
-            yaw_rate = self.yaw_rate_speed
-        else:
-            yaw_rate = torch.zeros(N, device=self.device)
         
-        # Stack into action tensor
-        action = torch.stack([vx, vy, vz, yaw_rate], dim=-1)  # (N, 4)
+        # Stack into action tensor - 3D velocity only
+        action = torch.stack([vx, vy, vz], dim=-1)  # (N, 3)
         
         # No refill needed in simple mode
         needs_refill = torch.zeros(N, dtype=torch.bool, device=self.device)
@@ -451,10 +447,10 @@ class UserModel:
                 self.buffer_read_idx[idxs] = 0
             
         # Read action from buffer
-        # action_buffer: (N, T, 4)
+        # action_buffer: (N, T, 3) - 3D velocity only
         # We need to select [i, read_idx[i], :]
         # Use gather
-        read_indices = self.buffer_read_idx.view(-1, 1, 1).expand(-1, 1, 4)
+        read_indices = self.buffer_read_idx.view(-1, 1, 1).expand(-1, 1, 3)
         action = torch.gather(self.action_buffer, 1, read_indices).squeeze(1)
         
         self.buffer_read_idx += 1
@@ -524,14 +520,9 @@ class UserModel:
             # For now, skip rotation (velocities are already in body frame)
             lin_vel_rotated = lin_vel_flat.reshape(K, T_len, 3)
             
-            # Reconstruct full action tensor
-            if velocities.shape[-1] == 4:
-                yaw_rate = velocities[..., 3:4]  # (K, T, 1)
-                rotated_velocities = torch.cat([lin_vel_rotated, yaw_rate], dim=-1)
-            else:
-                # Pad with zero yaw rate if action_dim is 3
-                yaw_rate = torch.zeros(K, T_len, 1, device=self.device)
-                rotated_velocities = torch.cat([lin_vel_rotated, yaw_rate], dim=-1)
+            # Reconstruct full action tensor - 3D velocity only (yaw_rate removed)
+            # Only use first 3 dimensions regardless of dataset action_dim
+            rotated_velocities = lin_vel_rotated  # (K, T, 3)
         
         # Store in action buffer
         self.action_buffer[env_ids] = rotated_velocities
@@ -553,18 +544,17 @@ class UserModel:
         T = self.buffer_size
         dt = self.dt
         
-        # 1. Generate Perlin Noise for the whole batch (K, T, 4)
+        # 1. Generate Perlin Noise for the whole batch (K, T, 3)
         with profiler.timer("user_model/perlin_noise"):
             # Time vector
             t_start = self.noise_time[env_ids].unsqueeze(1) # (K, 1)
             t_steps = torch.arange(T, device=self.device).unsqueeze(0) * dt # (1, T)
             time_grid = t_start + t_steps # (K, T)
             
-            seeds = self.noise_seeds[env_ids] # (K, 4)
+            seeds = self.noise_seeds[env_ids] # (K, 3)
             freq = self.styles['noise_freq'][env_ids] # (K, 1)
             
             # Generate raw noise (Target Velocities)
-            # (K, T, 4)
             raw_noise = batched_perlin_noise(time_grid, seeds, freq, self.device)
 
             # Check if output is within [-1, 1]
@@ -572,9 +562,9 @@ class UserModel:
                 self.logger.warning("Perlin noise output out of bounds [-1, 1]")
             
             # Scale noise to physical units
-            # vx, vy, vz, yaw_rate
+            # vx, vy, vz (yaw_rate removed from action space)
             scale = torch.tensor(
-                [self.max_speed, self.max_speed, self.max_speed_z, self.max_speed_yaw], device=self.device)
+                [self.max_speed, self.max_speed, self.max_speed_z], device=self.device)
             target_vels = raw_noise * scale
 
         

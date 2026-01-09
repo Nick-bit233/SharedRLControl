@@ -52,7 +52,7 @@ def main(cfg):
 
     # === Transforms (保持与 train.py 一致) ===
     controller = LeePositionController(9.81, base_env.drone.params).to(cfg.device)
-    vel_transform = VelController(controller, yaw_control=True)
+    vel_transform = VelController(controller, yaw_control=False)  # 3D velocity only, no yaw control
     primers_dict = {
         # 给出一个key为recurrent_state的spec， primer根据此在 env.reset() 时创建对应的 tensordict 字段
         "recurrent_state": UnboundedContinuousTensorSpec(

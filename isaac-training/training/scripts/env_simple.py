@@ -108,9 +108,9 @@ class FollowingEnvSimple(IsaacEnv):
             self.start_pos = torch.zeros(self.num_envs, 3)
             # prev_drone_vel_w is used to compute acceleration-based penalty
             self.prev_drone_vel_w = torch.zeros(self.num_envs, 3)
-            # previous action taken by the agent (drone) (vel_b[3], yaw_rate_b[1])
-            # use this 4D action instaed of the prev_drone_vel_w in user model and GRU network.
-            self.prev_agent_action = torch.zeros(self.num_envs, 4)
+            # previous action taken by the agent (drone) (vel_b[3])
+            # use this 3D velocity action in user model and GRU network.
+            self.prev_agent_action = torch.zeros(self.num_envs, 3)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
             # Cumulative following error for early termination
@@ -167,8 +167,8 @@ class FollowingEnvSimple(IsaacEnv):
 
     def _set_specs(self):
         drone_state_dim = 10  # (vel_b[3] + ang_vel_b[3] + orientation_q[4])
-        prev_action_dim = 4  # (vel_b[3] + yaw_rate_b[1])
-        human_action_dim = 4  # (vel_b[3] + yaw_rate_b[1])
+        prev_action_dim = 3  # (vel_b[3]) - yaw_rate removed
+        human_action_dim = 3  # (vel_b[3]) - yaw_rate removed
 
         # Observation Spec
         if self.obs_add_prev:
@@ -329,10 +329,10 @@ class FollowingEnvSimple(IsaacEnv):
         actions = tensordict[("agents", "action")]
 
         # store applied action (TODO： 确定这里存储的action数值是速度指令还是推力指令，必要时做转换)
-        # actions may be shape (num_envs, 1, 4) or (num_envs, 4).
-        # but remember that drone.apply_action only accepts shape (num_envs, 1, 4)
+        # actions may be shape (num_envs, 1, 3) or (num_envs, 3).
+        # but remember that drone.apply_action only accepts shape (num_envs, 1, 4) - VelController handles this
         if actions.ndim > 2:
-            actions_flat = actions.reshape(self.num_envs, -1)[..., :4]  # be careful: assume first 4 are vel+yaw
+            actions_flat = actions.reshape(self.num_envs, -1)[..., :3]  # first 3 are velocity
         else:
             actions_flat = actions
         self.prev_agent_action = actions_flat.clone()  # clone to avoid in-place aliasing
@@ -399,7 +399,7 @@ class FollowingEnvSimple(IsaacEnv):
         # ---------Network Input V: Human control action--------
         user_input_drone_state = drone_state_b.clone()  # (N, 10)
 
-        human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)  # (N, 4)
+        human_actions_local = torch.zeros(self.num_envs, 3, device=self.device)  # (N, 3) - 3D velocity only
         need_refill = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
  
         if getattr(self, "manual_mode", False):
@@ -447,13 +447,13 @@ class FollowingEnvSimple(IsaacEnv):
         # yaw_rate_error_norm = (torch.norm(current_yaw_rate - target_yaw_rate, dim=-1, keepdim=True))
         # reward_vel += torch.exp(-yaw_rate_error_norm)  # Positive reward
 
-        # # 4D Action difference reward (Positive)
+        # # 3D Velocity difference reward (Positive) - yaw_rate removed
         human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)
-        target_yaw_rate = human_actions_local[..., 3:4]  # (N, 1)
+        # Note: yaw_rate removed from action space, only compare 3D velocities
 
-        target_action = torch.cat([target_vel_w, target_yaw_rate], dim=-1)  # (N, 4)
-        current_action = torch.cat([current_vel_w, current_yaw_rate], dim=-1)  # (N, 4)
+        target_action = target_vel_w  # (N, 3) - only velocity
+        current_action = current_vel_w  # (N, 3) - only velocity
 
         action_diff = (current_action - target_action).norm(dim=-1, keepdim=True)
         reward_vel = torch.exp(-action_diff)  # (N, 1) Positive reward
@@ -680,7 +680,7 @@ class FollowingEnvSimple(IsaacEnv):
         :param enabled: bool
         """
         self.manual_mode = enabled
-        self.manual_action = torch.zeros(self.num_envs, 4, device=self.device)
+        self.manual_action = torch.zeros(self.num_envs, 3, device=self.device)
 
     def set_manual_action(self, action: torch.Tensor):
         if self.manual_mode:

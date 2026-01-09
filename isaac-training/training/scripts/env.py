@@ -76,9 +76,9 @@ class NavigationEnv(IsaacEnv):
             self.start_pos = torch.zeros(self.num_envs, 3, device=self.device)
             # prev_drone_vel_w is used to compute acceleration-based penalty
             self.prev_drone_vel_w = torch.zeros(self.num_envs, 3, device=self.device)
-            # previous action taken by the agent (drone) (vel_b[3], yaw_rate_b[1])
-            # use this 4D action instaed of the prev_drone_vel_w in user model and GRU network.
-            self.prev_agent_action = torch.zeros(self.num_envs, 4, device=self.device)  
+            # previous action taken by the agent (drone) (vel_b[3])
+            # use this 3D velocity action in user model and GRU network.
+            self.prev_agent_action = torch.zeros(self.num_envs, 3, device=self.device)  
             self.intent_complete_counts = torch.zeros(self.num_envs, 1, device=self.device)
             # Cumulative following error for early termination (方案C - 动态阈值)
             self.cumulative_error = torch.zeros(self.num_envs, 1, device=self.device)
@@ -321,8 +321,8 @@ class NavigationEnv(IsaacEnv):
     def _set_specs(self):
         drone_state_dim = 10  # (vel_b[3] + ang_vel_b[3] + orientation_q[4])
         num_dim_each_dyn_obs_state = 10
-        prev_action_dim = 4  # (vel_b[3] + yaw_rate_b[1])
-        human_action_dim = 4  # (vel_b[3] + yaw_rate_b[1])
+        prev_action_dim = 3  # (vel_b[3]) - yaw_rate removed
+        human_action_dim = 3  # (vel_b[3]) - yaw_rate removed
 
         # Observation Spec
         self.observation_spec = CompositeSpec({
@@ -479,9 +479,9 @@ class NavigationEnv(IsaacEnv):
         actions = tensordict[("agents", "action")]
 
         # store applied action so that the subsequent observation (next step) sees it as prev_action
-        # sometimes actions may be shape (num_envs, 1, 4) or (num_envs, 4). Normalize:
+        # sometimes actions may be shape (num_envs, 1, 3) or (num_envs, 3). Normalize:
         if actions.ndim > 2:
-            actions_flat = actions.reshape(self.num_envs, -1)[..., :4]  # be careful: assume first 4 are vel+yaw
+            actions_flat = actions.reshape(self.num_envs, -1)[..., :3]  # first 3 are velocity
         else:
             actions_flat = actions
         # clone to avoid in-place aliasing
@@ -635,7 +635,7 @@ class NavigationEnv(IsaacEnv):
         drone_orientation_q = self.root_state[..., 3:7].squeeze(1) # (B, 4)
         user_input_drone_state = torch.cat([drone_pos_w, drone_orientation_q, drone_vel_w], dim=-1) # (B, 10)
 
-        human_actions_local = torch.zeros(self.num_envs, 4, device=self.device)  # (N, 4)
+        human_actions_local = torch.zeros(self.num_envs, 3, device=self.device)  # (N, 3) - 3D velocity only
         intent_completed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
  
         # Step the user model to get human action input
@@ -673,18 +673,14 @@ class NavigationEnv(IsaacEnv):
             current_yaw_rate = current_yaw_rate.squeeze(-1)  # (N, 1)
 
         # c. (changed) velocity_follow reward (penalty)
-        # TODO: 如果L2惩罚有效，合并到4D动作中
-        # 速度惩罚：速度误差的L2范数
+        # 速度惩罚：速度误差的L2范数 - yaw_rate removed from action space
         human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)
 
         vel_error_norm = (torch.norm(current_vel_w - target_vel_w, dim=-1, keepdim=True)).clamp(min=1e-6)
         reward_vel = -vel_error_norm  # L2 norm penalty
         
-        # 朝向惩罚
-        target_yaw_rate = human_actions_local[..., 3:4]  # (N, 1)
-        yaw_rate_error_norm = (torch.norm(current_yaw_rate - target_yaw_rate, dim=-1, keepdim=True)).clamp(min=1e-6)
-        reward_vel += -yaw_rate_error_norm  # L2 norm penalty
+        # Note: yaw_rate penalty removed (action space is now 3D velocity only)
         
         # d. smoothness reward for action smoothness
         penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
@@ -746,11 +742,8 @@ class NavigationEnv(IsaacEnv):
         above_bound = self.drone.pos[..., 2] > 4.
 
         # === Dynamic threshold for cumulative error termination ===
-        # Calculate 4D action difference (velocity + yaw rate)
-        action_diff = torch.cat([
-            current_vel_w - target_vel_w,  # (N, 3)
-            current_yaw_rate - target_yaw_rate  # (N, 1)
-        ], dim=-1).norm(dim=-1, keepdim=True)  # (N, 1)
+        # Calculate 3D velocity difference (yaw_rate removed from action space)
+        action_diff = (current_vel_w - target_vel_w).norm(dim=-1, keepdim=True)  # (N, 1)
         
         # Update cumulative error with EMA
         self.cumulative_error = (
