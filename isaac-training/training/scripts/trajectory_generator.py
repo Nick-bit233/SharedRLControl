@@ -670,46 +670,82 @@ def main(cfg: DictConfig):
             num_workers=cfg.num_workers,
         )
     
-    # For distributed: gather all results to rank 0
+    # For distributed: each rank saves to a temp file, rank 0 merges them
     if is_distributed and cfg.backend == 'batched':
-        # Gather all arrays to rank 0
+        import tempfile
+        
+        # Synchronize before saving
+        dist.barrier()
+        
+        # Each rank saves its data to a temporary file
+        temp_dir = os.path.dirname(cfg.output_path) or '.'
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_file = os.path.join(temp_dir, f".temp_traj_rank{rank}.npz")
+        
+        # Move data to CPU immediately to free GPU memory
+        if isinstance(velocities, torch.Tensor):
+            velocities = velocities.cpu().numpy()
+        if isinstance(positions, torch.Tensor):
+            positions = positions.cpu().numpy()
+        if isinstance(bboxes, torch.Tensor):
+            bboxes = bboxes.cpu().numpy()
+        
+        # Save this rank's data to temp file
+        np.savez_compressed(
+            temp_file,
+            velocities=velocities,
+            positions=positions,
+            bboxes=bboxes,
+            noise_freq=styles['noise_freq'],
+            smoothness=styles['smoothness'],
+            laziness=styles['laziness'],
+        )
+        print(f"[GPU {rank}] Saved temp file: {temp_file}")
+        
+        # Synchronize after all ranks saved
+        dist.barrier()
+        
+        # Rank 0 merges all temp files
         if rank == 0:
-            all_velocities = [np.zeros_like(velocities) for _ in range(world_size)]
-            all_positions = [np.zeros_like(positions) for _ in range(world_size)]
-            all_bboxes = [np.zeros_like(bboxes) for _ in range(world_size)]
-            all_styles_freq = [np.zeros_like(styles['noise_freq']) for _ in range(world_size)]
-            all_styles_smooth = [np.zeros_like(styles['smoothness']) for _ in range(world_size)]
-            all_styles_lazy = [np.zeros_like(styles['laziness']) for _ in range(world_size)]
-        else:
-            all_velocities = None
-            all_positions = None
-            all_bboxes = None
-            all_styles_freq = None
-            all_styles_smooth = None
-            all_styles_lazy = None
-        
-        # Use torch.distributed.gather for tensors
-        velocities_t = torch.from_numpy(velocities).to(device)
-        positions_t = torch.from_numpy(positions).to(device)
-        bboxes_t = torch.from_numpy(bboxes).to(device)
-        
-        gathered_vel = [torch.zeros_like(velocities_t) for _ in range(world_size)] if rank == 0 else None
-        gathered_pos = [torch.zeros_like(positions_t) for _ in range(world_size)] if rank == 0 else None
-        gathered_bbox = [torch.zeros_like(bboxes_t) for _ in range(world_size)] if rank == 0 else None
-        
-        dist.gather(velocities_t, gathered_vel, dst=0)
-        dist.gather(positions_t, gathered_pos, dst=0)
-        dist.gather(bboxes_t, gathered_bbox, dst=0)
-        
-        if rank == 0:
-            velocities = torch.cat(gathered_vel, dim=0).cpu().numpy()
-            positions = torch.cat(gathered_pos, dim=0).cpu().numpy()
-            bboxes = torch.cat(gathered_bbox, dim=0).cpu().numpy()
+            print("\n[GPU 0] Merging data from all ranks...")
             
-            # Gather styles (simple concatenation via CPU)
-            # Note: For simplicity, each rank sends styles via file or we regenerate
-            # Here we just use rank 0's styles and regenerate for full dataset
-            # This is a simplification - in production, use proper gather
+            all_velocities = []
+            all_positions = []
+            all_bboxes = []
+            all_noise_freq = []
+            all_smoothness = []
+            all_laziness = []
+            
+            for r in range(world_size):
+                temp_file_r = os.path.join(temp_dir, f".temp_traj_rank{r}.npz")
+                print(f"  Loading rank {r} data from {temp_file_r}...")
+                data = np.load(temp_file_r)
+                all_velocities.append(data['velocities'])
+                all_positions.append(data['positions'])
+                all_bboxes.append(data['bboxes'])
+                all_noise_freq.append(data['noise_freq'])
+                all_smoothness.append(data['smoothness'])
+                all_laziness.append(data['laziness'])
+                data.close()
+                
+                # Remove temp file after loading
+                os.remove(temp_file_r)
+            
+            # Concatenate all data
+            velocities = np.concatenate(all_velocities, axis=0)
+            positions = np.concatenate(all_positions, axis=0)
+            bboxes = np.concatenate(all_bboxes, axis=0)
+            styles = {
+                'noise_freq': np.concatenate(all_noise_freq, axis=0),
+                'smoothness': np.concatenate(all_smoothness, axis=0),
+                'laziness': np.concatenate(all_laziness, axis=0),
+            }
+            
+            # Free memory
+            del all_velocities, all_positions, all_bboxes
+            del all_noise_freq, all_smoothness, all_laziness
+            
+            print(f"  Merged {len(velocities)} trajectories")
     
     # Save dataset (only rank 0)
     if rank == 0:
@@ -741,6 +777,7 @@ def main(cfg: DictConfig):
     
     # Cleanup distributed
     if is_distributed:
+        dist.barrier()
         dist.destroy_process_group()
 
 
