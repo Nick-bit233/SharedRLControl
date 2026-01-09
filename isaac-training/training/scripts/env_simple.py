@@ -116,7 +116,7 @@ class FollowingEnvSimple(IsaacEnv):
             # Cumulative following error for early termination
             self.cumulative_error = torch.zeros(self.num_envs, 1)
             self.error_ema_alpha = 0.995  # Exponential moving average decay factor
-            self.error_threshold_base = 0.5  # Base threshold (strict, for no-obstacle case)
+            self.error_threshold_base = 1.0  # Base threshold (strict, for no-obstacle case)
             self.error_threshold_max = 5.0   # Max threshold (relaxed, when obstacles are very close)
             self.safety_margin = 1.5  # Distance within which we start relaxing the threshold
 
@@ -460,6 +460,8 @@ class FollowingEnvSimple(IsaacEnv):
 
         # d. smoothness reward for action smoothness
         penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
+        # d(+). model target velocity smoothness
+        penalty_action_change = (self.prev_agent_action - current_action).norm(dim=-1, keepdim=True)
         
         # e. height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
@@ -477,6 +479,7 @@ class FollowingEnvSimple(IsaacEnv):
             2.0 * reward_vel +
             0.1 * reward_survival 
             - 0.05 * penalty_smooth 
+            - 0.1 * penalty_action_change
             - 1.0 * penalty_height
         )
         profiler.stop("env/reward_calculation")
