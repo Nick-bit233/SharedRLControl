@@ -143,6 +143,7 @@ def main(cfg):
             device=torch.device(cfg.device),
             gpu_cache_reserve_gb=cfg.user_model.get("gpu_cache_reserve_gb", 2.0),
             min_scale_factor=cfg.user_model.get("min_scale_factor", 0.5),
+            preload_data=cfg.user_model.get("preload_data", True)
         )
         print(f"[SimpleRunner] Trajectory dataset loaded successfully")
 
@@ -404,12 +405,6 @@ def main(cfg):
         # === Profiling: Log timing stats to wandb ===
         if profiling_mode and i > 0 and i % 5 == 0:
             profiler.log_to_wandb(run)
-        
-        # Log trajectory dataset cache stats (if using offline mode)
-        if trajectory_dataset is not None and i % 100 == 0:
-            cache_stats = trajectory_dataset.get_cache_stats()
-            info.update({f"dataset/{k}": v for k, v in cache_stats.items()})
-            trajectory_dataset.reset_cache_stats()
         
         # 记录到 Wandb
         run.log(info)

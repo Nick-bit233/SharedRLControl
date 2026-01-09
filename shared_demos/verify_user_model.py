@@ -1,5 +1,14 @@
 # --- 使用isaaclab的AppLauncher启动 Isaac Sim ---
+import argparse
 from isaaclab.app import AppLauncher
+
+# Parse command line arguments BEFORE launching app
+parser = argparse.ArgumentParser(description="Verify User Model with optional offline dataset")
+parser.add_argument("--offline", action="store_true", help="Use offline trajectory dataset")
+parser.add_argument("--dataset", type=str, default="/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/isaac-training/training/scripts/data/trajectories_100k.h5", help="Path to HDF5 trajectory dataset")
+parser.add_argument("--sampling-mode", type=str, default="raw", choices=["raw", "scaled"], help="Sampling mode: 'raw' (no transforms) or 'scaled' (boundary-aware)")
+parser.add_argument("--num-frames", type=int, default=2000, help="Number of simulation frames")
+args, unknown = parser.parse_known_args()
 
 # launch omniverse app
 app_launcher = AppLauncher()
@@ -19,9 +28,10 @@ from isaacsim.core.utils.rotations import quat_to_euler_angles
 from isaacsim.util.debug_draw import _debug_draw
 from srlc_model import MockConfig
 
-# Add path to user_model
+# Add path to user_model and trajectory_dataset
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts")))
 from user_model import UserModel
+from trajectory_dataset import TrajectoryDataset
 
 from omni_drones.robots.drone import MultirotorBase
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
@@ -125,8 +135,45 @@ def main():
     z_spawn = mock_cfg.sim.z_spawn
     drone.spawn(translations=torch.tensor([[0.0, 0.0, z_spawn]], device=device))
 
-    # 初始化 User Model (传入日志记录器)
-    user_model = UserModel(num_envs=1, cfg=mock_cfg, logger=logger)
+    # --- 初始化 User Model ---
+    # 支持两种模式: 在线生成 (online) 和 离线数据集 (offline)
+    trajectory_dataset = None
+    if args.offline:
+        if args.dataset is None:
+            # 使用默认路径
+            default_dataset_path = os.path.abspath(os.path.join(
+                os.path.dirname(__file__), 
+                "../isaac-training/data/trajectories_100k.h5"
+            ))
+            dataset_path = default_dataset_path
+        else:
+            dataset_path = args.dataset
+        
+        if not os.path.exists(dataset_path):
+            logger.error(f"Dataset not found: {dataset_path}")
+            logger.info("Please generate a dataset first using trajectory_generator.py")
+            simulation_app.close()
+            return
+        
+        logger.info(f"Loading trajectory dataset from: {dataset_path}")
+        trajectory_dataset = TrajectoryDataset(
+            dataset_path=dataset_path,
+            device=torch.device(device),
+            gpu_cache_reserve_gb=1.0,  # Reserve less for visualization
+            min_scale_factor=0.5,
+        )
+        logger.info(f"Dataset loaded: {trajectory_dataset.metadata.num_trajectories} trajectories")
+        logger.info(f"Sampling mode: {args.sampling_mode}")
+    
+    # 初始化 User Model
+    user_model = UserModel(
+        num_envs=1, 
+        cfg=mock_cfg, 
+        logger=logger,
+        offline_mode=args.offline,
+        dataset=trajectory_dataset,
+        sampling_mode=args.sampling_mode,
+    )
     
     traj_vis = TrajectoryVisualizer(max_steps=500)
 
@@ -146,7 +193,9 @@ def main():
     target_pos = init_pos.unsqueeze(1).clone()
     target_yaw = torch.zeros((1, 1, 1), device=device)
     
-    NUM_FRAMES = 2000
+    NUM_FRAMES = args.num_frames
+    mode_str = "OFFLINE" if args.offline else "ONLINE"
+    logger.info(f"Mode: {mode_str}")
     logger.info(f"Simulating for {NUM_FRAMES} frames...")
     # --- 仿真循环 ---
     frame_count = 0
