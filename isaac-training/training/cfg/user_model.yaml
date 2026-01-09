@@ -7,6 +7,7 @@ user_model:
     smoothness_scale: 0.45
     laziness: 0.2
 
+  # Simple user model (only linear velocity) settings
   simple_mode: false # whether to use simple step function for user model
   enable_yaw_rate: false # whether to enable yaw rate commands in simple mode
 
@@ -17,3 +18,7 @@ user_model:
   gpu_cache_reserve_gb: 2.0  # GPU memory to reserve for simulator/training when loading dataset
   min_scale_factor: 0.5  # Minimum scale factor for scaled sampling mode
   preload_data: true  # If true, preload entire dataset into memory for faster access
+
+  # Online trajectory generation settings
+  online_sample_filter: false  # If true, filter sampled trajectories based on velocity constraints
+

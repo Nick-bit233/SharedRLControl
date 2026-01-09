@@ -293,6 +293,7 @@ class UserModel:
         self.max_speed_z = self.max_speed / 2.0  # TEST: limit z speed to half for stability
         self.max_speed_yaw = 0.5  # Max yaw rate (rad/s)
 
+        # Simple mode parameters
         self.simple_mode = cfg.user_model.simple_mode
         self.enable_yaw_rate = cfg.user_model.enable_yaw_rate
         if self.simple_mode:
@@ -300,6 +301,9 @@ class UserModel:
             self.xy_speed = torch.rand(num_envs, device=self.device) * self.max_speed
             self.yaw_rate_speed = torch.rand(num_envs, device=self.device) * self.max_speed_yaw
             self.theta = torch.rand(num_envs, device=self.device) * 2.0 * math.pi
+
+        # Online mode parameters
+        self.online_sample_filter = cfg.user_model.get("online_sample_filter", False)
         
         # State
         self.action_buffer = torch.zeros(num_envs, self.buffer_size, 4, device=self.device)
@@ -383,7 +387,7 @@ class UserModel:
             if self.offline_mode:
                 self._refill_from_dataset(env_ids, pos, quat)
             else:
-                self._refill_buffer(env_ids, pos, quat)
+                self._refill_buffer(env_ids, pos, quat, enable_filter=self.online_sample_filter)
         else:
             pass
 
@@ -486,7 +490,7 @@ class UserModel:
                     K, T, start_pos, self.env_map_range
                 )
         
-        with profiler.timer("user_model/quat_rotate"):
+        with profiler.timer("user_model/dataset_velocity_postprocess"):
             # Rotate velocities from identity frame to drone's current orientation
             # The dataset stores velocities in a neutral frame (identity quaternion)
             # We need to rotate them to match the current drone orientation
@@ -539,7 +543,7 @@ class UserModel:
         # self.styles['smoothness'][env_ids] = styles['smoothness'].unsqueeze(-1)
         # self.styles['laziness'][env_ids] = styles['laziness'].unsqueeze(-1)
 
-    def _refill_buffer(self, env_ids, start_pos, start_quat):
+    def _refill_buffer(self, env_ids, start_pos, start_quat, enable_filter=False):
         """
         Generate a trajectory of actions using Perlin noise and APF (online mode).
         """
@@ -562,146 +566,158 @@ class UserModel:
             # Generate raw noise (Target Velocities)
             # (K, T, 4)
             raw_noise = batched_perlin_noise(time_grid, seeds, freq, self.device)
+
+            # Check if output is within [-1, 1]
+            if not torch.all((raw_noise >= -1.0) & (raw_noise <= 1.0)):
+                self.logger.warning("Perlin noise output out of bounds [-1, 1]")
             
             # Scale noise to physical units
             # vx, vy, vz, yaw_rate
-            # Assume output is [-1, 1], scale to max_speed
             scale = torch.tensor(
                 [self.max_speed, self.max_speed, self.max_speed_z, self.max_speed_yaw], device=self.device)
             target_vels = raw_noise * scale
+
         
         # 2. Apply Human Filters (Low Pass & Deadband)
-        # We can do this on the whole trajectory
         # Low Pass: y[i] = alpha * x[i] + (1-alpha) * y[i-1]
-        # This is sequential, but T is small (100).
-        
-        alpha = 1.0 - self.styles['smoothness'][env_ids] # (K, 1)
-        laziness = self.styles['laziness'][env_ids] # (K, 1)
-        
-        # Initialize filtered trajectory
-        filtered_traj = torch.zeros_like(target_vels)
-        last_val = self.prev_filtered_action[env_ids] # (K, 4)
-        
-        # 3. Integration loop for APF and Filter
-        # We need to track position to apply APF
-        curr_pos = start_pos.clone() # (K, 3)
-        curr_quat = start_quat.clone() # (K, 4)
-        
-        # Pre-compute rotation for efficiency? No, quat changes with yaw rate.
-        # We assume simplified kinematics: pos += rotate(vel) * dt, yaw += yaw_rate * dt
-        
-        # === PROFILING: Time the sequential loop (potential bottleneck) ===
-        profiler.start("user_model/integration_loop")
-        for t in range(T):
-            # a. Get raw target for this step
-            raw_v = target_vels[:, t] # (K, 4)
-            
-            # b. Apply Deadband (Laziness)
-            # If raw input is small, set to 0
-            mask_dead = raw_v.abs() < laziness
-            raw_v = torch.where(mask_dead, torch.zeros_like(raw_v), raw_v)
-            
-            # c. Apply Low Pass Filter
-            # val = alpha * raw + (1-alpha) * last
-            # Note: alpha is (K, 1)
-            curr_v = alpha * raw_v + (1.0 - alpha) * last_val
-            last_val = curr_v
-            
-            # d. Apply APF (Artificial Potential Field)
-            # Calculate repulsion based on curr_pos
-            repulsion = self._calculate_apf(curr_pos) # (K, 3)
-            
-            # Add repulsion to linear velocity (local frame or world frame?)
-            # APF is usually in World Frame.
-            # curr_v is in Body Frame (Joystick input).
-            # We need to project APF to Body Frame to modify joystick input, 
-            # OR modify the result of integration.
-            # The user wants "stick inputs" modified.
-            # So we rotate APF (World) -> Body
-            
-            # Rotate repulsion to body frame
-            # quat_rotate_inverse rotates World -> Body
-            repulsion_b = quat_rotate_inverse(curr_quat, repulsion)
-            
-            # Add to linear parts (0:3)
-            curr_v_modified = curr_v.clone()
-            curr_v_modified[:, :3] += repulsion_b
-            
-            # Calculate proposed world velocity
-            vel_world = quat_rotate(curr_quat, curr_v_modified[:, :3])
-            
-            # Propose next position
-            next_pos = curr_pos + vel_world * dt
-            
-            # Clamp position to map boundaries to ensure trajectory validity
-            # This prevents the generated trajectory from going through walls/floor
-            # Note: Z-axis limit is 2 * map_range[2] consistent with APF calculation (assuming map_range is half-extents)
-            next_pos[:, 0] = torch.clamp(next_pos[:, 0], -self.env_map_range[0], self.env_map_range[0])
-            next_pos[:, 1] = torch.clamp(next_pos[:, 1], -self.env_map_range[1], self.env_map_range[1])
-            next_pos[:, 2] = torch.clamp(next_pos[:, 2], 1.0, 2.0 * self.env_map_range[2])
-            
-            # Calculate effective world velocity based on clamped position
-            effective_vel_world = (next_pos - curr_pos) / dt
-            
-            # --- DEBUG PROBE START ---
-            # Check for velocity spikes
-            # vel_norm = torch.norm(effective_vel_world, dim=-1)
-            # if (vel_norm > self.max_speed * 4.0).any():
-            #     idx = torch.argmax(vel_norm).item()
-            #     self.logger.info(f"Spike detected at t={t} for env {idx}")
-            #     self.logger.debug(f"  dt: {dt}")
-            #     self.logger.debug(f"  target_v: {target_vels[idx, t].detach().cpu().numpy()}")
-            #     self.logger.debug(f"  curr_pos: {curr_pos[idx].detach().cpu().numpy()}")
-            #     self.logger.debug(f"  next_pos (unclamped): {(curr_pos + vel_world * dt)[idx].detach().cpu().numpy()}")
-            #     self.logger.debug(f"  next_pos (clamped): {next_pos[idx].detach().cpu().numpy()}")
-            #     self.logger.debug(f"  effective_vel_world: {effective_vel_world[idx].detach().cpu().numpy()}")
-            #     self.logger.debug(f"  vel_world (pre-clamp): {vel_world[idx].detach().cpu().numpy()}")
-            #     self.logger.debug(f"  repulsion: {repulsion[idx].detach().cpu().numpy() if 'repulsion' in locals() else 'N/A'}")
-            #     self.logger.debug(f"  curr_v: {curr_v[idx].detach().cpu().numpy()}")
-            #     self.logger.debug(f"  curr_quat: {curr_quat[idx].detach().cpu().numpy()}")
-            # --- DEBUG PROBE END ---
+        ##############################################################################
+        # TODO：检查Filters（alpha和laziness）是否必要，因为柏林噪声已经是一个平滑的信号了，调整控制激进程度的参数只有采样频率
+        # 反之，如果要模拟人类的不精确抖动和控制，应该叠加一个高频噪声而不是通过滤波平滑？
+        # 目前在enable_filter=False时跳过滤波步骤
+        ##############################################################################
 
-            # Clamp effective velocity to prevent explosions (e.g. if correcting from out-of-bounds)
-            # Allow slightly higher than max_speed for correction, but not infinite
-            limit = self.max_speed * 2.0
-            effective_vel_world = torch.clamp(effective_vel_world, -limit, limit)
+        if enable_filter:
+            # === PROFILING: Time the integration_loop ===
+            profiler.start("user_model/integration_loop")
+
+            alpha = 1.0 - self.styles['smoothness'][env_ids] # (K, 1)
+            laziness = self.styles['laziness'][env_ids] # (K, 1)
             
-            # Convert effective velocity back to body frame for storage
-            effective_vel_body = quat_rotate_inverse(curr_quat, effective_vel_world)
+            # Initialize filtered trajectory
+            filtered_traj = torch.zeros_like(target_vels)
+            last_val = self.prev_filtered_action[env_ids] # (K, 4)
+
+            # 3. Integration loop for APF and Filter
+            # We need to track position to apply APF
+            curr_pos = start_pos.clone() # (K, 3)
+            curr_quat = start_quat.clone() # (K, 4)
+
+            # We assume simplified kinematics: pos += rotate(vel) * dt, yaw += yaw_rate * dt
+            # TODO: simple integration may not be accurate for large dt or high speeds
+            for t in range(T):
+                # a. Get raw target for this step
+                raw_v = target_vels[:, t] # (K, 4)
+                
+                # b. Apply Deadband (Laziness)
+                # If raw input is small, set to 0
+                mask_dead = raw_v.abs() < laziness
+                raw_v = torch.where(mask_dead, torch.zeros_like(raw_v), raw_v)
+                
+                # c. Apply Low Pass Filter
+                # val = alpha * raw + (1-alpha) * last
+                # Note: alpha is (K, 1)
+                curr_v = alpha * raw_v + (1.0 - alpha) * last_val
+                last_val = curr_v
+                
+                # d. Apply APF (Artificial Potential Field)
+                # Calculate repulsion based on curr_pos
+                repulsion = self._calculate_apf(curr_pos) # (K, 3)
+                
+                # Add repulsion to linear velocity (local frame or world frame?)
+                # APF is usually in World Frame.
+                # curr_v is in Body Frame (Joystick input).
+                # We need to project APF to Body Frame to modify joystick input, 
+                # OR modify the result of integration.
+                # The user wants "stick inputs" modified.
+                # So we rotate APF (World) -> Body
+                
+                # Rotate repulsion to body frame
+                # quat_rotate_inverse rotates World -> Body
+                repulsion_b = quat_rotate_inverse(curr_quat, repulsion)
+                
+                # Add to linear parts (0:3)
+                curr_v_modified = curr_v.clone()
+                curr_v_modified[:, :3] += repulsion_b
+                
+                # Calculate proposed world velocity
+                vel_world = quat_rotate(curr_quat, curr_v_modified[:, :3])
+                
+                # Propose next position
+                next_pos = curr_pos + vel_world * dt
+                
+                # Clamp position to map boundaries to ensure trajectory validity
+                # This prevents the generated trajectory from going through walls/floor
+                # Note: Z-axis limit is 2 * map_range[2] consistent with APF calculation (assuming map_range is half-extents)
+                next_pos[:, 0] = torch.clamp(next_pos[:, 0], -self.env_map_range[0], self.env_map_range[0])
+                next_pos[:, 1] = torch.clamp(next_pos[:, 1], -self.env_map_range[1], self.env_map_range[1])
+                next_pos[:, 2] = torch.clamp(next_pos[:, 2], 1.0, 2.0 * self.env_map_range[2])
+                
+                # Calculate effective world velocity based on clamped position
+                effective_vel_world = (next_pos - curr_pos) / dt
+                
+                # --- DEBUG PROBE START ---
+                # Check for velocity spikes
+                # vel_norm = torch.norm(effective_vel_world, dim=-1)
+                # if (vel_norm > self.max_speed * 4.0).any():
+                #     idx = torch.argmax(vel_norm).item()
+                #     self.logger.info(f"Spike detected at t={t} for env {idx}")
+                #     self.logger.debug(f"  dt: {dt}")
+                #     self.logger.debug(f"  target_v: {target_vels[idx, t].detach().cpu().numpy()}")
+                #     self.logger.debug(f"  curr_pos: {curr_pos[idx].detach().cpu().numpy()}")
+                #     self.logger.debug(f"  next_pos (unclamped): {(curr_pos + vel_world * dt)[idx].detach().cpu().numpy()}")
+                #     self.logger.debug(f"  next_pos (clamped): {next_pos[idx].detach().cpu().numpy()}")
+                #     self.logger.debug(f"  effective_vel_world: {effective_vel_world[idx].detach().cpu().numpy()}")
+                #     self.logger.debug(f"  vel_world (pre-clamp): {vel_world[idx].detach().cpu().numpy()}")
+                #     self.logger.debug(f"  repulsion: {repulsion[idx].detach().cpu().numpy() if 'repulsion' in locals() else 'N/A'}")
+                #     self.logger.debug(f"  curr_v: {curr_v[idx].detach().cpu().numpy()}")
+                #     self.logger.debug(f"  curr_quat: {curr_quat[idx].detach().cpu().numpy()}")
+                # --- DEBUG PROBE END ---
+
+                # Clamp effective velocity to prevent explosions (e.g. if correcting from out-of-bounds)
+                # Allow slightly higher than max_speed for correction, but not infinite
+                limit = self.max_speed * 2.0
+                effective_vel_world = torch.clamp(effective_vel_world, -limit, limit)
+                
+                # Convert effective velocity back to body frame for storage
+                effective_vel_body = quat_rotate_inverse(curr_quat, effective_vel_world)
+                
+                # Update the linear part of the action to be stored
+                curr_v_modified[:, :3] = effective_vel_body
+                
+                # e. Store in buffer
+                filtered_traj[:, t] = curr_v_modified
+                
+                # Update curr_pos for next iteration
+                curr_pos = next_pos
+                
+                # f. Integrate Yaw for next step
+                # Update Yaw
+                yaw_rate = curr_v_modified[:, 3]
+                
+                # Update yaw in quaternion (approximate)
+                # Create a rotation quaternion for Z axis
+                half_angle = yaw_rate * dt * 0.5
+                s = torch.sin(half_angle)
+                c = torch.cos(half_angle)
+                
+                qx, qy, qz, qw = curr_quat[:, 0], curr_quat[:, 1], curr_quat[:, 2], curr_quat[:, 3]
+                
+                nqx = qx * c + qy * s
+                nqy = qy * c - qx * s
+                nqz = qz * c + qw * s
+                nqw = qw * c - qz * s
+                curr_quat = torch.stack([nqx, nqy, nqz, nqw], dim=1)
+                # Normalize quaternion to prevent drift
+                curr_quat = curr_quat / torch.norm(curr_quat, dim=1, keepdim=True)
             
-            # Update the linear part of the action to be stored
-            curr_v_modified[:, :3] = effective_vel_body
-            
-            # e. Store in buffer
-            filtered_traj[:, t] = curr_v_modified
-            
-            # Update curr_pos for next iteration
-            curr_pos = next_pos
-            
-            # f. Integrate Yaw for next step
-            # Update Yaw
-            yaw_rate = curr_v_modified[:, 3]
-            
-            # Update yaw in quaternion (approximate)
-            # Create a rotation quaternion for Z axis
-            half_angle = yaw_rate * dt * 0.5
-            s = torch.sin(half_angle)
-            c = torch.cos(half_angle)
-            
-            qx, qy, qz, qw = curr_quat[:, 0], curr_quat[:, 1], curr_quat[:, 2], curr_quat[:, 3]
-            
-            nqx = qx * c + qy * s
-            nqy = qy * c - qx * s
-            nqz = qz * c + qw * s
-            nqw = qw * c - qz * s
-            curr_quat = torch.stack([nqx, nqy, nqz, nqw], dim=1)
-            # Normalize quaternion to prevent drift
-            curr_quat = curr_quat / torch.norm(curr_quat, dim=1, keepdim=True)
+            profiler.stop("user_model/integration_loop")
         
-        profiler.stop("user_model/integration_loop")
-        
-        # Store trajectory
-        self.action_buffer[env_ids] = filtered_traj
+            # Store trajectory
+            self.action_buffer[env_ids] = filtered_traj
+        else:
+            # No filtering, directly store target_vels
+            self.action_buffer[env_ids] = target_vels
+            last_val = target_vels[:, -1, :]
         
         # Update state
         self.prev_filtered_action[env_ids] = last_val
