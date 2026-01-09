@@ -672,15 +672,13 @@ def main(cfg: DictConfig):
     
     # For distributed: each rank saves to a temp file, rank 0 merges them
     if is_distributed and cfg.backend == 'batched':
-        import tempfile
-        
-        # Synchronize before saving
-        dist.barrier()
+        import time as time_module
         
         # Each rank saves its data to a temporary file
         temp_dir = os.path.dirname(cfg.output_path) or '.'
         os.makedirs(temp_dir, exist_ok=True)
         temp_file = os.path.join(temp_dir, f".temp_traj_rank{rank}.npz")
+        done_file = os.path.join(temp_dir, f".temp_traj_rank{rank}.done")
         
         # Move data to CPU immediately to free GPU memory
         if isinstance(velocities, torch.Tensor):
@@ -700,52 +698,75 @@ def main(cfg: DictConfig):
             smoothness=styles['smoothness'],
             laziness=styles['laziness'],
         )
+        
+        # Create a .done marker file to signal completion
+        with open(done_file, 'w') as f:
+            f.write('done')
         print(f"[GPU {rank}] Saved temp file: {temp_file}")
         
-        # Synchronize after all ranks saved
-        dist.barrier()
+        # Destroy process group BEFORE file I/O to avoid NCCL timeout
+        dist.destroy_process_group()
+        print(f"[GPU {rank}] Process group destroyed, exiting...")
+        
+        # Only rank 0 continues to merge files
+        if rank != 0:
+            # Non-rank-0 processes exit here
+            return
+        
+        # Rank 0: Wait for all ranks to finish saving (file-based sync)
+        print("\n[GPU 0] Waiting for all ranks to finish saving...")
+        for r in range(world_size):
+            done_file_r = os.path.join(temp_dir, f".temp_traj_rank{r}.done")
+            while not os.path.exists(done_file_r):
+                time_module.sleep(1)
+                print(f"  Waiting for rank {r}...")
+        print("[GPU 0] All ranks finished saving.")
         
         # Rank 0 merges all temp files
-        if rank == 0:
-            print("\n[GPU 0] Merging data from all ranks...")
+        print("\n[GPU 0] Merging data from all ranks...")
+        
+        all_velocities = []
+        all_positions = []
+        all_bboxes = []
+        all_noise_freq = []
+        all_smoothness = []
+        all_laziness = []
+        
+        for r in range(world_size):
+            temp_file_r = os.path.join(temp_dir, f".temp_traj_rank{r}.npz")
+            done_file_r = os.path.join(temp_dir, f".temp_traj_rank{r}.done")
+            print(f"  Loading rank {r} data from {temp_file_r}...")
+            data = np.load(temp_file_r)
+            all_velocities.append(data['velocities'])
+            all_positions.append(data['positions'])
+            all_bboxes.append(data['bboxes'])
+            all_noise_freq.append(data['noise_freq'])
+            all_smoothness.append(data['smoothness'])
+            all_laziness.append(data['laziness'])
+            data.close()
             
-            all_velocities = []
-            all_positions = []
-            all_bboxes = []
-            all_noise_freq = []
-            all_smoothness = []
-            all_laziness = []
-            
-            for r in range(world_size):
-                temp_file_r = os.path.join(temp_dir, f".temp_traj_rank{r}.npz")
-                print(f"  Loading rank {r} data from {temp_file_r}...")
-                data = np.load(temp_file_r)
-                all_velocities.append(data['velocities'])
-                all_positions.append(data['positions'])
-                all_bboxes.append(data['bboxes'])
-                all_noise_freq.append(data['noise_freq'])
-                all_smoothness.append(data['smoothness'])
-                all_laziness.append(data['laziness'])
-                data.close()
-                
-                # Remove temp file after loading
-                os.remove(temp_file_r)
-            
-            # Concatenate all data
-            velocities = np.concatenate(all_velocities, axis=0)
-            positions = np.concatenate(all_positions, axis=0)
-            bboxes = np.concatenate(all_bboxes, axis=0)
-            styles = {
-                'noise_freq': np.concatenate(all_noise_freq, axis=0),
-                'smoothness': np.concatenate(all_smoothness, axis=0),
-                'laziness': np.concatenate(all_laziness, axis=0),
-            }
-            
-            # Free memory
-            del all_velocities, all_positions, all_bboxes
-            del all_noise_freq, all_smoothness, all_laziness
-            
-            print(f"  Merged {len(velocities)} trajectories")
+            # Remove temp files after loading
+            os.remove(temp_file_r)
+            os.remove(done_file_r)
+        
+        # Concatenate all data
+        velocities = np.concatenate(all_velocities, axis=0)
+        positions = np.concatenate(all_positions, axis=0)
+        bboxes = np.concatenate(all_bboxes, axis=0)
+        styles = {
+            'noise_freq': np.concatenate(all_noise_freq, axis=0),
+            'smoothness': np.concatenate(all_smoothness, axis=0),
+            'laziness': np.concatenate(all_laziness, axis=0),
+        }
+        
+        # Free memory
+        del all_velocities, all_positions, all_bboxes
+        del all_noise_freq, all_smoothness, all_laziness
+        
+        print(f"  Merged {len(velocities)} trajectories")
+        
+        # Mark distributed as already cleaned up
+        is_distributed = False
     
     # Save dataset (only rank 0)
     if rank == 0:
@@ -775,9 +796,8 @@ def main(cfg: DictConfig):
         print("Generation complete!")
         print("=" * 60)
     
-    # Cleanup distributed
+    # Cleanup distributed (only if not already cleaned up)
     if is_distributed:
-        dist.barrier()
         dist.destroy_process_group()
 
 
