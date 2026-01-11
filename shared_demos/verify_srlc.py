@@ -6,7 +6,7 @@ import argparse
 parser = argparse.ArgumentParser(description="Verify SRLC Model")
 parser.add_argument("--checkpoint", type=str, default="/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/shared_demos/ckpts/0106-1123/checkpoint_1500.pt", help="Path to model checkpoint")
 parser.add_argument("--usermodel", action="store_true", help="Use UserModel to generate human action instead of joystick")
-parser.add_argument("--no_yaw_control", action="store_true", help="Disable model yaw control")
+parser.add_argument("--model_yaw_control", action="store_true", help="Enable model yaw control")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
@@ -177,7 +177,8 @@ def main():
         logger.info("UserModel enabled for human action generation")
 
     # --- 加载模型 ---
-    policy = load_srlc_model(checkpoint_path, device)
+    action_dim = 4 if args_cli.model_yaw_control else 3
+    policy = load_srlc_model(checkpoint_path, device, action_dim=action_dim)
     if policy is None:
         return
 
@@ -242,11 +243,14 @@ def main():
                 human_action = torch.tensor([[vel_cmd_x_body, vel_cmd_y_body, vel_cmd_z, yaw_rate_cmd]], device=device) # (1, 4)
 
             # 3. 模型推理
+            # Ensure human_action passed to model matches the model's action_dim (e.g. 3 vs 4)
+            human_action_input = human_action[..., :action_dim]
+
             obs = TensorDict({
                 "agents": TensorDict({
                     "observation": TensorDict({
                         "state": drone_state,
-                        "human_action": human_action,
+                        "human_action": human_action_input,
                     }, batch_size=[1])
                 }, batch_size=[1])
             }, batch_size=[1], device=device)
@@ -254,27 +258,31 @@ def main():
             with torch.no_grad():
                 policy(obs)
                 # 获取模型输出 (Body Frame Velocity, as per user instruction)
-                model_action_b = obs["agents", "action"] # (1, 4) [vx_b, vy_b, vz_b, yaw_rate]
+                # (1, 4) if model_yaw_control else (1, 3)
+                model_action_b = obs["agents", "action"] 
 
             # 4. 应用控制
+            if args_cli.model_yaw_control:
+                model_vel_b = model_action_b[..., :3]  # (1, 3)
+                model_yaw_rate = model_action_b[..., 3]  # (1, )
+                target_yaw = model_yaw_rate.unsqueeze(1) * torch.pi # (1, 1, )
+            else:
+                model_vel_b = model_action_b
+                model_yaw_rate = torch.zeros((1,), device=device)
+                # PS: 暂时不加入用户手柄的 Yaw 控制
+                target_yaw = None
+
             # 模型输出的是 Body Frame 速度，我们需要将其转换为 World Frame
-            model_vel_b = model_action_b[..., :3]  # (1, 3)
-            model_yaw_rate = model_action_b[..., 3]  # (1, )
             # Rotate to World Frame
             model_vel_w = quat_rotate(current_quat.squeeze(1), model_vel_b)
-            
-            # Integrate (manual update target position)
-            # target_pos = target_pos + model_vel_w * dt
-            # target_yaw = target_yaw + model_yaw_rate * dt
 
             # adapt to VelController
             target_vel = model_vel_w.unsqueeze(1)  # (1, 1, 3)
-            target_yaw = model_yaw_rate.unsqueeze(1) * torch.pi # (1, 1, )
 
             action = controller(
                 root_state=root_state,
                 target_vel=target_vel,
-                target_yaw=target_yaw if not args_cli.no_yaw_control else None,
+                target_yaw=target_yaw if args_cli.model_yaw_control else None,
             )
 
             drone.apply_action(action)
@@ -285,7 +293,7 @@ def main():
             human_vel_b = human_action[..., :3]
             human_vel_w = quat_rotate(current_quat.squeeze(1), human_vel_b)
             human_yaw_rate = human_action[..., 3]
-            if args_cli.no_yaw_control:
+            if not args_cli.model_yaw_control:
                 vis.update(current_pos, human_vel_w, model_vel_w)
             else:
                 vis.update(current_pos, human_vel_w, model_vel_w, human_yaw_rate, model_yaw_rate)

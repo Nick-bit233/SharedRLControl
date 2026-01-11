@@ -56,17 +56,20 @@ class MockConfig:
         self.algo = self.Algo()
         self.user_model = self.UserModel()
 
-def load_srlc_model(checkpoint_path, device):
+def load_srlc_model(checkpoint_path, device, action_dim=4):
     """
     Load the SRLC model (SimplePPO) from the given checkpoint path.
     
     Args:
         checkpoint_path (str): Path to the model checkpoint.
         device (str or torch.device): Device to load the model on.
+        action_dim (int): Action dimension, either 3 (no yaw control) or 4 (with yaw control). Default is 4.
 
     Returns:
         policy (SimplePPO): The loaded policy model, or None if loading failed.
     """
+    assert action_dim in [3, 4], f"action_dim must be 3 or 4, got {action_dim}"
+    
     try:
         from ppo_simple import SimplePPO
     except ImportError:
@@ -79,23 +82,23 @@ def load_srlc_model(checkpoint_path, device):
         "agents": CompositeSpec({
             "observation": CompositeSpec({
                 "state": Unbounded((1, 10), device=device),
-                "human_action": Unbounded((1, 4), device=device),
+                "human_action": Unbounded((1, action_dim), device=device),
             }, shape=(1,))
         }, shape=(1,))
     }, shape=(1,), device=device)
     
-    # Define action space (Action: 4)
+    # Define action space (Action: 3 or 4 based on action_dim)
     action_spec = CompositeSpec({
         "agents": CompositeSpec({
-            "action": Unbounded((1, 4), device=device)
+            "action": Unbounded((1, action_dim), device=device)
         }, shape=(1,))
     }, shape=(1,), device=device)
 
-    print(f"[INFO] Loading SRLC model from {checkpoint_path}")
+    print(f"[INFO] Loading SRLC model from {checkpoint_path} (action_dim={action_dim})")
     policy = SimplePPO(cfg_model.algo, observation_spec, action_spec, device)
     try:
         policy.load_state_dict(torch.load(checkpoint_path, map_location=device))
-        print("[INFO] Model loaded successfully.")
+        print(f"[INFO] Model loaded successfully with action_dim={action_dim}.")
     except Exception as e:
         print(f"[ERROR] Failed to load model: {e}")
         return None
