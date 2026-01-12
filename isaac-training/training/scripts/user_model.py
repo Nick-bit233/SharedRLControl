@@ -290,7 +290,22 @@ class UserModel:
         self.buffer_size = cfg.algo.training_frame_num # steps (e.g. 128 frames is about 2 seconds)
         self.repulsive_gain = 1.0  # Maxium repulsive force gain for APF
         self.max_speed = cfg.algo.actor.action_limit
-        self.max_speed_z = self.max_speed / 2.0  # TEST: limit z speed to half for stability
+        # Z轴速度限制
+        # 注意：由于多旋翼飞行器必须倾斜才能产生水平推力，
+        # 当执行水平飞行时会导致升力垂直分量减少，产生向下漂移。
+        # 可以通过以下方式补偿：
+        # 1. 增加Z轴正向偏置 (z_bias)
+        # 2. 在world frame生成速度命令
+        # 3. 使用更积极的Z轴控制增益
+        self.max_speed_z = self.max_speed / 10.0
+        
+        # Z-axis compensation for tilt-induced lift loss
+        # When drone tilts to fly horizontally, vertical lift component is reduced
+        # Typical compensation: ~0.02-0.05 m/s depending on average tilt angle
+        # Formula: compensation ≈ mean_horizontal_speed * sin(mean_tilt_angle)
+        # With max_speed=2.0 and ~1.5 deg tilt: 2.0 * 0.5 * sin(0.026) ≈ 0.026 m/s
+        self.z_tilt_compensation = cfg.user_model.get("z_tilt_compensation", 0.0)
+        
         self.max_speed_yaw = 0.5  # Max yaw rate (rad/s)
 
         # Simple mode parameters
@@ -303,7 +318,7 @@ class UserModel:
             self.theta = torch.rand(num_envs, device=self.device) * 2.0 * math.pi
 
         # Online mode parameters
-        self.online_sample_filter = cfg.user_model.get("online_sample_filter", False)
+        self.online_sample_filter = cfg.user_model.online_sample_filter
         
         # State
         self.action_buffer = torch.zeros(num_envs, self.buffer_size, 3, device=self.device)  # 3D velocity only
@@ -566,6 +581,12 @@ class UserModel:
             scale = torch.tensor(
                 [self.max_speed, self.max_speed, self.max_speed_z], device=self.device)
             target_vels = raw_noise * scale
+            
+            # Apply Z-axis tilt compensation
+            # When drone flies horizontally, it must tilt, which reduces vertical lift
+            # This adds a small positive bias to Z velocity to compensate
+            if self.z_tilt_compensation > 0:
+                target_vels[:, :, 2] += self.z_tilt_compensation
 
         
         # 2. Apply Human Filters (Low Pass & Deadband)

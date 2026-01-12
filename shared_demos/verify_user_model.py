@@ -8,6 +8,8 @@ parser.add_argument("--offline", action="store_true", help="Use offline trajecto
 parser.add_argument("--dataset", type=str, default="/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/isaac-training/training/scripts/data/trajectories_100k.h5", help="Path to HDF5 trajectory dataset")
 parser.add_argument("--sampling-mode", type=str, default="raw", choices=["raw", "scaled"], help="Sampling mode: 'raw' (no transforms) or 'scaled' (boundary-aware)")
 parser.add_argument("--num-frames", type=int, default=2000, help="Number of simulation frames")
+parser.add_argument("--model_yaw_control", action="store_true", help="Enable model yaw control")
+AppLauncher.add_app_launcher_args(parser)
 args, unknown = parser.parse_known_args()
 
 # launch omniverse app
@@ -127,6 +129,9 @@ def main():
 
     # Mock Config for User Model
     mock_cfg = MockConfig(device)
+    mock_cfg.user_model.style.frequency_base = 0.1
+    mock_cfg.user_model.style.frequency_scale = 0.2
+    # mock_cfg.user_model.z_tilt_compensation = 0.0
     
     # 从omnidrones构建无人机
     drone, controller = MultirotorBase.make(
@@ -224,15 +229,18 @@ def main():
             action, _ = user_model.step(drone_state_b, drone_pos_w)
             # unsqueeze actions to (1, 1, 4) for controller
             action = action.unsqueeze(1)
-            prev_action = action
             
             # C. 将 Body Frame 速度转换为 World Frame
-            
-            # action[..., :3] 是 Body Frame 速度
-            # action[..., 3] 是 Yaw Rate
-            action_vel_b = action[..., :3]  # (1, 1, 3)
-            action_yaw_rate = action[..., 3]  # (1, 1, )
-            
+
+            if args.model_yaw_control:
+                assert action.shape[-1] == 4, "Expected action dimension 4 when model_yaw_control is False"
+                action_vel_b = action[..., :3]  # (1, 1, 3) Body Frame 速度
+                action_yaw_rate = action[..., 3]  # (1, 1, ) Yaw Rate
+            else:
+                assert action.shape[-1] == 3, "Expected action dimension 3 when model_yaw_control is True"
+                action_vel_b = action
+                action_yaw_rate = torch.zeros((1, 1), device=device) # Yaw Rate set to zero
+                
             # Rotate velocity to world frame
             to_rotate_q = drone_orientation_q.unsqueeze(1)  # unsqueeze to (N, 1, 4) for using quat_rotate()
             action_vel_w = quat_rotate(to_rotate_q, action_vel_b) # (1, 1, 3)
@@ -257,7 +265,7 @@ def main():
             control_action = controller(
                 root_state=root_state,
                 target_vel=target_vel,
-                target_yaw=target_yaw
+                target_yaw=target_yaw if args.model_yaw_control else None,
             )
             
             # E. 应用控制指令

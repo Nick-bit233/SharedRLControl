@@ -11,7 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaa
 class MockConfig:
     class Sim:
         dt = 1.0 / 60.0
-        z_spawn = 4.0
+        z_spawn = 5.0
     class Env:
         map_range = [20.0, 20.0, 10.0] # Half extents [x, y, z]
         max_episode_length = 500
@@ -48,6 +48,22 @@ class MockConfig:
             laziness = 0.2
         simple_mode = False
         enable_yaw_rate = True
+        offline_mode = False
+        dataset_path = None   
+        sampling_mode = "scaled" 
+        gpu_cache_reserve_gb = 2.0 
+        min_scale_factor = 0.5  
+        preload_data = True  
+        online_sample_filter = False  # If true, filter sampled trajectories based on velocity constraints
+        
+        # Z-axis tilt compensation (m/s)
+        # Compensates for lift loss when drone tilts for horizontal flight
+        # Recommended: 0.03-0.05 based on average tilt angle (~1.5 deg)
+        z_tilt_compensation = 0.05  # Set to 0.04 to enable compensation
+        
+        def get(self, key, default=None):
+            """Dict-like get method for compatibility."""
+            return getattr(self, key, default)
 
     def __init__(self, device):
         self.device = device

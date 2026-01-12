@@ -26,6 +26,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.sim import SimulationContext
 from isaacsim.core.utils.rotations import quat_to_euler_angles
 from isaacsim.util.debug_draw import _debug_draw
+from isaacsim.core.utils.viewports import set_camera_view
 
 from omni_drones.robots.drone import MultirotorBase
 from omni_drones.controllers import LeePositionController
@@ -195,6 +196,9 @@ def main():
     max_speed_z = 1.0  
     max_yaw_rate = 0.5 
 
+    VIEWER_EYE_OFFSET = [2.0, -5.0, 3.0]
+    VIEWER_LOOKAT_OFFSET = [0.0, 0.0, 1.0]
+
     print("[INFO]: Setup complete...")
     print(f"[INFO]: Joystick connnect status: {joystick.connected}")
     print(f"[INFO]: UserModel mode: {args_cli.usermodel}")
@@ -285,20 +289,7 @@ def main():
                 target_yaw=target_yaw if args_cli.model_yaw_control else None,
             )
 
-            drone.apply_action(action)
-
-            # 5. 可视化
-            # Human Action (Body -> World)
-            # human_action is [vx_b, vy_b, vz_b, yaw_rate]
-            human_vel_b = human_action[..., :3]
-            human_vel_w = quat_rotate(current_quat.squeeze(1), human_vel_b)
-            human_yaw_rate = human_action[..., 3]
-            if not args_cli.model_yaw_control:
-                vis.update(current_pos, human_vel_w, model_vel_w)
-            else:
-                vis.update(current_pos, human_vel_w, model_vel_w, human_yaw_rate, model_yaw_rate)
-
-            # 6. 日志记录
+            # 日志记录
             to_print_pos = current_pos.squeeze().detach().cpu().numpy()
             to_print_d_vel = current_vel_w.squeeze().detach().cpu().numpy()
             to_print_d_yaw_rate = current_ang_vel_w[..., 2].squeeze().detach().cpu().item()
@@ -309,6 +300,29 @@ def main():
             logger.debug(f"Frame {frame_count:06d} | Drone - Pos: [{to_print_pos[0]:7.3f}, {to_print_pos[1]:7.3f}, {to_print_pos[2]:7.3f}] | Vel: [{to_print_d_vel[0]:6.3f}, {to_print_d_vel[1]:6.3f}, {to_print_d_vel[2]:6.3f}] | Yaw Rate: {to_print_d_yaw_rate:6.3f}")
             logger.debug(f"Frame {frame_count:06d} | Model - Vel: [{to_print_a_vel[0]:6.3f}, {to_print_a_vel[1]:6.3f}, {to_print_a_vel[2]:6.3f}] | Yaw Rate: {to_print_a_yaw_rate:6.3f}")
             logger.debug(f"Frame {frame_count:06d} | Human - Vel: [{to_print_human_vel[0]:6.3f}, {to_print_human_vel[1]:6.3f}, {to_print_human_vel[2]:6.3f}] | Yaw Rate: {to_print_human_yaw_rate:6.3f}")
+
+
+            # 可视化
+            # update Camera
+            set_camera_view(
+                # use cfg viewer settings as offset
+                eye=to_print_pos.cpu() + torch.as_tensor(VIEWER_EYE_OFFSET),
+                target=to_print_pos.cpu() + torch.as_tensor(VIEWER_LOOKAT_OFFSET)                        
+            )
+
+            # Update Visualizer
+            human_vel_b = human_action[..., :3]
+            human_vel_w = quat_rotate(current_quat.squeeze(1), human_vel_b)
+            human_yaw_rate = human_action[..., 3]
+            if not args_cli.model_yaw_control:
+                vis.update(current_pos, human_vel_w, model_vel_w)
+            else:
+                vis.update(current_pos, human_vel_w, model_vel_w, human_yaw_rate, model_yaw_rate)
+
+
+
+            # 先记录日志，再应用当前步骤的动作
+            drone.apply_action(action)
 
         sim.step(render=True)
         frame_count += 1

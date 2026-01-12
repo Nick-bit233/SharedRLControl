@@ -2,10 +2,12 @@ user_model:
 
   style:
     frequency_base: 0.1  # base frequency for user command changes
-    frequency_scale: 0.1  # scale for randomizing frequency
+    frequency_scale: 0.8  # scale for randomizing frequency
     smoothness_base: 0.5
     smoothness_scale: 0.45
     laziness: 0.2
+
+  z_tilt_compensation: 0.05  # Z-axis tilt compensation (m/s) for user model
 
   # Simple user model (only linear velocity) settings
   simple_mode: false # whether to use simple step function for user model
