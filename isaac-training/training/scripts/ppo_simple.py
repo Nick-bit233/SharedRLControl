@@ -214,6 +214,8 @@ class SimplePPO(TensorDictModuleBase):
         )
 
         tensordict["agents", "action"] = actions_world
+        # Save a copy as "command" because VelController will overwrite "action" with thrusts
+        tensordict["agents", "command"] = actions_world.clone() 
         return tensordict
 
     def get_recurrent_primer(self):
