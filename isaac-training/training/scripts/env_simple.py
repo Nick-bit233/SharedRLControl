@@ -110,7 +110,8 @@ class FollowingEnvSimple(IsaacEnv):
             self.prev_drone_vel_w = torch.zeros(self.num_envs, 3)
             # previous action taken by the agent (drone) (vel_b[3])
             # use this 3D velocity action in user model and GRU network.
-            self.prev_agent_action = torch.zeros(self.num_envs, 3)
+            self.agent_action = torch.zeros(self.num_envs, 3)
+            self.prev_human_action = torch.zeros(self.num_envs, 3)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
             # Cumulative following error for early termination
@@ -264,8 +265,9 @@ class FollowingEnvSimple(IsaacEnv):
         self.drone.set_velocities(self.init_vels[env_ids], env_ids)
         
         # Reset previous step variables
-        self.prev_drone_vel_w[env_ids] = 0.
-        self.prev_agent_action[env_ids] = 0.
+        # self.prev_drone_vel_w[env_ids] = 0.
+        self.agent_action[env_ids] = 0.
+        self.prev_human_action[env_ids] = 0.
         # Reset cumulative following error
         self.cumulative_error[env_ids] = 0.
 
@@ -330,18 +332,18 @@ class FollowingEnvSimple(IsaacEnv):
 
         # store applied action (TODO： 确定这里存储的action数值是速度指令还是推力指令，必要时做转换)
         # actions may be shape (num_envs, 1, 3) or (num_envs, 3).
-        # but remember that drone.apply_action only accepts shape (num_envs, 1, 4) - VelController handles this
+        # but remember that drone.apply_action only accepts shape (num_envs, 1, 3) - VelController handles this
         if actions.ndim > 2:
             actions_flat = actions.reshape(self.num_envs, -1)[..., :3]  # first 3 are velocity
         else:
             actions_flat = actions
-        self.prev_agent_action = actions_flat.clone()  # clone to avoid in-place aliasing
+        self.agent_action = actions_flat.clone()  # clone to avoid in-place aliasing
 
         # Apply rotor commands directly to the drone
         # drone.apply_action expects rotor throttle commands, not velocity
-        # Ensure actions shape is compatible with drone.shape (num_envs, 1, 4)
+        # Ensure actions shape is compatible with drone.shape (num_envs, 1, 3)
         if actions.ndim == 2:
-            actions = actions.unsqueeze(1)  # (num_envs, 4) -> (num_envs, 1, 4)
+            actions = actions.unsqueeze(1)  # (num_envs, 3) -> (num_envs, 1, 3)
         self.drone.apply_action(actions) 
 
     def _post_sim_step(self, tensordict: TensorDictBase):
@@ -394,7 +396,7 @@ class FollowingEnvSimple(IsaacEnv):
 
         # ---------Network Input IV: Previous drone action--------
         
-        prev_action_local = self.prev_agent_action  # shape: (N, 4)
+        prev_action_world = self.agent_action  # shape: (N, 3)
 
         # ---------Network Input V: Human control action--------
         user_input_drone_state = drone_state_b.clone()  # (N, 10)
@@ -419,7 +421,7 @@ class FollowingEnvSimple(IsaacEnv):
             "human_action": human_actions_local,
         }
         if self.obs_add_prev:
-            obs["prev_action"] = prev_action_local
+            obs["prev_action"] = prev_action_world
         if self.enable_lidar:
             obs["lidar"] = self.lidar_scan
         # -----------------Reward Calculation-----------------
@@ -435,33 +437,28 @@ class FollowingEnvSimple(IsaacEnv):
             current_yaw_rate = current_yaw_rate.squeeze(-1)  # (N, 1)
 
         # # Velocity following reward (Positive)
-        # TODO: 奖励重视速度的方向和yaw角速度，而不是绝对值大小
-        # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
-        # target_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)
-
-        # vel_error_norm = (torch.norm(current_vel_w - target_vel_w, dim=-1, keepdim=True))
-        # reward_vel = torch.exp(-vel_error_norm)  # Positive reward
-        
-        # # Yaw rate following reward (Positive)
-        # target_yaw_rate = human_actions_local[..., 3:4]  # (N, 1)
-        # yaw_rate_error_norm = (torch.norm(current_yaw_rate - target_yaw_rate, dim=-1, keepdim=True))
-        # reward_vel += torch.exp(-yaw_rate_error_norm)  # Positive reward
 
         # # 3D Velocity difference reward (Positive) - yaw_rate removed
-        human_action_vel_b = human_actions_local[..., :3] # (N, 3)
-        target_vel_w = quat_rotate(drone_orientation_q, human_action_vel_b)
-        # Note: yaw_rate removed from action space, only compare 3D velocities
+        # TRY: use "last step" human input action
+        prev_human_action_b = self.prev_human_action.clone()
+        # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
+        target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
 
         target_action = target_vel_w  # (N, 3) - only velocity
+        # TODO: CHANGE CURRENT ACTION(world vel) TO PPO ACTION(self.agent_action)???
         current_action = current_vel_w  # (N, 3) - only velocity
 
         action_diff = (current_action - target_action).norm(dim=-1, keepdim=True)
         reward_vel = torch.exp(-action_diff)  # (N, 1) Positive reward
 
         # d. smoothness reward for action smoothness
-        penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
+        # penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
         # d(+). model target velocity smoothness
-        penalty_action_change = (self.prev_agent_action - current_action).norm(dim=-1, keepdim=True)
+        # print different between current and previous human action, readable for debug
+        diff = prev_action_world - current_action
+        diff_norm = diff.norm(dim=-1, keepdim=True)
+        # print(f"[Debug] Action diff betten prev_action_world and current vel. norms (L2): | mean={diff_norm.mean().item():.4f}, max={diff_norm.max().item():.4f} |")
+        penalty_action_change = diff_norm  # (N, 1)
         
         # e. height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
@@ -478,8 +475,8 @@ class FollowingEnvSimple(IsaacEnv):
         self.reward = (
             2.0 * reward_vel +
             0.1 * reward_survival 
-            - 0.05 * penalty_smooth 
-            - 0.1 * penalty_action_change
+            # - 0.05 * penalty_smooth 
+            - 0.05 * penalty_action_change
             - 1.0 * penalty_height
         )
         profiler.stop("env/reward_calculation")
@@ -527,7 +524,8 @@ class FollowingEnvSimple(IsaacEnv):
         self.truncated = timeout_truncate
 
         # update previous velocity for smoothness calculation in the next ieteration
-        self.prev_drone_vel_w = current_vel_w.clone()
+        # self.prev_drone_vel_w = current_vel_w.clone()
+        self.prev_human_action = human_actions_local.clone()
 
         # ----------------- Visualization and Debugging -----------------
         profiler.start("env/visualization")
@@ -544,7 +542,7 @@ class FollowingEnvSimple(IsaacEnv):
             camera_mode = getattr(self, '_camera_view_mode', 'follow')
             if camera_mode == 'global':
                 set_camera_view(
-                    eye=torch.tensor([-3.0, 0.0, 20.0]),  # global top-down view
+                    eye=torch.tensor([-3.0, 0.0, 32.0]),  # global top-down view
                     target=torch.tensor([0.0, 0.0, 0.0])                        
                 )
             else:
