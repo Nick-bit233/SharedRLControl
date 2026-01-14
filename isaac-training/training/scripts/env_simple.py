@@ -330,6 +330,18 @@ class FollowingEnvSimple(IsaacEnv):
         # 对actions坐标系等的转换提前在ppo.__call__里完成
         actions = tensordict[("agents", "action")]
 
+        # === Debug: Check Action Meaning ===
+        if self.progress_buf[0] % 50 == 0:  # Check periodically
+            print(f"\n[Debug Action Analysis] Step {self.progress_buf[0].item()}")
+            print(f"  Action Shape: {actions.shape}")
+            print(f"  Values (Min/Max): {actions.min().item():.3f} / {actions.max().item():.3f}")
+            # print(f"  First Env Action: {actions[0]}")
+            if actions.shape[-1] == 4:
+                 print("  -> Detect: Likely ROTOR THRUSTS (dim=4)")
+            elif actions.shape[-1] == 3:
+                 print("  -> Detect: Likely VELOCITY/FORCE (dim=3)")
+        # ===================================
+
         # store applied action (TODO： 确定这里存储的action数值是速度指令还是推力指令，必要时做转换)
         # actions may be shape (num_envs, 1, 3) or (num_envs, 3).
         # but remember that drone.apply_action only accepts shape (num_envs, 1, 3) - VelController handles this
