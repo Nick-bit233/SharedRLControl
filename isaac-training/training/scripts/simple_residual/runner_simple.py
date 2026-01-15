@@ -88,15 +88,15 @@ def main(cfg):
     # === 覆盖配置 ===
     cfg.env.num_envs = 256           # 无人机数量
     cfg.env.max_episode_length = 2000  # 每个 episode 最大步数
-    # cfg.env.num_obstacles = 0     # 已经在 env_simple.py 中强制设为 0
-    # cfg.env_dyn.num_obstacles = 0   # 已经在 env_simple.py 中强制设为 0
+    cfg.env.num_obstacles = 200     # 静态障碍物数量
+    cfg.env_dyn.num_obstacles = 0   # 动态障碍物数量
     
     # 设置是否启用 Lidar
     cfg.env.enable_lidar = True
     
     # 设置是否启用 RNN
     cfg.algo.rnn.enable = False
-    cfg.algo.entropy_loss_coefficient = 0.0001
+    # cfg.algo.entropy_loss_coefficient = 0.0001
 
     # 是否使用全局视角
     cfg.global_view = True      
@@ -109,10 +109,10 @@ def main(cfg):
         save_interval = profiling_batches + 1  # Don't save during profiling
     else:
         cfg.algo.training_frame_num = 128  # 每个采集批次帧数
-        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 50010  # 最大采集帧数 = frame_num * N * Batches
+        cfg.max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * 20010  # 最大采集帧数 = frame_num * N * Batches
         one_step_only = False         # 是否只跑一步
-        eval_interval = 1000           # 每 i 个 batch 评估一次
-        save_interval = 1000          # 每 i 个 batch 保存一次模型
+        eval_interval = 500           # 每 i 个 batch 评估一次
+        save_interval = 500          # 每 i 个 batch 保存一次模型
 
 
     hydra_cfg = HydraConfig.get()

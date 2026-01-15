@@ -41,16 +41,14 @@ class FollowingEnvResidual(IsaacEnv):
         
         # Store trajectory dataset for later use
         self._trajectory_dataset = trajectory_dataset
-        
-        # Force remove obstacles
-        cfg.env.num_obstacles = 0
-        cfg.env_dyn.num_obstacles = 0
 
         # observation related configs
         self.obs_add_prev = cfg.algo.observation_cat_prev_action
         
-        # Check if lidar is enabled (default to False if not specified)
-        self.enable_lidar = cfg.env.get("enable_lidar", False)
+        # Check if lidar is enabled
+        self.enable_lidar = cfg.env.get("enable_lidar", True)
+
+        self.randomize_max_episode_length = False
 
         # LiDAR params:
         self.lidar_range = cfg.sensor.lidar_range
@@ -67,27 +65,6 @@ class FollowingEnvResidual(IsaacEnv):
         # Drone Initialization
         self.drone.initialize()
         self.init_vels = torch.zeros_like(self.drone.get_velocities())
-
-        # LiDAR Intialization
-        self.lidar_resolution = (self.lidar_hbeams, self.lidar_vbeams)
-        if self.enable_lidar:
-            ray_caster_cfg = RayCasterCfg(
-                prim_path="/World/envs/env_.*/Hummingbird_0/base_link",
-                offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
-                # attach_yaw_only=True, # Deprecated, use ray_alignment="yaw"
-                ray_alignment="yaw",
-                pattern_cfg=patterns.BpearlPatternCfg(
-                    horizontal_res=self.lidar_hres, # horizontal default is set to 10
-                    vertical_ray_angles=torch.linspace(*self.lidar_vfov, self.lidar_vbeams) 
-                ),
-                debug_vis=False,
-                # mesh_prim_paths=["/World/ground"],
-                mesh_prim_paths=["/World"],
-            )
-            self.lidar = RayCaster(ray_caster_cfg)
-            self.lidar._initialize_impl()
-        else:
-            self.lidar = None
 
         # User Model Initialization
         # Check for offline mode configuration
@@ -118,7 +95,7 @@ class FollowingEnvResidual(IsaacEnv):
             self.cumulative_error = torch.zeros(self.num_envs, 1)
             self.error_ema_alpha = 0.995  # Exponential moving average decay factor
             self.error_threshold_base = 1.0  # Base threshold (strict, for no-obstacle case)
-            self.error_threshold_max = 5.0   # Max threshold (relaxed, when obstacles are very close)
+            self.error_threshold_max = 10.0   # Max threshold (relaxed, when obstacles are very close)
             self.safety_margin = 1.5  # Distance within which we start relaxing the threshold
 
         # visualize options
@@ -137,10 +114,9 @@ class FollowingEnvResidual(IsaacEnv):
         # Initialize a drone in prim /World/envs/envs_0
         drone_model = MultirotorBase.REGISTRY[self.cfg.drone.model_name] # drone model class
         cfg = drone_model.cfg_cls()
-        print("[NavigationEnv]: Spawning Drone Model:", self.cfg.drone.model_name)
-        print(f"[NavigationEnv]: Drone Model Config: {cfg}")
+        # print("[NavigationEnv]: Spawning Drone Model:", self.cfg.drone.model_name)
+        # print(f"[NavigationEnv]: Drone Model Config: {cfg}")
         self.drone = drone_model(cfg=cfg)
-        # drone_prim = self.drone.spawn(translations=[(0.0, 0.0, 1.0)])[0]
         drone_prim = self.drone.spawn(translations=[(0.0, 0.0, 2.0)])[0]
 
         # lighting
@@ -152,7 +128,8 @@ class FollowingEnvResidual(IsaacEnv):
             prim_path="/World/skyLight",
             spawn=sim_utils.DomeLightCfg(color=(0.2, 0.2, 0.3), intensity=2000.0),
         )
-        light.spawn.func(light.prim_path, light.spawn, light.init_state.pos)
+        rot = euler_to_quaternion(torch.tensor([0., 0.1, 0.1]))
+        light.spawn.func(light.prim_path, light.spawn, light.init_state.pos, rot)
         sky_light.spawn.func(sky_light.prim_path, sky_light.spawn)
         
         # Ground Plane
@@ -163,8 +140,68 @@ class FollowingEnvResidual(IsaacEnv):
             restitution=0.0,
         )
 
-        return ["/World/defaultGroundPlane"]
-        # No Terrain and dynamic obstacles initialization
+        # Terrain generation, as static obstacles
+        terrain_cfg = TerrainImporterCfg(
+            num_envs=self.num_envs,
+            env_spacing=0.0,
+            prim_path="/World/ground",
+            terrain_type="generator",
+            terrain_generator=TerrainGeneratorCfg(
+                seed=0,
+                size=(self.map_range[0]*2, self.map_range[1]*2), 
+                border_width=5.0,
+                num_rows=1, 
+                num_cols=1, 
+                horizontal_scale=0.1,
+                vertical_scale=0.1,
+                slope_threshold=0.75,
+                use_cache=False,
+                color_scheme="height",
+                sub_terrains={
+                    "obstacles": HfDiscreteObstaclesTerrainCfg(
+                        horizontal_scale=0.1,
+                        vertical_scale=0.1,
+                        border_width=0.0,
+                        num_obstacles=self.cfg.env.num_obstacles,
+                        obstacle_height_mode="range",
+                        obstacle_width_range=(0.4, 1.1),
+                        obstacle_height_range=[1.0, 1.5, 2.0, 4.0, 6.0],
+                        obstacle_height_probability=[0.1, 0.15, 0.20, 0.55],
+                        platform_width=self.platform_width,
+                    ),
+                },
+            ),
+            visual_material = None,
+            max_init_terrain_level=None,
+            collision_group=-1,
+            debug_vis=True,
+        )
+        terrain: TerrainImporter = terrain_cfg.class_type(terrain_cfg)
+
+        # LiDAR Intialization
+        self.lidar_resolution = (self.lidar_hbeams, self.lidar_vbeams)
+        if self.enable_lidar:
+            ray_caster_cfg = RayCasterCfg(
+                prim_path="/World/envs/env_.*/Hummingbird_0/base_link",
+                offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
+                # attach_yaw_only=True, # Deprecated, use ray_alignment="yaw"
+                ray_alignment="yaw",
+                pattern_cfg=patterns.BpearlPatternCfg(
+                    horizontal_res=self.lidar_hres, # horizontal default is set to 10
+                    vertical_ray_angles=torch.linspace(*self.lidar_vfov, self.lidar_vbeams) 
+                ),
+                debug_vis=False,
+                mesh_prim_paths=["/World/ground"],
+            )
+            self.lidar: RayCaster = ray_caster_cfg.class_type(ray_caster_cfg)
+        else:
+            self.lidar = None
+
+        # No dynamic obstacles initialization
+        if (self.cfg.env_dyn.num_obstacles == 0):
+            return ["/World/ground"]
+
+        return ["/World/ground"]
 
     def _set_specs(self):
         drone_state_dim = 10  # (vel_b[3] + ang_vel_b[3] + orientation_q[4])
@@ -280,14 +317,16 @@ class FollowingEnvResidual(IsaacEnv):
 
         # Randomize episode length for each env to break synchronization
         # This prevents all envs from truncating at the same time, which causes critic loss spikes
-        if not hasattr(self, 'max_episode_per_env'):
-            self.max_episode_per_env = torch.full(
-                (self.num_envs,), float(self.max_episode_length), 
-                dtype=torch.float, device=self.device
-            )
-        # Random scale: 70% ~ 100% of max_episode_length
-        random_scale = 0.7 + 0.3 * torch.rand(len(env_ids), device=self.device)
-        self.max_episode_per_env[env_ids] = (self.max_episode_length * random_scale).floor()
+        self.max_episode_per_env = torch.full(
+            (self.num_envs,), float(self.max_episode_length), 
+            dtype=torch.float, device=self.device
+        )
+        if hasattr(self, 'randomize_max_episode_length') and self.randomize_max_episode_length:
+            # Randomize episode length for each env to break synchronization
+            # This prevents all envs from truncating at the same time, which causes critic loss spikes
+            # Random scale: 70% ~ 100% of max_episode_length
+            random_scale = 0.7 + 0.3 * torch.rand(len(env_ids), device=self.device)
+            self.max_episode_per_env[env_ids] = (self.max_episode_length * random_scale).floor()
 
         # Set default height range for each env
         self.height_range[env_ids, 0, 0] = 1.0  # min height
@@ -329,7 +368,7 @@ class FollowingEnvResidual(IsaacEnv):
 
         # === Fix: Retrieve correct velocity command for observation ===
         # actions at this point are Rotor Thrusts (dim=4) because VelController has run.
-        # We retrieve the original "command" (velocity) saved efficiently in PPO.
+        # We retrieve the original "command" (world frame velocity) saved efficiently in PPO.
         # 为了评估速度控制动作指令，我们从 tensordict 中提取 PPO 传递的 "command"（原始速度指令）
         if ("agents", "command") in tensordict.keys(include_nested=True):
             cmd = tensordict[("agents", "command")]
@@ -458,21 +497,16 @@ class FollowingEnvResidual(IsaacEnv):
         # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
 
-        target_action = target_vel_w  # (N, 3) - only velocity
-        # TODO: CHANGE CURRENT ACTION(world vel) TO PPO ACTION(self.agent_action)???
-        current_action = current_vel_w  # (N, 3) - only velocity
-
-        action_diff = (current_action - target_action).norm(dim=-1, keepdim=True)
-        reward_vel = torch.exp(-2.0 * action_diff)  # (N, 1) Positive reward
+        vel_diff = (target_vel_w - current_vel_w).norm(dim=-1, keepdim=True)
+        reward_vel = torch.exp(-2.0 * vel_diff)  # (N, 1) Positive reward
 
         # d. smoothness reward for action smoothness
         # penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
-        # d(+). model target velocity smoothness
-        # print different between current and previous human action, readable for debug
-        diff = prev_action_world - current_action
+
+        # d(+). smoothness reward for Action Magnitude Penalty
+        diff = prev_action_world - current_vel_w
         diff_norm = diff.norm(dim=-1, keepdim=True)
-        # print(f"[Debug] Action diff betten prev_action_world and current vel. norms (L2): | mean={diff_norm.mean().item():.4f}, max={diff_norm.max().item():.4f} |")
-        penalty_action_change = diff_norm  # (N, 1)
+        penalty_change = diff_norm  # (N, 1)
         
         # e. height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
@@ -491,10 +525,9 @@ class FollowingEnvResidual(IsaacEnv):
             # Final reward calculation
             self.reward = (
                 1.0 * reward_vel +
-                0.1 * reward_survival +
-                2.0 * reward_safety_static
-                # - 0.05 * penalty_action_change
-                - 1.0 * penalty_height
+                1.0 * reward_safety_static
+                - 0.1 * penalty_change
+                - 8.0 * penalty_height  # height penalty to prevent crashing into ground
             )
         profiler.stop("env/reward_calculation")
 
@@ -502,12 +535,14 @@ class FollowingEnvResidual(IsaacEnv):
         below_bound = self.drone.pos[..., 2] < 0.2
         above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0  # 2*sz + 1, where sz is half z range of the map
         
-        # No collision check needed as there are no obstacles, but ground collision is below_bound
+        # collision check 
+        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3)
+        collision = static_collision
         
         # 添加累积跟随误差终止条件,使用指数移动平均更新累积误差
         self.cumulative_error = (
             self.error_ema_alpha * self.cumulative_error + 
-            (1 - self.error_ema_alpha) * action_diff
+            (1 - self.error_ema_alpha) * vel_diff
         )
         
         # 动态误差阈值：根据障碍物距离调整
@@ -533,8 +568,9 @@ class FollowingEnvResidual(IsaacEnv):
         # 如果累积误差持续过大，视为"跟随失败"
         poor_following = self.cumulative_error > dynamic_threshold
         
-        self.terminated = below_bound | above_bound | poor_following
-        # progress_buf 会不断累积，达到 max_episode_per_env 时触发截断
+        # 总终止条件
+        self.terminated = below_bound | above_bound | collision | poor_following
+
         # 使用随机化的 episode 长度来打破 episode 同步结束的问题
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
         self.truncated = timeout_truncate

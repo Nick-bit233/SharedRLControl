@@ -4,9 +4,6 @@ import torch
 from tensordict import TensorDict
 from torchrl.data import CompositeSpec, Unbounded
 
-# 添加 ppo_simple.py 所在路径
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts")))
-
 
 class MockConfig:
     class Sim:
@@ -72,11 +69,12 @@ class MockConfig:
         self.algo = self.Algo()
         self.user_model = self.UserModel()
 
-def load_srlc_model(checkpoint_path, device, action_dim=4):
+def load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=4):
     """
-    Load the SRLC model (SimplePPO) from the given checkpoint path.
+    Load the SRLC model from the given checkpoint path. (no lidar feature)
     
     Args:
+        model_type(str): Simple/Residual/Full
         checkpoint_path (str): Path to the model checkpoint.
         device (str or torch.device): Device to load the model on.
         action_dim (int): Action dimension, either 3 (no yaw control) or 4 (with yaw control). Default is 4.
@@ -86,10 +84,18 @@ def load_srlc_model(checkpoint_path, device, action_dim=4):
     """
     assert action_dim in [3, 4], f"action_dim must be 3 or 4, got {action_dim}"
     
-    try:
-        from ppo_simple import SimplePPO
-    except ImportError:
-        raise ImportError("Could not import SimplePPO. Make sure the path to ppo_simple.py is in sys.path.")
+    if model_type == "Simple":
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts/simple")))
+        try:
+            from ppo_simple import SimplePPO as ppo_model
+        except ImportError:
+            raise ImportError("Could not import SimplePPO. Make sure the path to ppo_simple.py is in sys.path.")
+    elif model_type == "Residual":
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts/simple_residual")))
+        try:
+            from ppo_simple import SimpleResidualPPO as ppo_model
+        except ImportError:
+            raise ImportError("Could not import SimpleResidualPPO. Make sure the path to ppo_simple.py is in sys.path.")
 
     cfg_model = MockConfig(device=device)
     
@@ -111,7 +117,7 @@ def load_srlc_model(checkpoint_path, device, action_dim=4):
     }, shape=(1,), device=device)
 
     print(f"[INFO] Loading SRLC model from {checkpoint_path} (action_dim={action_dim})")
-    policy = SimplePPO(cfg_model.algo, observation_spec, action_spec, device)
+    policy = ppo_model(cfg_model.algo, observation_spec, action_spec, device)
     try:
         policy.load_state_dict(torch.load(checkpoint_path, map_location=device))
         print(f"[INFO] Model loaded successfully with action_dim={action_dim}.")

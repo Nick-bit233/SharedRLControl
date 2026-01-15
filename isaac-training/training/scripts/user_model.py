@@ -297,7 +297,7 @@ class UserModel:
         # 1. 增加Z轴正向偏置 (z_bias)
         # 2. 在world frame生成速度命令
         # 3. 使用更积极的Z轴控制增益
-        self.max_speed_z = self.max_speed / 10.0
+        self.max_speed_z = self.max_speed / 2.0
         
         # Z-axis compensation for tilt-induced lift loss
         # When drone tilts to fly horizontally, vertical lift component is reduced
