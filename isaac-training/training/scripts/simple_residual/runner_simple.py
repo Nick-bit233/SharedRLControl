@@ -88,7 +88,7 @@ def main(cfg):
     # === 覆盖配置 ===
     cfg.env.num_envs = 256           # 无人机数量
     cfg.env.max_episode_length = 2000  # 每个 episode 最大步数
-    cfg.env.num_obstacles = 200     # 静态障碍物数量
+    cfg.env.num_obstacles = 450     # 静态障碍物数量
     cfg.env_dyn.num_obstacles = 0   # 动态障碍物数量
     
     # 设置是否启用 Lidar
@@ -248,7 +248,7 @@ def main(cfg):
         # 评估时，固定随机种子
         env.set_seed(seed)
 
-        eval_max_steps = int(env.max_episode_length / 2) # 评估时最大步数为 episode 长度的一半
+        eval_max_steps = int(env.max_episode_length)
         
         # 评估时临时开启可视化以录制视频
         if cfg.get("eval_visualization", False):
@@ -298,7 +298,7 @@ def main(cfg):
         }
 
         info = {
-            "eval/stats." + k: torch.mean(v.float()).item() 
+            "eval/stats_" + k: torch.mean(v.float()).item() 
             for k, v in traj_stats.items()
         }
         logging.info(f"[Eval] eval info: {info}")

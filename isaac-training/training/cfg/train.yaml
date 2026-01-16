@@ -24,7 +24,7 @@ env:
   env_spacing: 8.0 
   num_obstacles: 512
   map_range: [20.0, 20.0, 5.0] # [x, y, z], half extents
-  platform_width: 4.0  # 原点周围保持平坦的区域宽度（正方形边长）
+  platform_width: 2.0  # 原点周围保持平坦的区域宽度（正方形边长）
   enable_lidar: False
 
 env_dyn:

@@ -141,8 +141,17 @@ class SimpleResidualPPO(TensorDictModuleBase):
             # ====== Only concatenate features, no GRU ======
             modules.append(CatTensors(
                 in_keys=cat_keys, 
-                out_key="_embed",  # Output to intermediate key
+                out_key="_embed_inputs",  # Output to intermediate key
                 del_keys=False
+            ))
+            
+            # [Option]: Add LayerNorm to normalize inputs (State + Action + Lidar)
+            # Unnormalized inputs cause high gradients and instability
+            input_dim = cnn_feature_dim + state_dim + human_action_dim
+            modules.append(TensorDictModule(
+                nn.LayerNorm(input_dim, eps=NORM_EPS),
+                in_keys=["_embed_inputs"],
+                out_keys=["_embed"]
             ))
         
         modules.append(TensorDictModule(make_mlp([256, 256]), ["_embed"], ["_feature"]))
@@ -180,8 +189,7 @@ class SimpleResidualPPO(TensorDictModuleBase):
             out_keys=["loc"]
         )
 
-        # 最终的actor网络，
-        # TODO: 不使用 TanhNormal 分布，因为无法精确计算均值，而使用蒙特卡洛方法会拖慢训练效率
+        # 最终的actor网络
         self.actor = ProbabilisticActor(
             module=TensorDictSequential(self.actor_net, split_module, residual_module),
             in_keys=["loc", "scale"],
@@ -429,6 +437,7 @@ class SimpleResidualPPO(TensorDictModuleBase):
                     "explained_var": explained_var
                 }, [])
             else:
+                self.feature_extractor_optim.step() # [FIX]: Enable feature extractor training
                 self.actor_optim.step()
                 self.critic_optim.step()
             

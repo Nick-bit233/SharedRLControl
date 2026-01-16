@@ -165,7 +165,7 @@ class FollowingEnvResidual(IsaacEnv):
                         num_obstacles=self.cfg.env.num_obstacles,
                         obstacle_height_mode="choice",
                         obstacle_width_range=(0.4, 1.1),
-                        obstacle_height_range=(3.0, 7.0), # TODO: pramaize it
+                        obstacle_height_range=(4.0, 10.0), # TODO: pramaize it
                         platform_width=self.platform_width,
                     ),
                 },
@@ -173,7 +173,7 @@ class FollowingEnvResidual(IsaacEnv):
             visual_material = None,
             max_init_terrain_level=None,
             collision_group=-1,
-            debug_vis=True,
+            debug_vis=False,
         )
         terrain: TerrainImporter = terrain_cfg.class_type(terrain_cfg)
 
@@ -254,8 +254,10 @@ class FollowingEnvResidual(IsaacEnv):
         stats_spec = Composite({
             "return": Unbounded(1),
             "episode_len": Unbounded(1),
-            "intent_completion": Unbounded(1),
+            "above_bound": Unbounded(1),
+            "below_bound": Unbounded(1),
             "collision": Unbounded(1),
+            "terminated": Unbounded(1),
             "truncated": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
 
@@ -491,7 +493,7 @@ class FollowingEnvResidual(IsaacEnv):
         # # Velocity following reward (Positive)
 
         # # 3D Velocity difference reward (Positive) - yaw_rate removed
-        # TRY: use "last step" human input action
+        # TODO: 通过夹角比较奖励靠近目标速度方向的动作
         prev_human_action_b = self.prev_human_action.clone()
         # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
@@ -500,12 +502,12 @@ class FollowingEnvResidual(IsaacEnv):
         reward_vel = torch.exp(-2.0 * vel_diff)  # (N, 1) Positive reward
 
         # d. smoothness reward for action smoothness
-        # penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
+        penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
 
         # d(+). smoothness reward for Action Magnitude Penalty
-        diff = prev_action_world - current_vel_w
-        diff_norm = diff.norm(dim=-1, keepdim=True)
-        penalty_change = diff_norm  # (N, 1)
+        # diff = prev_action_world - current_vel_w
+        # diff_norm = diff.norm(dim=-1, keepdim=True)
+        # penalty_change = diff_norm  # (N, 1)
         
         # e. height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
@@ -524,8 +526,9 @@ class FollowingEnvResidual(IsaacEnv):
             # Final reward calculation
             self.reward = (
                 1.0 * reward_vel +
+                # 1.0 * reward_survival +
                 1.0 * reward_safety_static
-                - 0.1 * penalty_change
+                - 0.1 * penalty_smooth
                 - 8.0 * penalty_height  # height penalty to prevent crashing into ground
             )
         profiler.stop("env/reward_calculation")
@@ -538,37 +541,39 @@ class FollowingEnvResidual(IsaacEnv):
         static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3)
         collision = static_collision
         
-        # 添加累积跟随误差终止条件,使用指数移动平均更新累积误差
-        self.cumulative_error = (
-            self.error_ema_alpha * self.cumulative_error + 
-            (1 - self.error_ema_alpha) * vel_diff
-        )
+        # # ==== poor_following termination ====
+        # # 添加累积跟随误差终止条件,使用指数移动平均更新累积误差
+        # self.cumulative_error = (
+        #     self.error_ema_alpha * self.cumulative_error + 
+        #     (1 - self.error_ema_alpha) * vel_diff
+        # )
         
-        # 动态误差阈值：根据障碍物距离调整
-        # 在 env_simple（无障碍物）中，使用固定的基础阈值
-        if self.enable_lidar:
-            # 有lidar时，根据最近障碍物距离计算动态阈值
-            # lidar_scan: 值越大表示障碍物越近 (range - distance)
-            min_obstacle_dist = self.lidar_range - self.lidar_scan.flatten(2).max(dim=2).values  # (N, 1)
-            # obstacle_proximity: 0=无障碍物/远, 1=非常近
-            obstacle_proximity = torch.clamp(
-                (self.safety_margin - min_obstacle_dist) / self.safety_margin, 
-                min=0, max=1
-            )
-            # 动态阈值：障碍物越近，阈值越宽松
-            dynamic_threshold = (
-                self.error_threshold_base + 
-                (self.error_threshold_max - self.error_threshold_base) * obstacle_proximity
-            )
-        else:
-            # 无lidar（无障碍物环境），使用固定的基础阈值
-            dynamic_threshold = self.error_threshold_base
+        # # 动态误差阈值：根据障碍物距离调整
+        # # 在 env_simple（无障碍物）中，使用固定的基础阈值
+        # if self.enable_lidar:
+        #     # 有lidar时，根据最近障碍物距离计算动态阈值
+        #     # lidar_scan: 值越大表示障碍物越近 (range - distance)
+        #     min_obstacle_dist = self.lidar_range - self.lidar_scan.flatten(2).max(dim=2).values  # (N, 1)
+        #     # obstacle_proximity: 0=无障碍物/远, 1=非常近
+        #     obstacle_proximity = torch.clamp(
+        #         (self.safety_margin - min_obstacle_dist) / self.safety_margin, 
+        #         min=0, max=1
+        #     )
+        #     # 动态阈值：障碍物越近，阈值越宽松
+        #     dynamic_threshold = (
+        #         self.error_threshold_base + 
+        #         (self.error_threshold_max - self.error_threshold_base) * obstacle_proximity
+        #     )
+        # else:
+        #     # 无lidar（无障碍物环境），使用固定的基础阈值
+        #     dynamic_threshold = self.error_threshold_base
         
-        # 如果累积误差持续过大，视为"跟随失败"
-        poor_following = self.cumulative_error > dynamic_threshold
+        # # 如果累积误差持续过大，视为"跟随失败"
+        # poor_following = self.cumulative_error > dynamic_threshold
         
         # 总终止条件
-        self.terminated = below_bound | above_bound | collision | poor_following
+        # self.terminated = below_bound | above_bound | collision | poor_following
+        self.terminated = below_bound | above_bound | collision
 
         # 使用随机化的 episode 长度来打破 episode 同步结束的问题
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
@@ -577,6 +582,7 @@ class FollowingEnvResidual(IsaacEnv):
         # update previous velocity for smoothness calculation in the next ieteration
         # self.prev_drone_vel_w = current_vel_w.clone()
         self.prev_human_action = human_actions_local.clone()
+        self.prev_drone_vel_w = current_vel_w.clone()
 
         # ----------------- Visualization and Debugging -----------------
         profiler.start("env/visualization")
@@ -673,9 +679,9 @@ class FollowingEnvResidual(IsaacEnv):
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
         self.stats["above_bound"] = above_bound.float()
         self.stats["below_bound"] = below_bound.float()
-        self.stats["poor_following"] = poor_following.float()
-        self.stats["terminated_total"] = self.terminated.float()
-        self.stats["collision"] = torch.zeros_like(self.stats["collision"]) # No collision
+        # self.stats["poor_following"] = poor_following.float()
+        self.stats["terminated"] = self.terminated.float()
+        self.stats["collision"] = collision.float()
         self.stats["truncated"] = self.truncated.float()
         
         profiler.stop("env/_compute_state_and_obs")
