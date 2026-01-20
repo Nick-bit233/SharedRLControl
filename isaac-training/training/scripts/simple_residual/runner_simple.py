@@ -88,7 +88,7 @@ def main(cfg):
     # === 覆盖配置 ===
     cfg.env.num_envs = 256           # 无人机数量
     cfg.env.max_episode_length = 2000  # 每个 episode 最大步数
-    cfg.env.num_obstacles = 450     # 静态障碍物数量
+    cfg.env.num_obstacles = 1000     # 静态障碍物数量
     cfg.env_dyn.num_obstacles = 0   # 动态障碍物数量
     
     # 设置是否启用 Lidar

@@ -286,20 +286,13 @@ class UserModel:
         )
 
         # Parameters
-        # training frame num or max_episode_length ?
-        self.buffer_size = cfg.algo.training_frame_num # steps (e.g. 128 frames is about 2 seconds)
+        self.buffer_size = cfg.algo.training_frame_num # training frame num steps (e.g. 128 frames is about 2 seconds)
         self.repulsive_gain = 1.0  # Maxium repulsive force gain for APF
         self.max_speed = cfg.algo.actor.action_limit
-        # Z轴速度限制
-        # 注意：由于多旋翼飞行器必须倾斜才能产生水平推力，
-        # 当执行水平飞行时会导致升力垂直分量减少，产生向下漂移。
-        # 可以通过以下方式补偿：
-        # 1. 增加Z轴正向偏置 (z_bias)
-        # 2. 在world frame生成速度命令
-        # 3. 使用更积极的Z轴控制增益
-        self.max_speed_z = self.max_speed / 2.0
+        self.max_speed_z = self.max_speed
         
         # Z-axis compensation for tilt-induced lift loss
+        # 增加Z轴正向偏置 (z_bias) TODO: check LeePositionController
         # When drone tilts to fly horizontally, vertical lift component is reduced
         # Typical compensation: ~0.02-0.05 m/s depending on average tilt angle
         # Formula: compensation ≈ mean_horizontal_speed * sin(mean_tilt_angle)
