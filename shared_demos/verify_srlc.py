@@ -39,7 +39,7 @@ from srlc_model import load_srlc_model_simple, MockConfig
 from tensordict import TensorDict
 
 # Add path to user_model
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/src/core")))
 from user_model import UserModel
 
 drone_model_name = "Hummingbird" 

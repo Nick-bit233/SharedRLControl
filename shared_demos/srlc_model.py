@@ -83,17 +83,17 @@ def load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=4):
         policy (SimplePPO): The loaded policy model, or None if loading failed.
     """
     assert action_dim in [3, 4], f"action_dim must be 3 or 4, got {action_dim}"
-    
+
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/src/algos")))
+
     if model_type == "Simple":
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts/simple")))
         try:
             from ppo_simple import SimplePPO as ppo_model
         except ImportError:
             raise ImportError("Could not import SimplePPO. Make sure the path to ppo_simple.py is in sys.path.")
     elif model_type == "Residual":
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/training/scripts/simple_residual")))
         try:
-            from ppo_simple import SimpleResidualPPO as ppo_model
+            from ppo_residual import SimpleResidualPPO as ppo_model
         except ImportError:
             raise ImportError("Could not import SimpleResidualPPO. Make sure the path to ppo_simple.py is in sys.path.")
 
