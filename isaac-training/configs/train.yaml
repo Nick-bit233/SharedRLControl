@@ -1,0 +1,35 @@
+defaults:
+  - _self_
+  - algo@_global_: ppo
+  # Use direct path inclusion to allow multiple files from 'task' dir
+  - /task/drone@_global_
+  - /task/sim@_global_
+  - /task/user_model@_global_
+  - optional experiment: null
+
+# Global Configurations
+headless: True
+device: "cuda:0"
+seed: 42
+log_output_dir: ${hydra:run.dir}
+
+# Training Length (can be overridden by experiment configs)
+max_iterations: 1e6 # Total number of batches
+eval_interval: 1000
+save_interval: 1000
+
+# Hydra Configuration associated with this
+hydra:
+  output_subdir: null
+  run:
+    dir: ./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: True
+
+# wandb Configuration
+wandb:
+  project: SRLC
+  name: test_navRL
+  entity: nickbit_ipec_group
+  mode: offline 
+  run_id: 

@@ -1,0 +1,26 @@
+user_model:
+
+  style:
+    frequency_base: 0.1  # base frequency for user command changes
+    frequency_scale: 0.3  # scale for randomizing frequency
+    smoothness_base: 0.5
+    smoothness_scale: 0.45
+    laziness: 0.2
+
+  z_tilt_compensation: 0.05  # Z-axis tilt compensation (m/s) for user model
+
+  # Simple user model (only linear velocity) settings
+  simple_mode: true # whether to use simple step function for user model
+  enable_yaw_rate: false # whether to enable yaw rate commands in simple mode
+
+  # Offline trajectory dataset settings
+  offline_mode: false  # If true, use pre-generated trajectories from dataset
+  dataset_path: null   # Path to HDF5 trajectory dataset file (required if offline_mode=true)
+  sampling_mode: "scaled"  # "scaled" (boundary-aware) or "raw" (no transforms, for extreme cases)
+  gpu_cache_reserve_gb: 2.0  # GPU memory to reserve for simulator/training when loading dataset
+  min_scale_factor: 0.5  # Minimum scale factor for scaled sampling mode
+  preload_data: true  # If true, preload entire dataset into memory for faster access
+
+  # Online trajectory generation settings
+  online_sample_filter: false  # If true, filter sampled trajectories based on velocity constraints
+

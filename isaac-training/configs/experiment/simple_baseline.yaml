@@ -1,0 +1,25 @@
+# @package _global_
+
+# Experiment specific overrides moved from runner_simple.py
+env:
+  num_envs: 256
+  max_episode_length: 2000
+  enable_lidar: False
+
+algo:
+  rnn:
+    enable: False
+  training_frame_num: 128
+
+global_view: True
+
+# Custom training loop parameters
+max_iterations: 2010 # Total number of batches
+eval_interval: 500
+save_interval: 500
+
+hydra:
+  run:
+    dir: ./outputs/simple_baseline/${now:%Y-%m-%d_%H-%M-%S}
+
+job_name: simple_baseline
