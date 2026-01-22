@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 from tensordict import TensorDict
-from torchrl.data import CompositeSpec, Unbounded
+from torchrl.data import Unbounded, Composite
 
 
 class MockConfig:
@@ -69,7 +69,7 @@ class MockConfig:
         self.algo = self.Algo()
         self.user_model = self.UserModel()
 
-def load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=4):
+def load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=4, enable_lidar=True):
     """
     Load the SRLC model from the given checkpoint path. (no lidar feature)
     
@@ -100,21 +100,36 @@ def load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=4):
     cfg_model = MockConfig(device=device)
     
     # Define observation space (State: 10, Human Action: 4)
-    observation_spec = CompositeSpec({
-        "agents": CompositeSpec({
-            "observation": CompositeSpec({
-                "state": Unbounded((1, 10), device=device),
-                "human_action": Unbounded((1, action_dim), device=device),
-            }, shape=(1,))
-        }, shape=(1,))
-    }, shape=(1,), device=device)
+    if enable_lidar:
+        observation_spec = Composite({
+            "agents": Composite({
+                "observation": Composite({
+                    "state": Unbounded((10, ), device=device),
+                    "human_action": Unbounded((action_dim, ), device=device),
+                    "lidar": Unbounded((1, 36, 4), device=device),  # default lidar spec: vbeams=4, hbeams=36
+                })
+            }).expand(1)
+        }, shape=[1], device=device)
+    else:
+        observation_spec = Composite({
+            "agents": Composite({
+                "observation": Composite({
+                    "state": Unbounded((10, ), device=device),
+                    "human_action": Unbounded((action_dim, ), device=device),
+                })
+            }).expand(1)
+        }, shape=[1], device=device)
     
     # Define action space (Action: 3 or 4 based on action_dim)
-    action_spec = CompositeSpec({
-        "agents": CompositeSpec({
-            "action": Unbounded((1, action_dim), device=device)
-        }, shape=(1,))
-    }, shape=(1,), device=device)
+    action_spec = Composite({
+        "agents": Composite({
+            "action": Unbounded((action_dim, ), device=device)
+        })
+    }).expand(1).to(device)
+
+    # print("--- SRLC Verify Model Space Shape ---")
+    # print(f"Observation Spec: {observation_spec}")
+    # print(f"Action Spec: {action_spec}")
 
     print(f"[INFO] Loading SRLC model from {checkpoint_path} (action_dim={action_dim})")
     policy = ppo_model(cfg_model.algo, observation_spec, action_spec, device)

@@ -162,7 +162,9 @@ class SimpleResidualPPO(TensorDictModuleBase):
 
         # Actor network, now get input from the GRU output feature
         actual_action_spec = action_spec[("agents", "action")]
+        print("[PPO] actual action spec shape: ", actual_action_spec.shape)
         self.n_agents, self.action_dim = actual_action_spec.shape[-2:]
+        print("[PPO] n_agents: ", self.n_agents, " action_dim: ", self.action_dim)
         self.action_limit = cfg.actor.action_limit  # action speed limit
 
         # actor net 是一个简单的MLP网络，用于预测动作分布的 Mean (loc) 和 Std (scale)

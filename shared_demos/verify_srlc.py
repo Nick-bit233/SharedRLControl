@@ -8,6 +8,8 @@ parser.add_argument("--model_type", type=str, default="Residual", choices=["Simp
 parser.add_argument("--checkpoint", type=str, default="/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/shared_demos/ckpts/0106-1123/checkpoint_1500.pt", help="Path to model checkpoint")
 parser.add_argument("--usermodel", action="store_true", help="Use UserModel to generate human action instead of joystick")
 parser.add_argument("--model_yaw_control", action="store_true", help="Enable model yaw control")
+parser.add_argument("--no_lidar", action="store_true", help="Disable lidar input for the model")
+# parser.add_argument("--use_obstacles", action="store_true", help="Enable obstacle forest environment")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
@@ -25,6 +27,8 @@ import omni.appwindow
 import isaacsim.core.utils.prims as prim_utils
 import isaaclab.sim as sim_utils
 from isaaclab.sim import SimulationContext
+from isaaclab.terrains import TerrainImporterCfg, TerrainImporter, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
+from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
 from isaacsim.core.utils.rotations import quat_to_euler_angles
 from isaacsim.util.debug_draw import _debug_draw
 from isaacsim.core.utils.viewports import set_camera_view
@@ -158,16 +162,89 @@ def main():
     sim_cfg = sim_utils.SimulationCfg(dt=dt, device=device)
     sim = SimulationContext(sim_cfg)
 
-    # --- 构建环境 ---
-    cfg = sim_utils.GroundPlaneCfg()
-    cfg.func("/World/defaultGroundPlane", cfg)
-    cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
-    cfg.func("/World/Light", cfg)
-    
+    # --- 初始化无人机 ---
     drone, controller = MultirotorBase.make(
         drone_model_name, drone_controller_name, device
     )
     drone.spawn(translations=torch.tensor([[0.0, 0.0, 1.0]], device=device))
+
+    # --- 构建环境 ---
+    # Light
+    cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
+    cfg.func("/World/Light", cfg)
+
+    # Terrain / Ground
+    terrain = None
+    if not args_cli.no_lidar:
+        # Create obstacle terrain
+        terrain_cfg = TerrainImporterCfg(
+            num_envs=1,
+            env_spacing=0.0,
+            prim_path="/World/ground",
+            terrain_type="generator",
+            terrain_generator=TerrainGeneratorCfg(
+                seed=0,
+                size=(40.0, 40.0), 
+                border_width=5.0,
+                num_rows=2, 
+                num_cols=2, 
+                horizontal_scale=0.1,
+                vertical_scale=0.1,
+                slope_threshold=0.75,
+                use_cache=False,
+                color_scheme="height",
+                sub_terrains={
+                    "obstacles": HfDiscreteObstaclesTerrainCfg(
+                        horizontal_scale=0.1,
+                        vertical_scale=0.1,
+                        border_width=0.0,
+                        num_obstacles=100, 
+                        obstacle_height_mode="choice",
+                        obstacle_width_range=(0.8, 2.0),
+                        obstacle_height_range=(8.0, 16.0),
+                        platform_width=4.0,
+                    ),
+                },
+            ),
+            visual_material = None,
+            max_init_terrain_level=None,
+            collision_group=-1,
+            debug_vis=False,
+        )
+        terrain = terrain_cfg.class_type(terrain_cfg)
+    else:
+        cfg = sim_utils.GroundPlaneCfg()
+        cfg.func("/World/ground", cfg)
+    
+    # --- Setup Lidar ---
+    lidar = None
+    # Lidar Config Constants (match env_residual defaults)
+    LIDAR_RANGE = 4.0
+    LIDAR_VFOV = (-10.0, 20.0)
+    LIDAR_VBEAMS = 4
+    LIDAR_HRES = 10.0 # 36 beams
+    
+    if not args_cli.no_lidar:
+        target_mesh = "/World/ground"
+        # Default drone prim path when spawned
+        drone_prim_path = f"/World/envs/env_0/{drone.name}_0/base_link"
+
+        ray_caster_cfg = RayCasterCfg(
+            prim_path=drone_prim_path,
+            offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
+            ray_alignment="yaw",
+            pattern_cfg=patterns.BpearlPatternCfg(
+                horizontal_res=LIDAR_HRES,
+                vertical_ray_angles=torch.linspace(LIDAR_VFOV[0], LIDAR_VFOV[1], LIDAR_VBEAMS) 
+            ),
+            debug_vis=False, 
+            mesh_prim_paths=[target_mesh],
+        )
+        lidar: RayCaster = ray_caster_cfg.class_type(ray_caster_cfg)
+        logger.info(f"Lidar initialized attached to {drone_prim_path}")
+
+    sim.reset()
+    drone.initialize()
 
     joystick = JoystickInterface()
     vis = Visualizer(max_steps=500)
@@ -182,12 +259,9 @@ def main():
     # --- 加载模型 ---
     action_dim = 4 if args_cli.model_yaw_control else 3
     model_type = args_cli.model_type
-    policy = load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=action_dim)
+    policy = load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=action_dim, enable_lidar=not args_cli.no_lidar)
     if policy is None:
         return
-
-    sim.reset()
-    drone.initialize()
 
     # --- Reset UserModel (如果启用) ---
     if user_model is not None:
@@ -256,11 +330,27 @@ def main():
             human_action_input = human_action[..., :action_dim]
             human_yaw_rate = human_action[..., 3]
 
+            # Compute Lidar Observation
+            lidar_obs = torch.zeros((1, 1, 36, 4), device=device)
+            if lidar:
+                lidar.update(dt) # Update sensor
+                
+                # Calculate scan (Range - Distance)
+                ray_hits = lidar.data.ray_hits_w
+                pos = lidar.data.pos_w
+                dist = torch.norm(ray_hits - pos.unsqueeze(1), dim=-1)
+                dist = dist.clamp_max(LIDAR_RANGE)
+                scan = LIDAR_RANGE - dist
+                
+                # Reshape to (N, 1, H, V) = (1, 1, 36, 4)
+                lidar_obs = scan.reshape(1, 1, int(360/LIDAR_HRES), LIDAR_VBEAMS)
+
             obs = TensorDict({
                 "agents": TensorDict({
                     "observation": TensorDict({
                         "state": drone_state,
                         "human_action": prev_human_action, # 使用上一步的用户动作输入观察
+                        "lidar": lidar_obs,
                     }, batch_size=[1])
                 }, batch_size=[1])
             }, batch_size=[1], device=device)

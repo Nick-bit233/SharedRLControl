@@ -175,6 +175,7 @@ def main(cfg):
         ).train()
     
     # === 初始化 SimpleResidualPPO ===
+    # 注意：环境的 observation_spec 和 action_spec 已经过 Transform 处理，因此对于yaw_control=False，action_spec是3维的
     policy = SimpleResidualPPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
     
     print("[Train] Environment structure.")
