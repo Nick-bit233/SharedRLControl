@@ -18,6 +18,9 @@ max_iterations: 1e6 # Total number of batches
 eval_interval: 1000
 save_interval: 1000
 
+# Evaluation Settings
+eval_visualization: true  
+
 # Hydra Configuration associated with this
 hydra:
   output_subdir: null
