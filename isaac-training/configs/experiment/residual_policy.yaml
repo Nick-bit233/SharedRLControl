@@ -2,9 +2,9 @@
 
 # Experiment specific overrides moved from train.py
 env:
-  num_envs: 256
+  num_envs: 512
   max_episode_length: 2000
-  num_obstacles: 1000
+  num_obstacles: 800
   env_spacing: 8.0
   map_range: [20.0, 20.0, 5.0]  # [x, y, z], half extents
   platform_width: 2.0  # 原点周围保持平坦的区域宽度（正方形边长）
@@ -27,9 +27,14 @@ viewer:
   resolution: [960, 720]
 
 # Custom training loop parameters
-max_iterations: 20010 # Total number of batches
+max_iterations: 50010 # Total number of batches
 eval_interval: 500
 save_interval: 500
+
+# Overrides for user model
+user_model:
+  simple_mode: false
+  z_tilt_compensation: 0.0
 
 hydra:
   run:

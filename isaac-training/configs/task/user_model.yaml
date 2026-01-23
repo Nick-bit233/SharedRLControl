@@ -7,10 +7,10 @@ user_model:
     smoothness_scale: 0.45
     laziness: 0.2
 
-  z_tilt_compensation: 0.05  # Z-axis tilt compensation (m/s) for user model
+  z_tilt_compensation: 0.0  # Z-axis tilt compensation (m/s) for user model
 
   # Simple user model (only linear velocity) settings
-  simple_mode: true # whether to use simple step function for user model
+  simple_mode: false # whether to use simple step function for user model
   enable_yaw_rate: false # whether to enable yaw rate commands in simple mode
 
   # Offline trajectory dataset settings

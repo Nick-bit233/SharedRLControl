@@ -90,6 +90,9 @@ class FollowingEnvResidual(IsaacEnv):
             # previous action taken by the agent (drone) (vel_b[3])
             # use this 3D velocity action in user model and GRU network.
             self.agent_action = torch.zeros(self.num_envs, 3)
+            # [Added] Previous action command buffer for smoothness reward
+            self.prev_action_command = torch.zeros(self.num_envs, 3)
+            
             self.prev_human_action = torch.zeros(self.num_envs, 3)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
@@ -306,6 +309,7 @@ class FollowingEnvResidual(IsaacEnv):
         # Reset previous step variables
         # self.prev_drone_vel_w[env_ids] = 0.
         self.agent_action[env_ids] = 0.
+        self.prev_action_command[env_ids] = 0.
         self.prev_human_action[env_ids] = 0.
         # Reset cumulative following error
         self.cumulative_error[env_ids] = 0.
@@ -368,6 +372,9 @@ class FollowingEnvResidual(IsaacEnv):
     def _pre_sim_step(self, tensordict: TensorDictBase):
         # 这里的action为torchrl的VelController转换后的action（此时为推力指令），用于传递给drone.apply_action()
         actions = tensordict[("agents", "action")]
+        # Save previous action command before updating current
+        # Used for action smoothness reward calculation
+        self.prev_action_command[:] = self.agent_action.clone()
 
         # === Fix: Retrieve correct velocity command for observation ===
         # actions at this point are Rotor Thrusts (dim=4) because VelController has run.
@@ -492,25 +499,29 @@ class FollowingEnvResidual(IsaacEnv):
         if current_yaw_rate.ndim == 3 and current_yaw_rate.shape[1] == 1:
             current_yaw_rate = current_yaw_rate.squeeze(-1)  # (N, 1)
 
-        # # Velocity following reward (Positive)
-
-        # # 3D Velocity difference reward (Positive) - yaw_rate removed
+        # c. Velocity following reward (Positive) - 3D velocity matching
         # TODO: 通过夹角比较奖励靠近目标速度方向的动作
         prev_human_action_b = self.prev_human_action.clone()
         # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
-
         vel_diff = (target_vel_w - current_vel_w).norm(dim=-1, keepdim=True)
         reward_vel = torch.exp(-2.0 * vel_diff)  # (N, 1) Positive reward
 
-        # d. smoothness reward for action smoothness
+        # d1. Penalize the difference between consecutive action commands
+        # high frequency change in command -> huge penalty
+        action_diff = (self.agent_action - self.prev_action_command).norm(dim=-1, keepdim=True)
+        penalty_action_smoothness = action_diff
+
+        # d2. smoothness reward for state smoothness (keep small)
         penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
 
-        # d(+). smoothness reward for Action Magnitude Penalty
-        # diff = prev_action_world - current_vel_w
-        # diff_norm = diff.norm(dim=-1, keepdim=True)
-        # penalty_change = diff_norm  # (N, 1)
-        
+        # d3. Z-axis tracking Penalty (for Spiral Up behavior)
+        # Penalize vertical velocity error more heavily to discourage spiraling up
+        # We separate Z component from velocity matching to give it higher weight
+        target_vel_z = target_vel_w[..., 2:3]
+        current_vel_z = current_vel_w[..., 2:3]
+        penalty_z_tracking = (target_vel_z - current_vel_z).abs()
+
         # e. height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
         # penalty when z > h_max + 0.2 or z < h_min - 0.2
@@ -523,13 +534,14 @@ class FollowingEnvResidual(IsaacEnv):
         reward_survival = 1.0
         
         if not self.enable_lidar:
-            self.reward = 1.0 * reward_vel - 1.0 * penalty_height
+            self.reward = 1.0 * reward_vel - 0.5 * penalty_action_smoothness - 1.0 * penalty_height
         else:
-            # Final reward calculation
+            # Full reward calculation
             self.reward = (
-                1.0 * reward_vel +
-                # 1.0 * reward_survival +
-                1.0 * reward_safety_static
+                1.0 * reward_vel
+                + 1.0 * reward_safety_static
+                - 0.5 * penalty_action_smoothness # [New] Suppress jitter
+                - 2.0 * penalty_z_tracking        # [New] Suppress spiral up (z-error)
                 - 0.1 * penalty_smooth
                 - 8.0 * penalty_height  # height penalty to prevent crashing into ground
             )
@@ -606,7 +618,7 @@ class FollowingEnvResidual(IsaacEnv):
                 )
             else:
                 # 'follow' mode: camera follows behind the drone in world velocity direction
-                eye_vel_offset = -current_vel_w[0] * torch.tensor([2.0, 2.0, 0.0], device=device) 
+                eye_vel_offset = -current_vel_w[0] * torch.tensor([2.0, 2.0, 0.0], device=self.device) 
                 set_camera_view(
                     # use cfg viewer settings as offset
                     eye=view_pos.cpu() + torch.as_tensor(self.cfg.viewer.eye) + eye_vel_offset.cpu(),
