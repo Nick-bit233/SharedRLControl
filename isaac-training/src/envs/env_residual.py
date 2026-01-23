@@ -605,9 +605,11 @@ class FollowingEnvResidual(IsaacEnv):
                     target=torch.tensor([0.0, 0.0, 0.0])                        
                 )
             else:
+                # 'follow' mode: camera follows behind the drone in world velocity direction
+                eye_vel_offset = -current_vel_w[0] * torch.tensor([2.0, 2.0, 0.0], device=device) 
                 set_camera_view(
                     # use cfg viewer settings as offset
-                    eye=view_pos.cpu() + torch.as_tensor(self.cfg.viewer.eye),
+                    eye=view_pos.cpu() + torch.as_tensor(self.cfg.viewer.eye) + eye_vel_offset.cpu(),
                     target=view_pos.cpu() + torch.as_tensor(self.cfg.viewer.lookat)                        
                 )
             if self.render_lidar and self.enable_lidar:

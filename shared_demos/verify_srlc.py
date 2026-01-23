@@ -198,7 +198,7 @@ def main():
                         horizontal_scale=0.1,
                         vertical_scale=0.1,
                         border_width=0.0,
-                        num_obstacles=100, 
+                        num_obstacles=20, 
                         obstacle_height_mode="choice",
                         obstacle_width_range=(0.8, 2.0),
                         obstacle_height_range=(8.0, 16.0),
@@ -273,7 +273,7 @@ def main():
     max_speed_z = 1.0  
     max_yaw_rate = 0.5 
 
-    VIEWER_EYE_OFFSET = [5.0, -1.0, 2.0]
+    VIEWER_EYE_OFFSET = [0.0, 0.0, 2.0]
     VIEWER_LOOKAT_OFFSET = [0.0, 0.0, 1.0]
 
     print("[INFO]: Setup complete...")
@@ -386,10 +386,11 @@ def main():
 
             # 可视化
             # update Camera
+            eye_vel_offset = -current_vel_w * torch.tensor([2.0, 2.0, 0.0], device=device)  # Scale velocity for camera offset, ignore z axis
             set_camera_view(
                 # use cfg viewer settings as offset
-                eye=current_pos.squeeze().cpu() + torch.as_tensor(VIEWER_EYE_OFFSET),
-                target=current_pos.squeeze().cpu() + torch.as_tensor(VIEWER_LOOKAT_OFFSET)                        
+                eye=current_pos.squeeze().cpu() + eye_vel_offset.squeeze().cpu() + torch.as_tensor(VIEWER_EYE_OFFSET).cpu(),
+                target=current_pos.squeeze().cpu() + torch.as_tensor(VIEWER_LOOKAT_OFFSET).cpu()                        
             )
 
             # Update Visualizer

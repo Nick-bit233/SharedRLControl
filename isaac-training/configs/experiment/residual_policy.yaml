@@ -22,7 +22,7 @@ algo:
 
 global_view: True
 viewer:
-  eye: [-3., 0., 6.]
+  eye: [0., 0., 3.]
   lookat: [0., 0, 1.]
   resolution: [960, 720]
 
