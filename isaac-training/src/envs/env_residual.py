@@ -482,14 +482,40 @@ class FollowingEnvResidual(IsaacEnv):
         profiler.start("env/reward_calculation")
         
         # a. safety reward for static obstacles
+        # 从正向奖励（log线性）转换为负向惩罚
         if self.enable_lidar:
-            reward_safety_static = torch.log((self.lidar_range-self.lidar_scan).clamp(min=1e-6, max=self.lidar_range)).mean(dim=(2, 3))
+            # lidar_scan: (N, 1, H, W) 或 (N, 1, Rays)
+            # 找到最危险的射线（即 scan 值最大的点）
+            # max_proximity_val 代表探测范围内离障碍物最近点的 "lidar_scan值"
+            max_proximity_val, _ = self.lidar_scan.reshape(self.num_envs, -1).max(dim=-1, keepdim=True)
+            
+            # 将其还原为物理距离 (Physical Distance to closest obstacle)
+            # dist = range - scan
+            min_dist_to_obs = self.lidar_range - max_proximity_val
+            
+            # 设定参数
+            k_collision = 10.0
+            sigma = 0.4
+            safe_distance = 1.0  # TODO: parametrize these value later
+            
+            # 指数惩罚 (Bounded Exponential Penalty): P = k * exp(-d / sigma)
+            # 计算 safe_dist 处的指数基准值 (常数)
+            cutoff_val = torch.exp(torch.tensor(-safe_distance / sigma))
+            # 减去基准值，使得在 safe_dist 处刚好为 0
+            # 使用 clamp 确保不会出现正数奖励
+            dist_penalty = k_collision * (torch.exp(-min_dist_to_obs / sigma) - cutoff_val).clamp(min=0.0)
+
+            mask_safe = (min_dist_to_obs < safe_distance).float()
+            static_safety_penalty = dist_penalty * mask_safe  # only penalize when within safe distance
 
         # b. safety reward for dynamic obstacles
         # if (self.cfg.env_dyn.num_obstacles != 0):
         #     reward_safety_dynamic = torch.log((closest_dyn_obs_distance_reward).clamp(min=1e-6, max=self.lidar_range)).mean(dim=-1, keepdim=True)
         # else:
         #     reward_safety_dynamic = 0.0
+
+        # c. Velocity following reward (Positive)
+        # 速度方向奖励和速度大小奖励分开加权
 
         current_vel_w = self.drone.vel_w[..., :3] # (N, 1, 3)
         # squeeze the drone velocity tensor if needed
@@ -499,23 +525,38 @@ class FollowingEnvResidual(IsaacEnv):
         if current_yaw_rate.ndim == 3 and current_yaw_rate.shape[1] == 1:
             current_yaw_rate = current_yaw_rate.squeeze(-1)  # (N, 1)
 
-        # c. Velocity following reward (Positive) - 3D velocity matching
-        # TODO: 通过夹角比较奖励靠近目标速度方向的动作
         prev_human_action_b = self.prev_human_action.clone()
         # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
-        vel_diff = (target_vel_w - current_vel_w).norm(dim=-1, keepdim=True)
-        reward_vel = torch.exp(-2.0 * vel_diff)  # (N, 1) Positive reward
+
+        # c1. 方向奖励 (Alignment)
+        # 计算余弦相似度
+        cosine_sim = torch.cosine_similarity(target_vel_w, current_vel_w, dim=-1).unsqueeze(-1)
+        # 映射到 [0, 1]
+        reward_direction = (cosine_sim + 1.0) / 2.0 
+
+        # c2. 速度大小奖励 (Magnitude)
+        vel_error = (target_vel_w - current_vel_w).norm(dim=-1, keepdim=True)
+        # 使用 exp(-k * error) 形式，保证范围 [0, 1]
+        reward_speed_match = torch.exp(-1.0 * vel_error) 
+
+        # 综合任务奖励
+        reward_task = 0.6 * reward_direction + 0.4 * reward_speed_match
+
+        # d. Smoothness and Effort Penalty
 
         # d1. Penalize the difference between consecutive action commands
         # high frequency change in command -> huge penalty
         action_diff = (self.agent_action - self.prev_action_command).norm(dim=-1, keepdim=True)
         penalty_action_smoothness = action_diff
 
-        # d2. smoothness reward for state smoothness (keep small)
-        penalty_smooth = (current_vel_w - self.prev_drone_vel_w).norm(dim=-1, keepdim=True)
+        # d2. smoothness reward for effort smoothness
+        # # Agent 应该倾向于选择容易执行的动作（即与当前速度矢量夹角小的动作）
+        action_change_cost = (self.agent_action - current_vel_w).norm(dim=-1, keepdim=True)
+        penalty_effort = action_change_cost
 
         # d3. Z-axis tracking Penalty (for Spiral Up behavior)
+        # TODO: check if need to keep this part，暂时不启用，先试一下改进的奖励函数
         # Penalize vertical velocity error more heavily to discourage spiraling up
         # We separate Z component from velocity matching to give it higher weight
         target_vel_z = target_vel_w[..., 2:3]
@@ -526,23 +567,27 @@ class FollowingEnvResidual(IsaacEnv):
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
         # penalty when z > h_max + 0.2 or z < h_min - 0.2
         penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
-        z = self.drone.pos[..., 2]
-        penalty_height[z > (h_max + 0.2)] = ((z - h_max - 0.2)**2)[z > (h_max + 0.2)]
-        penalty_height[z < (h_min - 0.2)] = ((h_min - 0.2 - z)**2)[z < (h_min - 0.2)]
+        # z = self.drone.pos[..., 2]
+        # penalty_height[z > (h_max + 0.2)] = ((z - h_max - 0.2)**2)[z > (h_max + 0.2)]
+        # penalty_height[z < (h_min - 0.2)] = ((h_min - 0.2 - z)**2)[z < (h_min - 0.2)]
+        z = self.drone.pos[..., 2:3]
+        penalty_height = (z - (h_max + 0.2)).clamp(min=0.0) + ((h_min - 0.2) - z).clamp(min=0.0)
         
-        # Survival reward (keep flying as long as possible)
+        # f. Survival reward (keep flying as long as possible)
+        # 因为碰撞由安全奖励变为危险惩罚，需要额外的存活奖励来鼓励继续飞行
         reward_survival = 1.0
         
         if not self.enable_lidar:
-            self.reward = 1.0 * reward_vel - 0.5 * penalty_action_smoothness - 1.0 * penalty_height
+            self.reward = 2.0 * reward_task - 0.2 * penalty_action_smoothness - 4.0 * penalty_height
         else:
             # Full reward calculation
             self.reward = (
-                1.0 * reward_vel
-                + 1.0 * reward_safety_static
-                - 0.5 * penalty_action_smoothness # [New] Suppress jitter
-                - 2.0 * penalty_z_tracking        # [New] Suppress spiral up (z-error)
-                - 0.1 * penalty_smooth
+                1.0 * reward_task
+                + 0.1 * reward_survival
+                - 2.0 * static_safety_penalty  # safety penalty from static obstacles
+                - 0.1 * penalty_effort
+                - 0.2 * penalty_action_smoothness 
+                # - 0.5 * penalty_z_tracking        
                 - 8.0 * penalty_height  # height penalty to prevent crashing into ground
             )
         profiler.stop("env/reward_calculation")
@@ -552,38 +597,8 @@ class FollowingEnvResidual(IsaacEnv):
         above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0  # 2*sz + 1, where sz is half z range of the map
         
         # collision check 
-        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3)
+        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.2)
         collision = static_collision
-        
-        # # ==== poor_following termination ====
-        # # 添加累积跟随误差终止条件,使用指数移动平均更新累积误差
-        # self.cumulative_error = (
-        #     self.error_ema_alpha * self.cumulative_error + 
-        #     (1 - self.error_ema_alpha) * vel_diff
-        # )
-        
-        # # 动态误差阈值：根据障碍物距离调整
-        # # 在 env_simple（无障碍物）中，使用固定的基础阈值
-        # if self.enable_lidar:
-        #     # 有lidar时，根据最近障碍物距离计算动态阈值
-        #     # lidar_scan: 值越大表示障碍物越近 (range - distance)
-        #     min_obstacle_dist = self.lidar_range - self.lidar_scan.flatten(2).max(dim=2).values  # (N, 1)
-        #     # obstacle_proximity: 0=无障碍物/远, 1=非常近
-        #     obstacle_proximity = torch.clamp(
-        #         (self.safety_margin - min_obstacle_dist) / self.safety_margin, 
-        #         min=0, max=1
-        #     )
-        #     # 动态阈值：障碍物越近，阈值越宽松
-        #     dynamic_threshold = (
-        #         self.error_threshold_base + 
-        #         (self.error_threshold_max - self.error_threshold_base) * obstacle_proximity
-        #     )
-        # else:
-        #     # 无lidar（无障碍物环境），使用固定的基础阈值
-        #     dynamic_threshold = self.error_threshold_base
-        
-        # # 如果累积误差持续过大，视为"跟随失败"
-        # poor_following = self.cumulative_error > dynamic_threshold
         
         # 总终止条件
         # self.terminated = below_bound | above_bound | collision | poor_following
