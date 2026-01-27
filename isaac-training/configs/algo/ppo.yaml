@@ -17,6 +17,10 @@ algo:
     gru_hidden_dim: 256
     gru_num_layers: 1
 
+  # Warmup Phase: 
+  # During these iterations, the residual policy scale is 0. (set to 100-200)
+  warmup_iterations: 100
+
   observation_cat_prev_action: False  # whether to concatenate previous action to observation
   entropy_loss_coefficient: 1e-3 # encourage exploration
   # TODO: tune these hyperparameters (to be smaller)

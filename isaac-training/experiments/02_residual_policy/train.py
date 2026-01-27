@@ -88,6 +88,7 @@ def main(cfg):
         MAX_FRAME_NUM = cfg.algo.training_frame_num * cfg.env.num_envs * profiling_batches
         eval_interval = 0  
         save_interval = profiling_batches + 1
+        warmup_iterations = 0
     else:
         # Normal Training Mode: Load parameters from Hydra Config
         # (See configs/experiment/residual_policy.yaml)
@@ -95,6 +96,10 @@ def main(cfg):
         
         # Calculate total frames: frames_per_batch * num_envs * total_batches
         max_iterations = cfg.get("max_iterations", 20010)
+        warmup_iterations = cfg.algo.get("warmup_iterations", 0)
+        if warmup_iterations > 0:
+            print(f"[Train] Warmup enabled: {warmup_iterations} iterations with residual_scale=0")
+
         MAX_FRAME_NUM = cfg.algo.training_frame_num * cfg.env.num_envs * max_iterations
         
         eval_interval = cfg.get("eval_interval", 500)
@@ -379,6 +384,10 @@ def main(cfg):
     batch_start_time = time_module.perf_counter()
     
     for i, data in enumerate(collector):
+        # Apply Warmup Scale
+        current_scale = 0.0 if i < warmup_iterations else 1.0
+        policy.set_residual_scale(current_scale)
+
         # === Profiling: Measure batch timing ===
         batch_elapsed = time_module.perf_counter() - batch_start_time
         profiler.record("batch_total", batch_elapsed)

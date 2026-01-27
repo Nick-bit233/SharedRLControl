@@ -46,6 +46,7 @@ class ResidualActionModule(nn.Module):
     def __init__(self, action_limit):
         super().__init__()
         self.action_limit = action_limit
+        self.register_buffer("residual_scale", torch.tensor(1.0))
 
     def forward(self, loc, human_action):
         # 1. Normalize human action to [-1, 1] (假设 human_action 是物理单位的速度)
@@ -54,9 +55,12 @@ class ResidualActionModule(nn.Module):
         
         # 2. Residual Connection: Mean = Network_Output + Human_Action
         # 这里的 loc 是网络学到的“修正量”
-        new_loc = loc + human_action_norm
+        new_loc = (loc * self.residual_scale) + human_action_norm
         
         return new_loc
+
+    def set_scale(self, scale):
+        self.residual_scale.fill_(scale)
 
 class SplitLayer(nn.Module):
     """
@@ -186,8 +190,9 @@ class SimpleResidualPPO(TensorDictModuleBase):
         # 残差加法模块，加入观察中的用户指令
         # 输入: _loc_delta (网络生成的修正量), human_action (来自观测)
         # 输出: _loc (最终分布的均值)
+        self.residual_action_module = ResidualActionModule(self.action_limit)
         residual_module = TensorDictModule(
-            ResidualActionModule(self.action_limit),
+            self.residual_action_module,
             in_keys=["_loc_delta", ("agents", "observation", "human_action")], 
             out_keys=["loc"]
         )
@@ -253,6 +258,11 @@ class SimpleResidualPPO(TensorDictModuleBase):
                 nn.init.constant_(module.bias, 0.)
                 
         self.actor_net.module[-1].apply(init_residual)  # only init the last linear layer of actor net
+    
+    def set_residual_scale(self, scale):
+        """Set the scale of the residual policy output (0.0 to 1.0)"""
+        if hasattr(self, "residual_action_module"):
+            self.residual_action_module.set_scale(scale)
 
     def __call__(self, tensordict):
         self.feature_extractor(tensordict)

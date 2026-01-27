@@ -492,21 +492,28 @@ class FollowingEnvResidual(IsaacEnv):
             # 将其还原为物理距离 (Physical Distance to closest obstacle)
             # dist = range - scan
             min_dist_to_obs = self.lidar_range - max_proximity_val
+            # --------- (Positive Reward) ---------
+            # 与最近障碍物的距离的对数奖励（越远离障碍物奖励越高）
+            reward_safety_static = torch.log((min_dist_to_obs).clamp(min=1e-6, max=self.lidar_range))
+            # [原始函数] 与所有障碍物距离的对数奖励平均值
+            # reward_safety_static = torch.log((self.lidar_range-self.lidar_scan).clamp(min=1e-6, max=self.lidar_range)).mean(dim=(2, 3))
             
-            # 设定参数 # TODO: parametrize these value later
-            k_collision = 1.0
-            sigma = 0.4
-            safe_distance = 0.8
+            # --------- (Negative Penalty) ---------    
+            # # 设定参数 # TODO: parametrize these value later
+            # k_collision = 1.0
+            # sigma = 0.4
+            # safe_distance = 0.8
             
-            # 指数惩罚 (Bounded Exponential Penalty): P = k * exp(-d / sigma)
-            # 计算 safe_dist 处的指数基准值 (常数)
-            cutoff_val = torch.exp(torch.tensor(-safe_distance / sigma))
-            # 减去基准值，使得在 safe_dist 处刚好为 0
-            # 使用 clamp 确保不会出现正数奖励
-            dist_penalty = k_collision * (torch.exp(-min_dist_to_obs / sigma) - cutoff_val).clamp(min=0.0)
+            # # 指数惩罚 (Bounded Exponential Penalty): P = k * exp(-d / sigma)
+            # # 计算 safe_dist 处的指数基准值 (常数)
+            # cutoff_val = torch.exp(torch.tensor(-safe_distance / sigma))
+            # # 减去基准值，使得在 safe_dist 处刚好为 0
+            # # 使用 clamp 确保不会出现正数奖励
+            # dist_penalty = k_collision * (torch.exp(-min_dist_to_obs / sigma) - cutoff_val).clamp(min=0.0)
 
-            mask_safe = (min_dist_to_obs < safe_distance).float()  # (N, 1), within safe distance mask
-            static_safety_penalty = dist_penalty * mask_safe  # only penalize when within safe distance
+            # mask_safe = (min_dist_to_obs < safe_distance).float()  # (N, 1), within safe distance mask
+            # static_safety_penalty = dist_penalty * mask_safe  # only penalize when within safe distance
+            # reward_safety_static = 0.0
 
         # b. safety reward for dynamic obstacles
         # if (self.cfg.env_dyn.num_obstacles != 0):
@@ -525,6 +532,9 @@ class FollowingEnvResidual(IsaacEnv):
         if current_yaw_rate.ndim == 3 and current_yaw_rate.shape[1] == 1:
             current_yaw_rate = current_yaw_rate.squeeze(-1)  # (N, 1)
 
+        # check: drone_vel_w == current_vel_w
+        assert torch.allclose(current_vel_w, drone_vel_w, atol=1e-5), f"Velocity mismatch! current_vel_w: {current_vel_w}, drone_vel_w: {drone_vel_w}"
+
         prev_human_action_b = self.prev_human_action.clone()
         # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
@@ -541,7 +551,7 @@ class FollowingEnvResidual(IsaacEnv):
         reward_speed_match = torch.exp(-1.0 * vel_error) 
 
         # 综合任务奖励
-        reward_task = 0.8 * reward_direction + 0.2 * reward_speed_match
+        reward_task = 0.8 * reward_direction + 0.2 * reward_speed_match + 1.0 * reward_safety_static
 
         # d. Smoothness and Effort Penalty
 
@@ -584,10 +594,10 @@ class FollowingEnvResidual(IsaacEnv):
             self.reward = (
                 1.0 * reward_task
                 + 0.1 * reward_survival
-                - 1.0 * static_safety_penalty  # safety penalty from static obstacles
+                # - 1.0 * static_safety_penalty  # disabled when using positive safety reward
                 - 0.1 * penalty_effort
                 - 0.2 * penalty_action_smoothness 
-                # - 0.5 * penalty_z_tracking        
+                - 0.4 * penalty_z_tracking        
                 - 8.0 * penalty_height  # height penalty to prevent crashing into ground
             )
         profiler.stop("env/reward_calculation")
@@ -617,12 +627,9 @@ class FollowingEnvResidual(IsaacEnv):
         profiler.start("env/visualization")
         if self._should_render(0) and not self.disable_visualization:
             self.debug_draw.clear()
-            
-            # get the first (env_id=0) lidar position
-            if self.enable_lidar:
-                view_pos = self.lidar.data.pos_w[0]
-            else:
-                view_pos = drone_pos_w[0]
+            viz_env_id = 0  # visualize only the first env
+            VIZ_VEL_SCALE = 2.0  # scale for velocity vector visualization
+            view_pos = drone_pos_w[viz_env_id]  # lidar/camera view position is same as drone position by default
 
             # set the camera to focus on the lidar position (which is the drone)
             camera_mode = getattr(self, '_camera_view_mode', 'follow')
@@ -633,7 +640,7 @@ class FollowingEnvResidual(IsaacEnv):
                 )
             else:
                 # 'follow' mode: camera follows behind the drone in world velocity direction
-                eye_vel_offset = -current_vel_w[0] * torch.tensor([2.0, 2.0, 0.0], device=self.device) 
+                eye_vel_offset = -drone_vel_w[viz_env_id] * torch.tensor([2.0, 2.0, 0.0], device=self.device) 
                 set_camera_view(
                     # use cfg viewer settings as offset
                     eye=view_pos.cpu() + torch.as_tensor(self.cfg.viewer.eye) + eye_vel_offset.cpu(),
@@ -641,29 +648,24 @@ class FollowingEnvResidual(IsaacEnv):
                 )
             if self.render_lidar and self.enable_lidar:
                 # rendering LiDAR rays (360 degrees horizontal)
-                v = (self.lidar.data.ray_hits_w[0] - view_pos).reshape(*self.lidar_resolution, 3)
+                v = (self.lidar.data.ray_hits_w[viz_env_id] - view_pos).reshape(*self.lidar_resolution, 3)
                 self.debug_draw.vector(view_pos.expand_as(v[:, 0]), v[:, 0])
                 self.debug_draw.vector(view_pos.expand_as(v[:, -1]), v[:, -1])
 
-            viz_env_id = 0
-
-            # 绘制向量 (转换回世界系以便绘制)
-            root_pos = drone_pos_w[viz_env_id]  # root pos == view pos TODO: merge it
-
-            # A. 绘制无人机实际速度 (红色箭头)
+            # A. Draw drone velocity vector (red arrow)
             drone_vel_w_vec = drone_vel_w[viz_env_id]
             self.debug_draw.vector(
-                x=root_pos, 
-                v=drone_vel_w_vec * 1.0, # 长度缩放
+                x=view_pos, 
+                v=drone_vel_w_vec * VIZ_VEL_SCALE,
                 color=(1, 0, 0, 1), # Red
                 size=2.0
             )
 
-            # B. 绘制人类期望速度 (黄色箭头)
+            # B. Draw human desired velocity (yellow arrow)
             human_vel_w_vec = target_vel_w[viz_env_id]
             self.debug_draw.vector(
-                x=root_pos, 
-                v=human_vel_w_vec * 1.0, 
+                x=view_pos, 
+                v=human_vel_w_vec * VIZ_VEL_SCALE, 
                 color=(1, 1, 0, 1), # Yellow
                 size=2.0
             )
@@ -671,7 +673,7 @@ class FollowingEnvResidual(IsaacEnv):
             # C. Draw Trajectories
             # Update trajectory buffers
             # Agent pos
-            curr_pos = root_pos.clone()
+            curr_pos = view_pos.clone()
             self.viz_traj_agent.append(curr_pos)
             
             # Human pos (integrated)
@@ -710,7 +712,7 @@ class FollowingEnvResidual(IsaacEnv):
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
         self.stats["above_bound"] = above_bound.float()
         self.stats["below_bound"] = below_bound.float()
-        self.stats["within_safe_distance"] = mask_safe
+        # self.stats["within_safe_distance"] = mask_safe
         self.stats["terminated"] = self.terminated.float()
         self.stats["collision"] = collision.float()
         self.stats["truncated"] = self.truncated.float()
