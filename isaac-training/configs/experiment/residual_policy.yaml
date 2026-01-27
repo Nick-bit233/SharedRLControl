@@ -4,7 +4,7 @@
 env:
   num_envs: 512
   max_episode_length: 2000
-  num_obstacles: 350
+  num_obstacles: 300
   env_spacing: 8.0
   map_range: [20.0, 20.0, 5.0]  # [x, y, z], half extents
   platform_width: 2.0  # 原点周围保持平坦的区域宽度（正方形边长）

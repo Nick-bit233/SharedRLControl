@@ -493,10 +493,10 @@ class FollowingEnvResidual(IsaacEnv):
             # dist = range - scan
             min_dist_to_obs = self.lidar_range - max_proximity_val
             
-            # 设定参数
-            k_collision = 10.0
+            # 设定参数 # TODO: parametrize these value later
+            k_collision = 1.0
             sigma = 0.4
-            safe_distance = 1.0  # TODO: parametrize these value later
+            safe_distance = 0.8
             
             # 指数惩罚 (Bounded Exponential Penalty): P = k * exp(-d / sigma)
             # 计算 safe_dist 处的指数基准值 (常数)
@@ -505,7 +505,7 @@ class FollowingEnvResidual(IsaacEnv):
             # 使用 clamp 确保不会出现正数奖励
             dist_penalty = k_collision * (torch.exp(-min_dist_to_obs / sigma) - cutoff_val).clamp(min=0.0)
 
-            mask_safe = (min_dist_to_obs < safe_distance).float()
+            mask_safe = (min_dist_to_obs < safe_distance).float()  # (N, 1), within safe distance mask
             static_safety_penalty = dist_penalty * mask_safe  # only penalize when within safe distance
 
         # b. safety reward for dynamic obstacles
@@ -541,7 +541,7 @@ class FollowingEnvResidual(IsaacEnv):
         reward_speed_match = torch.exp(-1.0 * vel_error) 
 
         # 综合任务奖励
-        reward_task = 0.6 * reward_direction + 0.4 * reward_speed_match
+        reward_task = 0.8 * reward_direction + 0.2 * reward_speed_match
 
         # d. Smoothness and Effort Penalty
 
@@ -570,7 +570,7 @@ class FollowingEnvResidual(IsaacEnv):
         # z = self.drone.pos[..., 2]
         # penalty_height[z > (h_max + 0.2)] = ((z - h_max - 0.2)**2)[z > (h_max + 0.2)]
         # penalty_height[z < (h_min - 0.2)] = ((h_min - 0.2 - z)**2)[z < (h_min - 0.2)]
-        z = self.drone.pos[..., 2:3]
+        z = self.drone.pos[..., 2:3].reshape(self.num_envs, 1)
         penalty_height = (z - (h_max + 0.2)).clamp(min=0.0) + ((h_min - 0.2) - z).clamp(min=0.0)
         
         # f. Survival reward (keep flying as long as possible)
@@ -584,7 +584,7 @@ class FollowingEnvResidual(IsaacEnv):
             self.reward = (
                 1.0 * reward_task
                 + 0.1 * reward_survival
-                - 2.0 * static_safety_penalty  # safety penalty from static obstacles
+                - 1.0 * static_safety_penalty  # safety penalty from static obstacles
                 - 0.1 * penalty_effort
                 - 0.2 * penalty_action_smoothness 
                 # - 0.5 * penalty_z_tracking        
@@ -710,7 +710,7 @@ class FollowingEnvResidual(IsaacEnv):
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
         self.stats["above_bound"] = above_bound.float()
         self.stats["below_bound"] = below_bound.float()
-        # self.stats["poor_following"] = poor_following.float()
+        self.stats["within_safe_distance"] = mask_safe
         self.stats["terminated"] = self.terminated.float()
         self.stats["collision"] = collision.float()
         self.stats["truncated"] = self.truncated.float()
@@ -721,7 +721,7 @@ class FollowingEnvResidual(IsaacEnv):
         if torch.isnan(self.reward).any():
             print("[Env Probe] NaN detected in Reward!")
             print("Reward components:")
-            print(f"  vel: {reward_vel[torch.isnan(self.reward)]}")
+            print(f"  vel: {reward_task[torch.isnan(self.reward)]}")
             raise ValueError("NaN in reward")
 
         return TensorDict({
