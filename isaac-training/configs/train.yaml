@@ -12,6 +12,7 @@ headless: True
 device: "cuda:0"
 seed: 42
 log_output_dir: ${hydra:run.dir}
+enable_yaw_control: false
 
 # Training Length (can be overridden by experiment configs)
 max_iterations: 1e6 # Total number of batches

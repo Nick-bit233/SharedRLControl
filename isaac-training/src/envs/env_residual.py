@@ -1,4 +1,5 @@
 import csv
+from sympy import N
 import torch
 import einops
 import numpy as np
@@ -13,6 +14,7 @@ from omni_drones.envs.isaac_env import IsaacEnv, AgentSpec
 # - change all "omni.isaac.orbit" to name "isaaclab"
 # - change all "omni.isaac.core" to name "isaacsim.core"
 import isaaclab.sim as sim_utils
+import omni_drones.utils.kit as kit_utils
 from omni_drones.robots.drone import MultirotorBase
 from isaaclab.assets import AssetBaseCfg
 from isaaclab.terrains import TerrainImporterCfg, TerrainImporter, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
@@ -40,12 +42,19 @@ class FollowingEnvResidual(IsaacEnv):
 
     def __init__(self, cfg, trajectory_dataset: Optional[TrajectoryDataset] = None):
         print("[Navigation Environment]: Initializing Simple Shared Autonomy Env (No Obstacles)...")
+
+        # Controller for the drone (Omnidrones Controller)
+        self.controller = None  # will be set in _design_scene()
         
-        # Store trajectory dataset for later use
+        # Store trajectory dataset (if has) for later use
         self._trajectory_dataset = trajectory_dataset
 
-        # observation related configs
-        self.obs_add_prev = cfg.algo.observation_cat_prev_action
+        # Train task configuration
+        self.enable_yaw_control = cfg.get("enable_yaw_control", False)
+        if self.enable_yaw_control:
+            self.human_action_dim = 4  # (vel_b[3] + yaw_rate[1])
+        else:
+            self.human_action_dim = 3  # (vel_b[3]) - yaw_rate removed
         
         # Check if lidar is enabled
         self.enable_lidar = cfg.env.get("enable_lidar", True)
@@ -62,11 +71,14 @@ class FollowingEnvResidual(IsaacEnv):
         self.map_range = cfg.env.map_range  # [x_range, y_range, z_range], half extents
         self.platform_width = cfg.env.platform_width  # square platform width at the center of the map
 
-        super().__init__(cfg, cfg.headless)
+        super().__init__(cfg, cfg.headless)  # _design_scene() will be called here, so the self.drone instance is created there
         
         # Drone Initialization
         self.drone.initialize()
         self.init_vels = torch.zeros_like(self.drone.get_velocities())
+
+        # Algo action params
+        self.max_action_vel = cfg.algo.actor.action_limit
 
         # User Model Initialization
         # Check for offline mode configuration
@@ -113,16 +125,11 @@ class FollowingEnvResidual(IsaacEnv):
         self.viz_human_pos = None
 
     def _design_scene(self):
-        import omni_drones.utils.kit as kit_utils
-        import isaacsim.core.utils.prims as prim_utils
-
-        # Initialize a drone in prim /World/envs/envs_0
-        drone_model = MultirotorBase.REGISTRY[self.cfg.drone.model_name] # drone model class
-        cfg = drone_model.cfg_cls()
-        # print("[NavigationEnv]: Spawning Drone Model:", self.cfg.drone.model_name)
-        # print(f"[NavigationEnv]: Drone Model Config: {cfg}")
-        self.drone = drone_model(cfg=cfg)
-        drone_prim = self.drone.spawn(translations=[(0.0, 0.0, 2.0)])[0]
+        # Init DRONE and CONTROLLER here, default prim path: /World/envs/envs_0
+        self.drone, self.controller = MultirotorBase.make(
+            self.cfg.drone.model_name, self.cfg.drone.controller_name, self.device
+        )
+        drone_prim = self.drone.spawn(translations=[(0.0, 0.0, 4.0)], device=self.device)[0]
 
         # lighting
         light = AssetBaseCfg(
@@ -209,21 +216,12 @@ class FollowingEnvResidual(IsaacEnv):
 
     def _set_specs(self):
         drone_state_dim = 10  # (vel_b[3] + ang_vel_b[3] + orientation_q[4])
-        prev_action_dim = 3  # (vel_b[3]) - yaw_rate removed
-        human_action_dim = 3  # (vel_b[3]) - yaw_rate removed
 
         # Observation Spec
-        if self.obs_add_prev:
-            obs_dict = {
-                "state": Unbounded((drone_state_dim,), device=self.device), 
-                "prev_action": Unbounded((prev_action_dim,), device=self.device),
-                "human_action": Unbounded((human_action_dim,), device=self.device),
-            }
-        else:
-            obs_dict = {
-                "state": Unbounded((drone_state_dim,), device=self.device), 
-                "human_action": Unbounded((human_action_dim,), device=self.device),
-            }
+        obs_dict = {
+            "state": Unbounded((drone_state_dim,), device=self.device), 
+            "human_action": Unbounded((self.human_action_dim,), device=self.device),
+        }
             
         if self.enable_lidar:
              obs_dict["lidar"] = Unbounded((1, self.lidar_hbeams, self.lidar_vbeams), device=self.device)
@@ -370,40 +368,41 @@ class FollowingEnvResidual(IsaacEnv):
         return tensordict
 
     def _pre_sim_step(self, tensordict: TensorDictBase):
-        # 这里的action为torchrl的VelController转换后的action（此时为推力指令），用于传递给drone.apply_action()
-        actions = tensordict[("agents", "action")]
-        # Save previous action command before updating current
-        # Used for action smoothness reward calculation
+
+        # Store last step action command for smoothness reward
         self.prev_action_command[:] = self.agent_action.clone()
 
-        # === Fix: Retrieve correct velocity command for observation ===
-        # actions at this point are Rotor Thrusts (dim=4) because VelController has run.
-        # We retrieve the original "command" (world frame velocity) saved efficiently in PPO.
-        # 为了评估速度控制动作指令，我们从 tensordict 中提取 PPO 传递的 "command"（原始速度指令）
-        if ("agents", "command") in tensordict.keys(include_nested=True):
-            cmd = tensordict[("agents", "command")]
-            if cmd.ndim > 2:
-                cmd = cmd.reshape(self.num_envs, -1)[..., :3]
-            self.agent_action = cmd.clone()
-        else:
-            # Fallback if PPO didn't provide command (shouldn't happen with updated PPO)
-            if actions.ndim > 2:
-                actions_flat = actions.reshape(self.num_envs, -1)[..., :3]
-            else:
-                actions_flat = actions
-            self.agent_action = actions_flat.clone()
-        # ==============================================================
-        # Apply rotor commands directly to the drone
-        # drone.apply_action expects rotor throttle commands, not velocity
+        # Get new action command from policy
+        action_command = tensordict[("agents", "action")]
         # Ensure actions shape is compatible with drone.shape (num_envs, 1, 3)
-        if actions.ndim == 2:
-            actions = actions.unsqueeze(1)  # (num_envs, 3) -> (num_envs, 1, 3)
+        if action_command.ndim == 2:
+            action_command = action_command.unsqueeze(1)  # (num_envs, 3) -> (num_envs, 1, 3)
+        self.agent_action[:] = action_command.clone()
+
+        if self.enable_yaw_control:
+            target_vel = action_command[..., :3]
+            target_yaw = action_command[..., 3:4]
+        else:
+            target_vel = action_command[..., :3]
+            target_yaw = None
+
+        # Retrieve drone state for controller input
+        # TODO: 调整这里的state赋值，确定与当前状态同步
+        drone_state = tensordict[("info", "drone_state")][..., :13]
+        
+        # Apply action using the Omnidrones controller
+        # action_command(target vel) -> actions(thrusts)
+        actions = self.controller(
+            root_state=drone_state,
+            target_vel=target_vel,
+            target_yaw=target_yaw
+        )
         self.drone.apply_action(actions) 
 
     def _post_sim_step(self, tensordict: TensorDictBase):
         profiler = get_profiler()
         with profiler.timer("env/_post_sim_step"):
-            # No dynamic obstacles
+            # Update LiDAR sensor
             if self.enable_lidar:
                 self.lidar.update(self.dt)
     
@@ -413,7 +412,7 @@ class FollowingEnvResidual(IsaacEnv):
         profiler.start("env/_compute_state_and_obs")
         
         self.root_state = self.drone.get_state(env_frame=False)  # get drone's root state in world frame
-        # explaination of root state:  
+        # explaination of root state(17):  
         # (world_pos[3], orientation (quat)[4], world_vel_and_angular[3+3], heading, up, 4motorsthrust)
         self.info["drone_state"][:] = self.root_state[..., :13] # info is for controller
 
@@ -448,15 +447,10 @@ class FollowingEnvResidual(IsaacEnv):
 
         # ---------Network Input III: Dynamic obstacle states (Removed)--------
 
-        # ---------Network Input IV: Previous drone action--------
-        
-        prev_action_world = self.agent_action  # shape: (N, 3)
-
-        # ---------Network Input V: Human control action--------
+        # ---------Network Input IV: Human control action--------
         user_input_drone_state = drone_state_b.clone()  # (N, 10)
 
-        human_actions_local = torch.zeros(self.num_envs, 3, device=self.device)  # (N, 3) - 3D velocity only
-        need_refill = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # (N,) Boolean
+        human_actions_local = torch.zeros(self.num_envs, self.human_action_dim, device=self.device)  # (N, 3) or (N, 4)
  
         if getattr(self, "manual_mode", False):
             # Use manual action input as human input
@@ -474,15 +468,12 @@ class FollowingEnvResidual(IsaacEnv):
             "state": drone_state_b,
             "human_action": human_actions_local,
         }
-        if self.obs_add_prev:
-            obs["prev_action"] = prev_action_world
         if self.enable_lidar:
             obs["lidar"] = self.lidar_scan
         # -----------------Reward Calculation-----------------
         profiler.start("env/reward_calculation")
         
         # a. safety reward for static obstacles
-        # 从正向奖励（log线性）转换为负向惩罚
         if self.enable_lidar:
             # lidar_scan: (N, 1, H, W) 或 (N, 1, Rays)
             # 找到最危险的射线（即 scan 值最大的点）
@@ -492,6 +483,7 @@ class FollowingEnvResidual(IsaacEnv):
             # 将其还原为物理距离 (Physical Distance to closest obstacle)
             # dist = range - scan
             min_dist_to_obs = self.lidar_range - max_proximity_val
+
             # --------- (Positive Reward) ---------
             # 与最近障碍物的距离的对数奖励（越远离障碍物奖励越高）
             reward_safety_static = torch.log((min_dist_to_obs).clamp(min=1e-6, max=self.lidar_range))
@@ -523,55 +515,45 @@ class FollowingEnvResidual(IsaacEnv):
 
         # c. Velocity following reward (Positive)
         # 速度方向奖励和速度大小奖励分开加权
-
-        current_vel_w = self.drone.vel_w[..., :3] # (N, 1, 3)
-        # squeeze the drone velocity tensor if needed
-        if current_vel_w.ndim == 3 and current_vel_w.shape[1] == 1:
-            current_vel_w = current_vel_w.squeeze(1)  # (N, 3)
-        current_yaw_rate = self.drone.vel_w[..., 5:6]  # (N, 1, 1) get wz as yaw rate
-        if current_yaw_rate.ndim == 3 and current_yaw_rate.shape[1] == 1:
-            current_yaw_rate = current_yaw_rate.squeeze(-1)  # (N, 1)
-
-        # check: drone_vel_w == current_vel_w
-        assert torch.allclose(current_vel_w, drone_vel_w, atol=1e-5), f"Velocity mismatch! current_vel_w: {current_vel_w}, drone_vel_w: {drone_vel_w}"
-
+        
+        # 目标速度为上一个step的 human action (in world frame)
         prev_human_action_b = self.prev_human_action.clone()
-        # human_action_vel_b = human_actions_local[..., :3] # (N, 3)
         target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
 
         # c1. 方向奖励 (Alignment)
         # 计算余弦相似度
-        cosine_sim = torch.cosine_similarity(target_vel_w, current_vel_w, dim=-1).unsqueeze(-1)
+        cosine_sim = torch.cosine_similarity(target_vel_w, drone_vel_w, dim=-1).unsqueeze(-1)
         # 映射到 [0, 1]
         reward_direction = (cosine_sim + 1.0) / 2.0 
 
         # c2. 速度大小奖励 (Magnitude)
-        vel_error = (target_vel_w - current_vel_w).norm(dim=-1, keepdim=True)
+        vel_error = (target_vel_w - drone_vel_w).norm(dim=-1, keepdim=True)
         # 使用 exp(-k * error) 形式，保证范围 [0, 1]
-        reward_speed_match = torch.exp(-1.0 * vel_error) 
+        reward_speed_match = torch.exp(-2.0 * vel_error) 
 
         # 综合任务奖励
-        reward_task = 0.8 * reward_direction + 0.2 * reward_speed_match + 1.0 * reward_safety_static
+        reward_task = 0.5 * reward_direction + 1.0 * reward_speed_match + 1.0 * reward_safety_static
 
         # d. Smoothness and Effort Penalty
 
         # d1. Penalize the difference between consecutive action commands
         # high frequency change in command -> huge penalty
+        # p_smooth = || a_t - a_(t-1) ||^2 / max_action_vel^2
         action_diff = (self.agent_action - self.prev_action_command).norm(dim=-1, keepdim=True)
-        penalty_action_smoothness = action_diff
+        penalty_action_smoothness = (action_diff / self.max_action_vel) ** 2
 
         # d2. smoothness reward for effort smoothness
-        # # Agent 应该倾向于选择容易执行的动作（即与当前速度矢量夹角小的动作）
-        action_change_cost = (self.agent_action - current_vel_w).norm(dim=-1, keepdim=True)
-        penalty_effort = action_change_cost
+        #  Agent 应该倾向于选择容易执行的动作（即与当前速度矢量夹角小的动作）
+        # p_effort = || a_t - v_t || / max_action_vel
+        action_change_cost = (self.agent_action - drone_vel_w).norm(dim=-1, keepdim=True)
+        penalty_effort = action_change_cost / self.max_action_vel
 
         # d3. Z-axis tracking Penalty (for Spiral Up behavior)
-        # TODO: check if need to keep this part，暂时不启用，先试一下改进的奖励函数
         # Penalize vertical velocity error more heavily to discourage spiraling up
         # We separate Z component from velocity matching to give it higher weight
         target_vel_z = target_vel_w[..., 2:3]
-        current_vel_z = current_vel_w[..., 2:3]
-        penalty_z_tracking = (target_vel_z - current_vel_z).abs()
+        current_vel_z = drone_vel_w[..., 2:3]
+        penalty_z_tracking = (target_vel_z - current_vel_z).abs() / self.max_action_vel
 
         # e. height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
@@ -613,22 +595,20 @@ class FollowingEnvResidual(IsaacEnv):
         # 总终止条件
         # self.terminated = below_bound | above_bound | collision | poor_following
         self.terminated = below_bound | above_bound | collision
-
-        # 使用随机化的 episode 长度来打破 episode 同步结束的问题
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
         self.truncated = timeout_truncate
 
         # update previous velocity for smoothness calculation in the next ieteration
-        # self.prev_drone_vel_w = current_vel_w.clone()
+        # self.prev_drone_vel_w = drone_vel_w.clone()
         self.prev_human_action = human_actions_local.clone()
-        self.prev_drone_vel_w = current_vel_w.clone()
+        self.prev_drone_vel_w = drone_vel_w.clone()
 
         # ----------------- Visualization and Debugging -----------------
         profiler.start("env/visualization")
         if self._should_render(0) and not self.disable_visualization:
             self.debug_draw.clear()
             viz_env_id = 0  # visualize only the first env
-            VIZ_VEL_SCALE = 2.0  # scale for velocity vector visualization
+            VIZ_VEL_SCALE = 0.5  # scale for velocity vector visualization
             view_pos = drone_pos_w[viz_env_id]  # lidar/camera view position is same as drone position by default
 
             # set the camera to focus on the lidar position (which is the drone)

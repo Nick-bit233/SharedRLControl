@@ -143,41 +143,41 @@ def main(cfg):
         print(f"[Train] Trajectory dataset loaded successfully")
 
     # === 初始化环境 ===
-    base_env = FollowingEnvResidual(cfg, trajectory_dataset=trajectory_dataset)
+    env = FollowingEnvResidual(cfg, trajectory_dataset=trajectory_dataset)
     
     # 启用渲染
-    base_env.enable_render(True)
+    env.enable_render(True)
 
     # === Transforms (保持与 train.py 一致) ===
-    controller = LeePositionController(9.81, base_env.drone.params).to(cfg.device)
-    vel_transform = VelController(controller, yaw_control=False)  # 3D velocity only, no yaw control
+    # controller = LeePositionController(9.81, base_env.drone.params).to(cfg.device)
+    # vel_transform = VelController(controller, yaw_control=False)  # 3D velocity only, no yaw control
 
-    if cfg.algo.rnn.enable:
-        primers_dict = {
-            # 给出一个key为recurrent_state的spec， primer根据此在 env.reset() 时创建对应的 tensordict 字段
-            "recurrent_state": Unbounded(
-                    # shape=(batch, 1, hidden_dim),  # policy.gru_num_layers is set default to 1
-                    shape=(base_env.num_envs, 1, 256),
-                    device=cfg.device
-                )
-        }
-        primer = TensorDictPrimer(primers=primers_dict, default_value=0.0)
+    # if cfg.algo.rnn.enable:
+    #     primers_dict = {
+    #         # 给出一个key为recurrent_state的spec， primer根据此在 env.reset() 时创建对应的 tensordict 字段
+    #         "recurrent_state": Unbounded(
+    #                 # shape=(batch, 1, hidden_dim),  # policy.gru_num_layers is set default to 1
+    #                 shape=(base_env.num_envs, 1, 256),
+    #                 device=cfg.device
+    #             )
+    #     }
+    #     primer = TensorDictPrimer(primers=primers_dict, default_value=0.0)
 
-        env = TransformedEnv(
-            base_env, 
-            Compose(
-                InitTracker(),  # 跟踪初始化状态 (RNN)
-                vel_transform,
-                primer
-            )
-        ).train()
-    else:
-        env = TransformedEnv(
-            base_env, 
-            Compose(
-                vel_transform,
-            )
-        ).train()
+    #     env = TransformedEnv(
+    #         base_env, 
+    #         Compose(
+    #             InitTracker(),  # 跟踪初始化状态 (RNN)
+    #             vel_transform,
+    #             primer
+    #         )
+    #     ).train()
+    # else:
+    #     env = TransformedEnv(
+    #         base_env, 
+    #         Compose(
+    #             vel_transform,
+    #         )
+    #     ).train()
     
     # === 初始化 SimpleResidualPPO ===
     # 注意：环境的 observation_spec 和 action_spec 已经过 Transform 处理，因此对于yaw_control=False，action_spec是3维的
@@ -193,9 +193,9 @@ def main(cfg):
         # === 保存帧用于检查 ===
         print("[Train] Capturing frame...")
         # 强制刷新一次渲染管线，确保画面是最新的
-        base_env.sim.render() 
+        env.sim.render() 
         # 获取 RGB 数据
-        rgb_image = base_env.render(mode="rgb_array")
+        rgb_image = env.render(mode="rgb_array")
         
         if rgb_image is not None:
             # 检查维度，如果是 (3, H, W) 则转换为 (H, W, 3)
@@ -426,11 +426,8 @@ def main(cfg):
         # 每隔 eval_interval 评估一次
         if eval_interval > 0 and i % eval_interval == 0:
             logging.info(f"Eval at {collector._frames} steps.")
-            base_env.eval()
             # 进行评估
             info.update(evaluate())
-            base_env.train()
-            base_env.reset()
 
             print(f"[Train] Eval info at step {collector._frames}: DONE")
 

@@ -1,5 +1,6 @@
 drone:  
   model_name: "hummingbird"
+  controller_name: "LeePositionController"
 
 sensor:
   lidar_range: 4.

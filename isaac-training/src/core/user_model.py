@@ -289,7 +289,7 @@ class UserModel:
         self.buffer_size = cfg.algo.training_frame_num # training frame num steps (e.g. 128 frames is about 2 seconds)
         self.repulsive_gain = 1.0  # Maxium repulsive force gain for APF
         self.max_speed = cfg.algo.actor.action_limit
-        self.max_speed_z = self.max_speed
+        self.max_speed_z = self.max_speed / 4.0
         
         # Z-axis compensation for tilt-induced lift loss
         # 增加Z轴正向偏置 (z_bias) TODO: check LeePositionController
