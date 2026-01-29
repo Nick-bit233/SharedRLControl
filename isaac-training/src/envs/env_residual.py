@@ -129,7 +129,7 @@ class FollowingEnvResidual(IsaacEnv):
         self.drone, self.controller = MultirotorBase.make(
             self.cfg.drone.model_name, self.cfg.drone.controller_name, self.device
         )
-        drone_prim = self.drone.spawn(translations=[(0.0, 0.0, 4.0)], device=self.device)[0]
+        drone_prim = self.drone.spawn(translations=[(0.0, 0.0, 4.0)])[0]
 
         # lighting
         light = AssetBaseCfg(
@@ -235,7 +235,8 @@ class FollowingEnvResidual(IsaacEnv):
         # Action Spec
         self.action_spec = Composite({
             "agents": Composite({
-                "action": self.drone.action_spec, # number of motor
+                # "action": self.drone.action_spec, # number of motor
+                "action": Unbounded((self.human_action_dim,), device=self.device),
             })
         }).expand(self.num_envs).to(self.device)
         
@@ -373,24 +374,27 @@ class FollowingEnvResidual(IsaacEnv):
         self.prev_action_command[:] = self.agent_action.clone()
 
         # Get new action command from policy
-        action_command = tensordict[("agents", "action")]
-        # Ensure actions shape is compatible with drone.shape (num_envs, 1, 3)
-        if action_command.ndim == 2:
-            action_command = action_command.unsqueeze(1)  # (num_envs, 3) -> (num_envs, 1, 3)
+        action_command = tensordict[("agents", "action")] # (num_envs, 3)
+        
+        # Ensure actions shape is compatible
+        if action_command.ndim == 3:
+            action_command = action_command.squeeze(1)  # (num_envs, 1, 3) -> (num_envs, 3) 
         self.agent_action[:] = action_command.clone()
-
-        if self.enable_yaw_control:
-            target_vel = action_command[..., :3]
-            target_yaw = action_command[..., 3:4]
-        else:
-            target_vel = action_command[..., :3]
-            target_yaw = None
 
         # Retrieve drone state for controller input
         # TODO: 调整这里的state赋值，确定与当前状态同步
-        drone_state = tensordict[("info", "drone_state")][..., :13]
+        drone_state = tensordict[("info", "drone_state")][..., :13]  # (num_envs, 1, 13)
         
         # Apply action using the Omnidrones controller
+        # Notice: Omnidrones requires input tensor be of shape (num_envs, M, ), where M=1 by default
+        # need to squeeze the input tensors first
+        if self.enable_yaw_control:
+            target_vel = action_command[..., :3].unsqueeze(1)  # (num_envs, 1, 3)
+            # yaw speed is scaled to [-pi, pi]
+            target_yaw = action_command[..., 3:4].unsqueeze(1) * torch.pi  # (num_envs, 1, 1)
+        else:
+            target_vel = action_command[..., :3].unsqueeze(1)
+            target_yaw = None
         # action_command(target vel) -> actions(thrusts)
         actions = self.controller(
             root_state=drone_state,
