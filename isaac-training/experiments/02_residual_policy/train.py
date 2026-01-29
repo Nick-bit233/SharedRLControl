@@ -145,42 +145,7 @@ def main(cfg):
     # === 初始化环境 ===
     env = FollowingEnvResidual(cfg, trajectory_dataset=trajectory_dataset)
     
-    # 启用渲染
-    env.enable_render(True)
-
-    # === Transforms (保持与 train.py 一致) ===
-    # controller = LeePositionController(9.81, base_env.drone.params).to(cfg.device)
-    # vel_transform = VelController(controller, yaw_control=False)  # 3D velocity only, no yaw control
-
-    # if cfg.algo.rnn.enable:
-    #     primers_dict = {
-    #         # 给出一个key为recurrent_state的spec， primer根据此在 env.reset() 时创建对应的 tensordict 字段
-    #         "recurrent_state": Unbounded(
-    #                 # shape=(batch, 1, hidden_dim),  # policy.gru_num_layers is set default to 1
-    #                 shape=(base_env.num_envs, 1, 256),
-    #                 device=cfg.device
-    #             )
-    #     }
-    #     primer = TensorDictPrimer(primers=primers_dict, default_value=0.0)
-
-    #     env = TransformedEnv(
-    #         base_env, 
-    #         Compose(
-    #             InitTracker(),  # 跟踪初始化状态 (RNN)
-    #             vel_transform,
-    #             primer
-    #         )
-    #     ).train()
-    # else:
-    #     env = TransformedEnv(
-    #         base_env, 
-    #         Compose(
-    #             vel_transform,
-    #         )
-    #     ).train()
-    
-    # === 初始化 SimpleResidualPPO ===
-    # 注意：环境的 observation_spec 和 action_spec 已经过 Transform 处理，因此对于yaw_control=False，action_spec是3维的
+    # === 初始化 PPO ===
     policy = SimpleResidualPPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
     
     print("[Train] Environment structure.")
@@ -234,6 +199,9 @@ def main(cfg):
     @torch.no_grad()
     def evaluate(seed: int=42):
         env.eval()
+        # 评估过程需要启用渲染管线以录制视频
+        env.enable_render(True)
+
         # 评估时，固定探索类型为确定性
         exploration_type = ExplorationType.MEAN
         # 评估时，固定随机种子
@@ -296,6 +264,8 @@ def main(cfg):
         
         # 评估结束后关闭可视化
         env.set_visualization(enabled=False)
+        # 评估结束后关闭渲染管线以节省性能
+        env.enable_render(False)
 
         # 保存评估视频 - Follow camera view (always saved)
         video_fps = 0.5 / (cfg.sim.dt * cfg.sim.substeps)
