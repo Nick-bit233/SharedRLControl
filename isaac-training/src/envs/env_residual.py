@@ -80,6 +80,9 @@ class FollowingEnvResidual(IsaacEnv):
         # Algo action params
         self.max_action_vel = cfg.algo.actor.action_limit
 
+        # Reward Function Params
+        self.enable_task_reward = cfg.env.get("enable_task_reward", True)
+
         # User Model Initialization
         # Check for offline mode configuration
         offline_mode = cfg.user_model.get("offline_mode", False)
@@ -536,7 +539,7 @@ class FollowingEnvResidual(IsaacEnv):
         reward_speed_match = torch.exp(-2.0 * vel_error) 
 
         # 综合任务奖励
-        reward_task = 0.5 * reward_direction + 1.0 * reward_speed_match + 1.0 * reward_safety_static
+        reward_task = 0.5 * reward_direction + 1.0 * reward_speed_match
 
         # d. Smoothness and Effort Penalty
 
@@ -578,12 +581,13 @@ class FollowingEnvResidual(IsaacEnv):
         else:
             # Full reward calculation
             self.reward = (
-                1.0 * reward_task
+                1.0 * reward_task if self.enable_task_reward else 0.0
                 + 0.1 * reward_survival
-                # - 1.0 * static_safety_penalty  # disabled when using positive safety reward
+                + 1.0 * reward_safety_static  # positive safety reward
+                # - 1.0 * static_safety_penalty  # negative safety reward
                 - 0.1 * penalty_effort
                 - 0.2 * penalty_action_smoothness 
-                - 0.4 * penalty_z_tracking        
+                # - 0.4 * penalty_z_tracking        
                 - 8.0 * penalty_height  # height penalty to prevent crashing into ground
             )
         profiler.stop("env/reward_calculation")
@@ -593,7 +597,7 @@ class FollowingEnvResidual(IsaacEnv):
         above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0  # 2*sz + 1, where sz is half z range of the map
         
         # collision check 
-        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.2)
+        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3)
         collision = static_collision
         
         # 总终止条件

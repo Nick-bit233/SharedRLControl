@@ -1,0 +1,56 @@
+# @package _global_
+
+# === Environment Configuration ===
+env:
+  num_envs: 256
+  max_episode_length: 2000
+  num_obstacles: 300
+  env_spacing: 8.0
+  map_range: [20.0, 20.0, 5.0]  # [x, y, z], half extents
+  platform_width: 4.0
+  enable_lidar: True
+  enable_task_reward: False
+
+env_dyn:
+  num_obstacles: 0
+
+# === Algorithm Configuration ===
+algo:
+  rnn:
+    enable: False
+  training_frame_num: 128 # frames per batch
+  
+  # === Constrained Optimization Parameters ===
+  # use estimate_threshold.py to find suitable threshold based on initial evals
+  reward_threshold: 0.05  # Target reward threshold for constraint RL policy
+  lambda_lr: 1e-4  # Learning rate for the Lagrange multiplier
+
+# === Training Loop ===
+max_iterations: 50010
+eval_interval: 500
+save_interval: 500
+
+# === User Model ===
+user_model:
+
+  style:
+    frequency_base: 0.1  # base frequency for user command changes
+    frequency_scale: 0.3  # scale for randomizing frequency
+
+  simple_mode: false
+  z_tilt_compensation: 0.0
+
+# === Visualization ===
+record_video: false
+global_view: True
+viewer:
+  eye: [0., 0., 3.]
+  lookat: [0., 0, 1.]
+  resolution: [960, 720]
+
+# === Logging ===
+hydra:
+  run:
+    dir: ./outputs/constrained_residual/${now:%Y-%m-%d_%H-%M-%S}
+
+job_name: constrained_residual

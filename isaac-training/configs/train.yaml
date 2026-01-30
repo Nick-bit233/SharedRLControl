@@ -21,6 +21,7 @@ save_interval: 1000
 
 # Evaluation Settings
 eval_visualization: true  
+record_video: false
 
 # Hydra Configuration associated with this
 hydra:
