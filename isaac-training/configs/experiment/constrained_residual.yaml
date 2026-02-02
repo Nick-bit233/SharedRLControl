@@ -22,7 +22,7 @@ algo:
   
   # === Constrained Optimization Parameters ===
   # use estimate_threshold.py to find suitable threshold based on initial evals
-  reward_threshold: 0.05  # Target reward threshold for constraint RL policy
+  reward_threshold: 1.0  # Target reward threshold for constraint RL policy
   lambda_lr: 1e-4  # Learning rate for the Lagrange multiplier
 
 # === Training Loop ===
@@ -41,7 +41,7 @@ user_model:
   z_tilt_compensation: 0.0
 
 # === Visualization ===
-record_video: false
+record_video: True
 global_view: True
 viewer:
   eye: [0., 0., 3.]

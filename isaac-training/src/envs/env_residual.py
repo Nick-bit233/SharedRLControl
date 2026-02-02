@@ -18,7 +18,7 @@ import omni_drones.utils.kit as kit_utils
 from omni_drones.robots.drone import MultirotorBase
 from isaaclab.assets import AssetBaseCfg
 from isaaclab.terrains import TerrainImporterCfg, TerrainImporter, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
-from omni_drones.utils.torch import euler_to_quaternion, quat_axis, quat_rotate, quat_rotate_inverse
+from omni_drones.utils.torch import euler_to_quaternion, quaternion_to_euler, quat_axis, quat_rotate, quat_rotate_inverse
 from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
 from isaacsim.core.utils.viewports import set_camera_view
 
@@ -116,8 +116,8 @@ class FollowingEnvResidual(IsaacEnv):
             self.error_ema_alpha = 0.995  # Exponential moving average decay factor
             self.error_threshold_base = 1.0  # Base threshold (strict, for no-obstacle case)
             self.error_threshold_max = 10.0   # Max threshold (relaxed, when obstacles are very close)
-            self.safety_margin = 1.5  # Distance within which we start relaxing the threshold
-
+            self.safety_margin = 1.5  # Distance within which we start relaxing the threshold        
+        self.common_step_counter = 0
         # visualize options
         self.disable_visualization = True
         self.render_lidar = False
@@ -264,6 +264,11 @@ class FollowingEnvResidual(IsaacEnv):
             "above_bound": Unbounded(1),
             "below_bound": Unbounded(1),
             "collision": Unbounded(1),
+            "upside_down": Unbounded(1), # [New] Track orientation crashes
+            "debug_vz_cmd": Unbounded(1),
+            "debug_vz_drone": Unbounded(1),
+            "debug_z_drone": Unbounded(1),
+            "debug_reward_height": Unbounded(1),
             "terminated": Unbounded(1),
             "truncated": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
@@ -288,14 +293,17 @@ class FollowingEnvResidual(IsaacEnv):
 
             # generate random start positions (within the platform area near the center of the map)
             pos = s_radius * (torch.rand(env_ids.size(0), 1, 3, dtype=torch.float, device=self.device) - 0.5)
-            heights = 2.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (5.0 - 2.5)
-            pos[:, 0, 2] = heights  # pos z: range from 2.5 to 5.0
+            heights = 5.0 + torch.zeros(env_ids.size(0), dtype=torch.float, device=self.device)
+            # heights = 2.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (5.0 - 2.5)
+            pos[:, 0, 2] = heights  # pos z: 5.0
+            # print(f"[Env Reset T] Randomized start positions for envs {env_ids.tolist()}")
         else:
             # assign positions on the center of the map grid
             pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
             pos[:, 0, 0] = 0
             pos[:, 0, 1] = 0
-            pos[:, 0, 2] = min(2.5, sz)
+            pos[:, 0, 2] = min(5.0, sz)
+            # print(f"[Env Reset E] Assigned start positions for envs {env_ids.tolist()}")
 
         # Fix: Update start_pos with correct indexing (start_pos is (num_envs, 3))
         self.start_pos[env_ids] = pos[:, 0, :].clone()  # record start pos for debug
@@ -365,6 +373,7 @@ class FollowingEnvResidual(IsaacEnv):
 
         self._post_sim_step(tensordict)
         self.progress_buf += 1
+        self.common_step_counter += 1
 
         tensordict = TensorDict({}, self.batch_size, device=self.device)
         tensordict.update(self._compute_state_and_obs())
@@ -525,7 +534,25 @@ class FollowingEnvResidual(IsaacEnv):
         
         # 目标速度为上一个step的 human action (in world frame)
         prev_human_action_b = self.prev_human_action.clone()
-        target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
+        # target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
+
+        # [Fix] 只使用 Yaw (航向角) 进行坐标系转换
+        # 【注意】对于四旋翼无人机来说，为了产生前进的推力，通常需要通过 Pitch(俯仰角) 来实现低头前进。因此，机体坐标系的前向速度实际上需要对应世界坐标系中的一个斜向下的方向。为了消除这种影响，在转换时只考虑 Yaw 角。
+        # 如果使用完整的 quaternion (包含 Pitch/Roll)，当无人机为了前进低头(Pitch down)时，
+        # 机体坐标系的前向速度(Vx)会被投影产生负的 Z 轴世界速度，导致奖励函数鼓励无人机“扎头”下坠。
+        # 因此，这里先提取 Yaw 角，构造新的仅包含 Yaw 旋转的四元数来进行转换。
+        rpy = quaternion_to_euler(drone_orientation_q)
+        yaw = rpy[..., 2]
+        
+        # 构造仅含 Yaw 的欧拉角 (N, 3)
+        yaw_rpy = torch.zeros_like(rpy)
+        yaw_rpy[..., 2] = yaw
+        
+        # 转回四元数
+        yaw_quat = euler_to_quaternion(yaw_rpy)
+        
+        # 使用 Yaw Quaternion 进行旋转: Body(Yaw-aligned) -> World
+        target_vel_w = quat_rotate(yaw_quat, prev_human_action_b)
 
         # c1. 方向奖励 (Alignment)
         # 计算余弦相似度
@@ -588,7 +615,7 @@ class FollowingEnvResidual(IsaacEnv):
                 - 0.1 * penalty_effort
                 - 0.2 * penalty_action_smoothness 
                 # - 0.4 * penalty_z_tracking        
-                - 8.0 * penalty_height  # height penalty to prevent crashing into ground
+                # - 8.0 * penalty_height  # height penalty to prevent crashing into ground
             )
         profiler.stop("env/reward_calculation")
 
@@ -596,13 +623,19 @@ class FollowingEnvResidual(IsaacEnv):
         below_bound = self.drone.pos[..., 2] < 0.2
         above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0  # 2*sz + 1, where sz is half z range of the map
         
+        # [New: Upside Down Check]
+        # Detect simple crashes where drone flips over but lidar didn't trigger collision
+        # quat_axis(q, 2) gives the body Z-axis in world frame.
+        # If z-component < 0.0, it's upside down. Using 0.0 as threshold.
+        drone_up = quat_axis(drone_orientation_q, axis=2) # (N,)
+        upside_down = (drone_up[..., 2] < 0.0).unsqueeze(-1)  # unsqueeze to (N, 1)
+        
         # collision check 
         static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3)
         collision = static_collision
         
         # 总终止条件
-        # self.terminated = below_bound | above_bound | collision | poor_following
-        self.terminated = below_bound | above_bound | collision
+        self.terminated = below_bound | above_bound | collision | upside_down
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
         self.truncated = timeout_truncate
 
@@ -703,6 +736,16 @@ class FollowingEnvResidual(IsaacEnv):
         # self.stats["within_safe_distance"] = mask_safe
         self.stats["terminated"] = self.terminated.float()
         self.stats["collision"] = collision.float()
+        # self.stats["upside_down"] = upside_down.float() # [New]
+        self.stats["debug_vz_cmd"] = target_vel_w[..., 2:3]
+        self.stats["debug_vz_drone"] = drone_vel_w[..., 2:3]
+        self.stats["debug_z_drone"] = drone_pos_w[..., 2:3]
+        # self.stats["debug_reward_height"] = penalty_height
+
+        # [Debug Print] Check if drone is falling despite 0 command
+        # if self.common_step_counter % 10 == 0:
+        #      print(f"[Env Debug Step {self.common_step_counter}] Mean Z: {drone_pos_w[..., 2].mean():.2f} | Agent action Vz: {self.agent_action[..., 2].mean():.2f} | Human action local Vz: {human_actions_local[..., 2].mean():.2f} | Mean target world Vz (ideal): {target_vel_w[..., 2].mean():.2f} | Mean world Vz (actual): {drone_vel_w[..., 2].mean():.2f}")
+
         self.stats["truncated"] = self.truncated.float()
         
         profiler.stop("env/_compute_state_and_obs")

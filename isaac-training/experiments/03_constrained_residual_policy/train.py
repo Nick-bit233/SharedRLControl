@@ -354,8 +354,8 @@ def main(cfg):
             print(f"❌ Initialization WARNING: Initial error is large ({diff.item()}).")
             print(f"   Sample Net Out: {net_output_norm[0]}")
             print(f"   Sample Human In: {human_input_norm[0]}")
-    env.train() 
-
+    env.train()
+    env.reset()
 
     # === 主训练循环 ===
     import time as time_module

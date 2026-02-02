@@ -286,17 +286,14 @@ class UserModel:
         )
 
         # Parameters
-        self.buffer_size = cfg.algo.training_frame_num # training frame num steps (e.g. 128 frames is about 2 seconds)
+        self.buffer_size = cfg.algo.training_frame_num  # training frame num steps (e.g. 128 frames is about 2 seconds)
         self.repulsive_gain = 1.0  # Maxium repulsive force gain for APF
         self.max_speed = cfg.algo.actor.action_limit
-        self.max_speed_z = self.max_speed / 4.0
+        self.max_speed_z = cfg.algo.actor.action_limit  # TODO: find a better way of handling vertical speed
         
         # Z-axis compensation for tilt-induced lift loss
-        # 增加Z轴正向偏置 (z_bias) TODO: check LeePositionController
-        # When drone tilts to fly horizontally, vertical lift component is reduced
-        # Typical compensation: ~0.02-0.05 m/s depending on average tilt angle
-        # Formula: compensation ≈ mean_horizontal_speed * sin(mean_tilt_angle)
-        # With max_speed=2.0 and ~1.5 deg tilt: 2.0 * 0.5 * sin(0.026) ≈ 0.026 m/s
+        # 增加Z轴速度偏置 (z_bias)
+        # 【注意】在LeePositionController和模拟环境计算速度时均已考虑了对z轴速度的补偿，在多数情况下，此值应设为0
         self.z_tilt_compensation = cfg.user_model.get("z_tilt_compensation", 0.0)
         
         self.max_speed_yaw = 0.5  # Max yaw rate (rad/s)
@@ -578,8 +575,9 @@ class UserModel:
             # Apply Z-axis tilt compensation
             # When drone flies horizontally, it must tilt, which reduces vertical lift
             # This adds a small positive bias to Z velocity to compensate
-            if self.z_tilt_compensation > 0:
+            if self.z_tilt_compensation:
                 target_vels[:, :, 2] += self.z_tilt_compensation
+            # print(f"[UserModel] refill target vels mean z: {target_vels[:, :, 2].mean().item():.4f} m/s")
 
         
         # 2. Apply Human Filters (Low Pass & Deadband)
