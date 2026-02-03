@@ -264,11 +264,10 @@ class FollowingEnvResidual(IsaacEnv):
             "above_bound": Unbounded(1),
             "below_bound": Unbounded(1),
             "collision": Unbounded(1),
-            "upside_down": Unbounded(1), # [New] Track orientation crashes
-            "debug_vz_cmd": Unbounded(1),
+            "debug_vz_policy": Unbounded(1),
+            "debug_vz_target": Unbounded(1),
             "debug_vz_drone": Unbounded(1),
             "debug_z_drone": Unbounded(1),
-            "debug_reward_height": Unbounded(1),
             "terminated": Unbounded(1),
             "truncated": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
