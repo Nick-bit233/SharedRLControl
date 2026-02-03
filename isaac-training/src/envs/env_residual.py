@@ -613,19 +613,12 @@ class FollowingEnvResidual(IsaacEnv):
         below_bound = self.drone.pos[..., 2] < 0.2
         above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0  # 2*sz + 1, where sz is half z range of the map
         
-        # [New: Upside Down Check]
-        # Detect simple crashes where drone flips over but lidar didn't trigger collision
-        # quat_axis(q, 2) gives the body Z-axis in world frame.
-        # If z-component < 0.0, it's upside down. Using 0.0 as threshold.
-        drone_up = quat_axis(drone_orientation_q, axis=2) # (N,)
-        upside_down = (drone_up[..., 2] < 0.0).unsqueeze(-1)  # unsqueeze to (N, 1)
-        
         # collision check 
         static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3)
         collision = static_collision
         
         # 总终止条件
-        self.terminated = below_bound | above_bound | collision | upside_down
+        self.terminated = below_bound | above_bound | collision
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
         self.truncated = timeout_truncate
 
@@ -726,15 +719,15 @@ class FollowingEnvResidual(IsaacEnv):
         # self.stats["within_safe_distance"] = mask_safe
         self.stats["terminated"] = self.terminated.float()
         self.stats["collision"] = collision.float()
-        # self.stats["upside_down"] = upside_down.float() # [New]
-        self.stats["debug_vz_cmd"] = target_vel_w[..., 2:3]
+
+        self.stats["debug_vz_policy"] = self.agent_action[..., 2:3]
+        self.stats["debug_vz_target"] = target_vel_w[..., 2:3]
         self.stats["debug_vz_drone"] = drone_vel_w[..., 2:3]
         self.stats["debug_z_drone"] = drone_pos_w[..., 2:3]
-        # self.stats["debug_reward_height"] = penalty_height
 
         # [Debug Print] Check if drone is falling despite 0 command
         # if self.common_step_counter % 10 == 0:
-        #      print(f"[Env Debug Step {self.common_step_counter}] Mean Z: {drone_pos_w[..., 2].mean():.2f} | Agent action Vz: {self.agent_action[..., 2].mean():.2f} | Human action local Vz: {human_actions_local[..., 2].mean():.2f} | Mean target world Vz (ideal): {target_vel_w[..., 2].mean():.2f} | Mean world Vz (actual): {drone_vel_w[..., 2].mean():.2f}")
+        #      print(f"[Env Debug Step {self.common_step_counter}] Mean Z: {drone_pos_w[..., 2].mean():.2f} | Agent action Vz: {self.agent_action[..., 2].mean():.4f} | Human action local Vz: {human_actions_local[..., 2].mean():.4f} | Mean target world Vz (ideal): {target_vel_w[..., 2].mean():.4f} | Mean world Vz (actual): {drone_vel_w[..., 2].mean():.4f}")
 
         self.stats["truncated"] = self.truncated.float()
         
