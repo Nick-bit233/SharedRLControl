@@ -91,7 +91,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
         # Learnable Lagrange Multiplier parameter (unconstrained)
         # λ is optimized for adjusting the trade-off between reward maximization and residual minimization
         # Initialize to a negative value so softplus(lambda) starts small (Strong Regularization initially)
-        self.lambda_param = nn.Parameter(torch.tensor([-2.0], device=device), requires_grad=True)
+        self.lambda_param = nn.Parameter(torch.tensor([1.0], device=device), requires_grad=True)
         self.lambda_lr = cfg.get("lambda_lr", 5e-5) # Lower LR to prevent oscillation/explosion
         self.lambda_optim = torch.optim.Adam([self.lambda_param], lr=self.lambda_lr)
         # =======================================
