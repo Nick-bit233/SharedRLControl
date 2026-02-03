@@ -284,9 +284,9 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
         # "action_normalized" from TanhNormal is in range [-1, 1]
         actions = action_norm_clamped * self.cfg.actor.action_limit
 
-        # transform to world frame
+        # transform to world frame (lock roll/pitch, only yaw)
         actions_world = vec_to_world(
-            actions, tensordict["agents", "observation", "state"]
+            actions, tensordict["agents", "observation", "state"], yaw_only=True
         )
 
         tensordict["agents", "action"] = actions_world

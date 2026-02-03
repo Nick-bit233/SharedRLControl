@@ -385,7 +385,7 @@ class FollowingEnvResidual(IsaacEnv):
         # Store last step action command for smoothness reward
         self.prev_action_command[:] = self.agent_action.clone()
 
-        # Get new action command from policy
+        # Get new action command from policy (world frame)
         action_command = tensordict[("agents", "action")] # (num_envs, 3)
         
         # Ensure actions shape is compatible
@@ -534,25 +534,15 @@ class FollowingEnvResidual(IsaacEnv):
         
         # 目标速度为上一个step的 human action (in world frame)
         prev_human_action_b = self.prev_human_action.clone()
-        # target_vel_w = quat_rotate(drone_orientation_q, prev_human_action_b)
 
-        # [Fix] 只使用 Yaw (航向角) 进行坐标系转换
-        # 【注意】对于四旋翼无人机来说，为了产生前进的推力，通常需要通过 Pitch(俯仰角) 来实现低头前进。因此，机体坐标系的前向速度实际上需要对应世界坐标系中的一个斜向下的方向。为了消除这种影响，在转换时只考虑 Yaw 角。
-        # 如果使用完整的 quaternion (包含 Pitch/Roll)，当无人机为了前进低头(Pitch down)时，
-        # 机体坐标系的前向速度(Vx)会被投影产生负的 Z 轴世界速度，导致奖励函数鼓励无人机“扎头”下坠。
-        # 因此，这里先提取 Yaw 角，构造新的仅包含 Yaw 旋转的四元数来进行转换。
-        rpy = quaternion_to_euler(drone_orientation_q)
-        yaw = rpy[..., 2]
-        
-        # 构造仅含 Yaw 的欧拉角 (N, 3)
-        yaw_rpy = torch.zeros_like(rpy)
-        yaw_rpy[..., 2] = yaw
-        
-        # 转回四元数
-        yaw_quat = euler_to_quaternion(yaw_rpy)
-        
-        # 使用 Yaw Quaternion 进行旋转: Body(Yaw-aligned) -> World
-        target_vel_w = quat_rotate(yaw_quat, prev_human_action_b)
+        # [注意] 只使用 Yaw (航向角) 进行目标速度的坐标系转换
+        # 对于四旋翼无人机来说，为了产生前进的推力，通常需要通过 Pitch(俯仰角) 来实现低头前进。因此，机体坐标系的前向速度实际上需要对应世界坐标系中的一个斜向下的方向。为了消除这种影响，在转换时只考虑 Yaw 角。
+        target_vel_w = vec_to_world(
+            prev_human_action_b,
+            drone_orientation_q,
+            orientation_only=True,
+            yaw_only=True
+        )
 
         # c1. 方向奖励 (Alignment)
         # 计算余弦相似度

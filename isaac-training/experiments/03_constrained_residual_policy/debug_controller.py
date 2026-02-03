@@ -114,7 +114,7 @@ def main(cfg: DictConfig):
     print(f"{'Step':<6} | {'Z (m)':<10} | {'Vz Real':<10} | {'Vz Cmd':<10} | {'Thrust Cmd':<15} | {'Throttle':<10}")
     print("-" * 75)
     
-    for i in range(50):
+    for i in range(500):
         # Update action in the EXISTING tensordict to preserve stats/info
         if "agents" not in td.keys():
              td["agents"] = TensorDict({}, batch_size=td.batch_size, device=td.device)

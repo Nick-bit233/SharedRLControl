@@ -246,13 +246,34 @@ def vec_to_new_frame(vec, goal_direction):
 
     return vec_new
 
-def vec_to_world(vec, drone_state, orientation_only=False):
+def _extract_yaw_quat(q):
     """
-    Convert vector from body frame to world frame.
+    Extracts the yaw-only rotation quaternion from a full rotation quaternion.
+    q: (..., 4) [w, x, y, z]
+    Returns: (..., 4) [cos(yaw/2), 0, 0, sin(yaw/2)]
+    """
+    w, x, y, z = q.unbind(-1)
+    # Yaw calculation from quaternion (Z-Y-X Euler sequence)
+    # atan2(2(wz + xy), 1 - 2(y^2 + z^2))
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = torch.atan2(siny_cosp, cosy_cosp)
+    
+    half_yaw = yaw / 2
+    zeros = torch.zeros_like(yaw)
+    # Reconstruct quaternion [w, x, y, z] -> [cos, 0, 0, sin]
+    q_yaw = torch.stack([torch.cos(half_yaw), zeros, zeros, torch.sin(half_yaw)], dim=-1)
+    return q_yaw
+
+def vec_to_world(vec, drone_state, orientation_only=False, yaw_only=False):
+    """
+    Convert vector from body frame (or heading frame if yaw_only=True) to world frame.
     vec: (N, 3) or (N, 4)
     drone_state: 
         (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)] default
      or (N, 4) -> orientation_q(4) if orientation_only=True
+    yaw_only: If True, removes pitch/roll from the rotation, transforming from 
+              Heading-Aligned Frame -> World Frame.
     """
     if orientation_only:
         q = drone_state
@@ -263,6 +284,9 @@ def vec_to_world(vec, drone_state, orientation_only=False):
         else:
             q = drone_state[..., 6:10]
     
+    if yaw_only:
+        q = _extract_yaw_quat(q)
+
     # Handle 3D or 4D vector
     if vec.shape[-1] == 3:
         return quat_rotate(q, vec)
@@ -274,13 +298,15 @@ def vec_to_world(vec, drone_state, orientation_only=False):
     else:
         raise ValueError(f"Unsupported vector shape: {vec.shape}")
 
-def vec_to_body(vec, drone_state, orientation_only=False):
+def vec_to_body(vec, drone_state, orientation_only=False, yaw_only=False):
     """
-    Convert vector from world frame to body frame.
+    Convert vector from world frame to body frame (or heading frame if yaw_only=True).
     vec: (N, 3) or (N, 4)
     drone_state:         
         (N, 10) -> [vel_b(3), ang_vel_b(3), orientation_q(4)] default
      or (N, 4) -> orientation_q(4) if orientation_only=True
+    yaw_only: If True, removes pitch/roll from the rotation, transforming from 
+              World Frame -> Heading-Aligned Frame.
     """
     if orientation_only:
         q = drone_state
@@ -290,6 +316,9 @@ def vec_to_body(vec, drone_state, orientation_only=False):
             q = drone_state[..., 0, 6:10]
         else:
             q = drone_state[..., 6:10]
+        
+    if yaw_only:
+        q = _extract_yaw_quat(q)
         
     # Handle 3D or 4D vector
     if vec.shape[-1] == 3:
