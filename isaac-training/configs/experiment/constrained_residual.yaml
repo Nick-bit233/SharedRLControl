@@ -3,7 +3,7 @@
 # === Environment Configuration ===
 env:
   num_envs: 256
-  max_episode_length: 1000
+  max_episode_length: 2000
   num_obstacles: 300
   env_spacing: 8.0
   map_range: [20.0, 20.0, 5.0]  # [x, y, z], half extents
@@ -22,7 +22,7 @@ algo:
   
   # === Constrained Optimization Parameters ===
   # use estimate_threshold.py to find suitable threshold based on initial evals
-  reward_threshold: 0.5  # Target reward threshold for constraint RL policy
+  reward_threshold: 0.75  # Target reward threshold for constraint RL policy
   lambda_lr: 1e-4  # Learning rate for the Lagrange multiplier
 
 # === Training Loop ===
@@ -37,7 +37,7 @@ user_model:
     frequency_base: 0.1  # base frequency for user command changes
     frequency_scale: 0.3  # scale for randomizing frequency
 
-  simple_mode: false
+  simple_mode: False
   z_tilt_compensation: 0.0
 
 # === Visualization ===

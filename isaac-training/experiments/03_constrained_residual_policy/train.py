@@ -217,7 +217,9 @@ def main(cfg):
             # 确保关闭渲染
             env.enable_render(False)
  
-        exploration_type = ExplorationType.MEAN
+        # With TanhNormal, `mean`/`mode` may not be analytically available in TorchRL.
+        # Use DETERMINISTIC interaction type to obtain a deterministic action.
+        exploration_type = ExplorationType.DETERMINISTIC
         env.set_seed(seed)
 
         eval_max_steps = int(env.max_episode_length)
@@ -330,9 +332,9 @@ def main(cfg):
     # === 初始化零点验证 (Sanity Check) ===
     print("[Sanity Check] Running Zero-Shot Verification...")
     env.eval() 
-    with torch.no_grad():
+    with torch.no_grad(), set_exploration_type(ExplorationType.DETERMINISTIC):
         td = env.reset()
-        policy(td) 
+        policy(td)
         
         net_output_norm = td["agents", "action_normalized"]
         human_input_phys = td["agents", "observation", "human_action"]
@@ -345,7 +347,7 @@ def main(cfg):
         # (assuming 1-to-1 mapping via residual scale=1.0)
         
         diff = (net_output_norm - human_input_norm).norm(dim=-1).mean()
-        
+
         print(f"[Sanity Check] Initial Mean Error (Norm Space): {diff.item():.6f}")
         
         if diff.item() < 1e-2:

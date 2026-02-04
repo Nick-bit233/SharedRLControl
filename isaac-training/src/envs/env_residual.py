@@ -295,7 +295,7 @@ class FollowingEnvResidual(IsaacEnv):
             heights = 5.0 + torch.zeros(env_ids.size(0), dtype=torch.float, device=self.device)
             # heights = 2.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (5.0 - 2.5)
             pos[:, 0, 2] = heights  # pos z: 5.0
-            # print(f"[Env Reset T] Randomized start positions for envs {env_ids.tolist()}")
+            # print(f"[Env Reset T] Randomized start positions for {len(env_ids.tolist())} envs ")
         else:
             # assign positions on the center of the map grid
             pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
@@ -356,29 +356,6 @@ class FollowingEnvResidual(IsaacEnv):
             idx = (env_ids == 0).nonzero(as_tuple=True)[0].item()
             self.viz_human_pos = pos[idx, 0].clone()
 
-    # === Override _step to add profiling for sim.step() without modifying isaac_env.py ===
-    def _step(self, tensordict: TensorDictBase) -> TensorDictBase:
-        """
-        Override parent _step to add profiling for Isaac Sim physics step.
-        This avoids modifying the third-party isaac_env.py dependency.
-        """
-        profiler = get_profiler()
-        
-        for substep in range(self.substeps):
-            with profiler.timer("env/_pre_sim_step"):
-                self._pre_sim_step(tensordict)
-            with profiler.timer("env/sim_step"):
-                self.sim.step(self._should_render(substep))
-
-        self._post_sim_step(tensordict)
-        self.progress_buf += 1
-        self.common_step_counter += 1
-
-        tensordict = TensorDict({}, self.batch_size, device=self.device)
-        tensordict.update(self._compute_state_and_obs())
-        tensordict.update(self._compute_reward_and_done())
-        return tensordict
-
     def _pre_sim_step(self, tensordict: TensorDictBase):
 
         # Store last step action command for smoothness reward
@@ -412,6 +389,10 @@ class FollowingEnvResidual(IsaacEnv):
             target_vel=target_vel,
             target_yaw=target_yaw
         )
+        # Check if nan happens in actions
+        if torch.isnan(actions).any():
+            print("[Warning] NaN detected in actions from controller!")
+            actions = torch.nan_to_num(actions, nan=0.0)
         self.drone.apply_action(actions) 
 
     def _post_sim_step(self, tensordict: TensorDictBase):
@@ -420,6 +401,8 @@ class FollowingEnvResidual(IsaacEnv):
             # Update LiDAR sensor
             if self.enable_lidar:
                 self.lidar.update(self.dt)
+        
+        self.common_step_counter += 1
     
     # get current states/observation
     def _compute_state_and_obs(self):

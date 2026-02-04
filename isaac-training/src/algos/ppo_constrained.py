@@ -5,7 +5,15 @@ import torch.nn.functional as F
 from tensordict.tensordict import TensorDict
 from tensordict.nn import TensorDictModuleBase, TensorDictSequential, TensorDictModule
 from einops.layers.torch import Rearrange
-from torchrl.modules import ProbabilisticActor, GRUModule, IndependentNormal
+from torchrl.modules import ProbabilisticActor, GRUModule
+try:
+    # TorchRL version dependent
+    from torchrl.modules import TanhNormal
+except ImportError:  # pragma: no cover
+    try:
+        from torchrl.modules.distributions import TanhNormal
+    except ImportError:
+        from torchrl.modules.distributions.continuous import TanhNormal
 from torchrl.envs.transforms import CatTensors
 
 from src.core.trainning_utils import ValueNorm, make_batch, make_mlp, GAE, vec_to_world
@@ -49,14 +57,19 @@ class ResidualActionModule(nn.Module):
         self.register_buffer("residual_scale", torch.tensor(1.0))
 
     def forward(self, loc, human_action):
-        # 1. Normalize human action to [-1, 1] (假设 human_action 是物理单位的速度)
-        # 注意：这里假设 human_action 和 loc 都在 Body Frame
+        # 1) Normalize human action to (-1, 1) in action space
+        # Note: for TanhNormal, `loc` lives in the pre-tanh space.
         human_action_norm = human_action / self.action_limit
-        
-        # 2. Residual Connection: Mean = Network_Output + Human_Action
-        # 这里的 loc 是网络学到的“修正量”
-        new_loc = (loc * self.residual_scale) + human_action_norm
-        
+        # clamp to avoid atanh(±1) -> inf
+        eps = 1e-6
+        human_action_norm = human_action_norm.clamp(-1.0 + eps, 1.0 - eps)
+
+        # 2) Map human action into pre-tanh space so that tanh(loc) ≈ human_action_norm
+        human_action_pre_tanh = torch.atanh(human_action_norm)
+
+        # 3) Residual connection in pre-tanh space
+        new_loc = (loc * self.residual_scale) + human_action_pre_tanh
+
         return new_loc
 
     def set_scale(self, scale):
@@ -64,7 +77,7 @@ class ResidualActionModule(nn.Module):
 
 class SplitLayer(nn.Module):
     """
-    Split 模块，把TanhNormal网络的输出拆分为 loc 和 scale
+    Split 模块，把 actor 网络的输出拆分为 loc 和 scale
     """
     def __init__(self, action_dim):
         super().__init__()
@@ -91,7 +104,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
         # Learnable Lagrange Multiplier parameter (unconstrained)
         # λ is optimized for adjusting the trade-off between reward maximization and residual minimization
         # Initialize to a negative value so softplus(lambda) starts small (Strong Regularization initially)
-        self.lambda_param = nn.Parameter(torch.tensor([1.0], device=device), requires_grad=True)
+        self.lambda_param = nn.Parameter(torch.tensor([-2.0], device=device), requires_grad=True)
         self.lambda_lr = cfg.get("lambda_lr", 5e-5) # Lower LR to prevent oscillation/explosion
         self.lambda_optim = torch.optim.Adam([self.lambda_param], lr=self.lambda_lr)
         # =======================================
@@ -208,7 +221,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             module=TensorDictSequential(self.actor_net, split_module, residual_module),
             in_keys=["loc", "scale"],
             out_keys=[("agents", "action_normalized")],
-            distribution_class=IndependentNormal,
+            distribution_class=TanhNormal,
             return_log_prob=True,
             log_prob_key="sample_log_prob"
         ).to(self.device)
@@ -257,7 +270,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
         def init_residual(module):
             if isinstance(module, nn.Linear):
                 # Init residual to be small
-                nn.init.constant_(module.weight, 1e-5)
+                nn.init.constant_(module.weight, 1e-6)
                 nn.init.constant_(module.bias, 0.)
                 
         self.actor_net.module[-1].apply(init_residual)  # only init the last linear layer of actor net
@@ -278,11 +291,12 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
         self.actor(tensordict)
         self.critic(tensordict)
 
+        # NOTE:
+        # - With TanhNormal, sampled actions are already bounded in (-1, 1).
+        # - Do NOT clamp after sampling, otherwise the executed action differs from the
+        #   action used to compute `sample_log_prob` (breaks PPO ratios).
         action_norm = tensordict["agents", "action_normalized"]
-        action_norm_clamped = action_norm.clamp(-1.0, 1.0)
-
-        # "action_normalized" from TanhNormal is in range [-1, 1]
-        actions = action_norm_clamped * self.cfg.actor.action_limit
+        actions = action_norm * self.cfg.actor.action_limit
 
         # transform to world frame (lock roll/pitch, only yaw)
         actions_world = vec_to_world(
@@ -367,18 +381,34 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             # Get action from the current policy
             # This will update "_loc_delta" in minibatch to new values
             action_dist = self.actor.get_dist(minibatch) 
-            
-            log_probs = action_dist.log_prob(
-                minibatch[("agents", "action_normalized")]) 
+
+            action = minibatch[("agents", "action_normalized")]
+            log_probs = action_dist.log_prob(action)
+            # Some distributions return per-dimension log-probs. PPO expects a single
+            # log-prob per (agent, timestep) action vector.
+            if log_probs.shape == action.shape:
+                log_probs = log_probs.sum(dim=-1)
 
         with profiler.timer("ppo/update/loss_compute"):
-            # 1. Entropy Loss
-            action_entropy = action_dist.entropy()
-            entropy_loss = -self.cfg.entropy_loss_coefficient * torch.mean(action_entropy)
+            # 1. Entropy Loss (Monte Carlo)
+            # TanhNormal may not implement analytic entropy; use H ≈ -E[log π(a|s)].
+            # We sample once from the current policy to keep the estimator unbiased.
+            try:
+                entropy_action = action_dist.rsample()
+            except AttributeError:
+                entropy_action = action_dist.sample()
+            entropy_log_prob = action_dist.log_prob(entropy_action)
+            if entropy_log_prob.shape == entropy_action.shape:
+                entropy_log_prob = entropy_log_prob.sum(dim=-1)
+            entropy_est = -entropy_log_prob
+            entropy_loss = -self.cfg.entropy_loss_coefficient * torch.mean(entropy_est)
 
             # 2. Actor Loss
             advantage = minibatch["adv"] 
-            ratio = torch.exp(log_probs - minibatch["sample_log_prob"]).unsqueeze(-1)
+            old_log_probs = minibatch["sample_log_prob"]
+            if old_log_probs.shape == action.shape:
+                old_log_probs = old_log_probs.sum(dim=-1)
+            ratio = torch.exp(log_probs - old_log_probs).unsqueeze(-1)
             surr1 = advantage * ratio
             surr2 = advantage * ratio.clamp(1.-self.cfg.actor.clip_ratio, 1.+self.cfg.actor.clip_ratio)
             actor_loss = -torch.mean(torch.min(surr1, surr2)) * self.action_dim 
