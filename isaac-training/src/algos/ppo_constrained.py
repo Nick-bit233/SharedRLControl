@@ -421,8 +421,6 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             
             # Lambda Update
             reward_error = (avg_reward.detach() - self.reward_threshold)
-            # TODO: if need to clip the error term to [-0.2, 0.2] to ensure stable lambda growth.
-            # reward_error = (avg_reward.detach() - self.reward_threshold).clamp(-0.2, 0.2)
             lambda_loss = lambda_val * reward_error
             # Note: lambda_loss is usually maximized if formulated as Lagrangian, but here we define loss to minimize.
             # If R < T, we want lambda up. min (lambda * (neg)) -> lambda up.
