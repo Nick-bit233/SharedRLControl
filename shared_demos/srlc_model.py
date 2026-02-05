@@ -14,6 +14,9 @@ class MockConfig:
         max_episode_length = 500
         enable_lidar = False
     class Algo:
+        def get(self, key, default=None):
+            """Dict-like get method for compatibility."""
+            return getattr(self, key, default)
         class Actor:
             action_limit = 2.0
             learning_rate = 1e-4
@@ -35,6 +38,7 @@ class MockConfig:
         feature_extractor = FeatureExtractor()
         observation_cat_prev_action = False
         entropy_loss_coefficient = 1e-3
+        reward_threshold = 1.0
 
     class UserModel:
         class style:
@@ -96,6 +100,11 @@ def load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=4, en
             from ppo_residual import SimpleResidualPPO as ppo_model
         except ImportError:
             raise ImportError("Could not import SimpleResidualPPO. Make sure the path to ppo_simple.py is in sys.path.")
+    elif model_type == "Constrained":
+        try:
+            from ppo_constrained import ConstrainedResidualPPO as ppo_model
+        except ImportError:
+            raise ImportError("Could not import ConstrainedResidualPPO. Make sure the path to ppo_constrained.py is in sys.path.")
 
     cfg_model = MockConfig(device=device)
     

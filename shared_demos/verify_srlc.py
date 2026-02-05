@@ -4,7 +4,7 @@ import argparse
 
 # 添加命令行参数
 parser = argparse.ArgumentParser(description="Verify SRLC Model")
-parser.add_argument("--model_type", type=str, default="Residual", choices=["Simple", "Residual"], help="Type of SRLC model to load")
+parser.add_argument("--model_type", type=str, default="Residual", choices=["Simple", "Residual", "Constrained"], help="Type of SRLC model to load")
 parser.add_argument("--checkpoint", type=str, default="/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/shared_demos/ckpts/0106-1123/checkpoint_1500.pt", help="Path to model checkpoint")
 parser.add_argument("--usermodel", action="store_true", help="Use UserModel to generate human action instead of joystick")
 parser.add_argument("--model_yaw_control", action="store_true", help="Enable model yaw control")
@@ -356,7 +356,11 @@ def main():
             }, batch_size=[1], device=device)
 
             # 3. 模型推理
-            with torch.no_grad(), set_exploration_type(ExplorationType.MEAN):
+            if model_type == "Constrained":
+                exploration_type = ExplorationType.DETERMINISTIC
+            else:
+                exploration_type = ExplorationType.MEAN
+            with torch.no_grad(), set_exploration_type(exploration_type):
                 policy(obs)
                 # 获取模型输出 (World Frame Velocity, as per user instruction)
                 # (1, 4) if model_yaw_control else (1, 3)

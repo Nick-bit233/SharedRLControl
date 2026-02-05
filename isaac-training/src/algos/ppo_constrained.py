@@ -444,13 +444,16 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             # We want to adjust lambda to enforce ExpectedReward >= Threshold.
             # Lambda Update Rule: lambda_loss = lambda * (Reward - Threshold).
             
-            # Use raw rewards for constraint?
-            # minibatch["next", "agents", "reward"] is the step reward.
-            # We take the mean across the batch.
-            avg_reward = minibatch[("next", "agents", "reward")].mean()
+            # Use Discounted Return (Value Target) for constraint
+            # minibatch["ret"] is the normalized return target (GAE output)
+            # We denormalize it to get the Return in physical scale.
+            # This constrains the agent to maintain a high expected LONG-TERM return (safety).
+            avg_return = self.value_norm.denormalize(minibatch["ret"]).mean()
             
             # Lambda Update
-            reward_error = (avg_reward.detach() - self.reward_threshold)
+            # Note: reward_threshold in config should now be on the scale of Returns (e.g., 20.0-50.0), not step rewards (0.5).
+            # [Fix] Clip the error to prevent explosive updates to lambda when performance collapses.
+            reward_error = (avg_return.detach() - self.reward_threshold).clamp(-20.0, 20.0)
             lambda_loss = lambda_val * reward_error
             # Note: lambda_loss is usually maximized if formulated as Lagrangian, but here we define loss to minimize.
             # If R < T, we want lambda up. min (lambda * (neg)) -> lambda up.
@@ -493,7 +496,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
                 "reg_loss": reg_loss,
                 "lambda": lambda_val.detach(),
                 "lambda_loss": lambda_loss.detach(),
-                "avg_reward": avg_reward,
+                "avg_return": avg_return,
                 "actor_grad_norm": actor_grad_norm,
                 "critic_grad_norm": critic_grad_norm,
                 "explained_var": explained_var

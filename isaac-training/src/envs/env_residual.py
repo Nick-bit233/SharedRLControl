@@ -268,6 +268,10 @@ class FollowingEnvResidual(IsaacEnv):
             "debug_vz_target": Unbounded(1),
             "debug_vz_drone": Unbounded(1),
             "debug_z_drone": Unbounded(1),
+            "diag_reward_task": Unbounded(1),
+            "diag_penalty_effort": Unbounded(1),
+            "diag_penalty_smooth": Unbounded(1),
+            "diag_laziness_ratio": Unbounded(1),
             "terminated": Unbounded(1),
             "truncated": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
@@ -537,9 +541,6 @@ class FollowingEnvResidual(IsaacEnv):
         # 使用 exp(-k * error) 形式，保证范围 [0, 1]
         reward_speed_match = torch.exp(-2.0 * vel_error) 
 
-        # 综合任务奖励
-        reward_task = 0.5 * reward_direction + 1.0 * reward_speed_match
-
         # d. Smoothness and Effort Penalty
 
         # d1. Penalize the difference between consecutive action commands
@@ -572,18 +573,23 @@ class FollowingEnvResidual(IsaacEnv):
         penalty_height = (z - (h_max + 0.2)).clamp(min=0.0) + ((h_min - 0.2) - z).clamp(min=0.0)
         
         # f. Survival reward (keep flying as long as possible)
-        # 因为碰撞由安全奖励变为危险惩罚，需要额外的存活奖励来鼓励继续飞行
         reward_survival = 1.0
+
+        # 综合任务奖励
+        if self.enable_task_reward:
+            reward_task = (
+                0.5 * reward_direction + 1.0 * reward_speed_match +
+                1.0 * reward_safety_static + 0.1 * reward_survival
+            )
+        else:
+            reward_task = 1.0 * reward_safety_static + 0.1 * reward_survival
         
+        # Full reward calculation
         if not self.enable_lidar:
             self.reward = 2.0 * reward_task - 0.2 * penalty_action_smoothness - 4.0 * penalty_height
         else:
-            # Full reward calculation
             self.reward = (
-                1.0 * reward_task if self.enable_task_reward else 0.0
-                + 0.1 * reward_survival
-                + 1.0 * reward_safety_static  # positive safety reward
-                # - 1.0 * static_safety_penalty  # negative safety reward
+                1.0 * reward_task
                 - 0.1 * penalty_effort
                 - 0.2 * penalty_action_smoothness 
                 # - 0.4 * penalty_z_tracking        
@@ -698,7 +704,23 @@ class FollowingEnvResidual(IsaacEnv):
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
         self.stats["above_bound"] = above_bound.float()
         self.stats["below_bound"] = below_bound.float()
-        # self.stats["within_safe_distance"] = mask_safe
+        
+        # === DIAGNOSTIC: Reward Components Log ===
+        # We use existing keys or repurpose unused ones, or just rely on the fact 
+        # that we can add new keys to stats if they are in the spec?
+        # To avoid Spec errors, we will print debug info periodically or use temporary keys if spec allows.
+        # Ideally, we should add these to the 'stats_spec' in _set_specs, but editing that requires restart.
+        # For now, let's print detailed breakdown when a termination happens due to below_bound in env 0
+        
+        # === DIAGNOSTIC: Log internal reward components to stats ===
+        self.stats["diag_reward_task"] = reward_task
+        self.stats["diag_penalty_effort"] = penalty_effort
+        self.stats["diag_penalty_smooth"] = penalty_action_smoothness
+        
+        # Calculate Laziness Ratio: Effort Penalty / Task Reward
+        # Avoid division by zero
+        self.stats["diag_laziness_ratio"] = penalty_effort / (reward_task + 1e-6)
+        
         self.stats["terminated"] = self.terminated.float()
         self.stats["collision"] = collision.float()
 
