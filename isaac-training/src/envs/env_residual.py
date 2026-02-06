@@ -269,9 +269,9 @@ class FollowingEnvResidual(IsaacEnv):
             "debug_vz_drone": Unbounded(1),
             "debug_z_drone": Unbounded(1),
             "diag_reward_task": Unbounded(1),
-            "diag_penalty_effort": Unbounded(1),
+            # "diag_penalty_effort": Unbounded(1),
             "diag_penalty_smooth": Unbounded(1),
-            "diag_laziness_ratio": Unbounded(1),
+            # "diag_laziness_ratio": Unbounded(1),
             "terminated": Unbounded(1),
             "truncated": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
@@ -349,8 +349,8 @@ class FollowingEnvResidual(IsaacEnv):
             self.max_episode_per_env[env_ids] = (self.max_episode_length * random_scale).floor()
 
         # Set default height range for each env
-        self.height_range[env_ids, 0, 0] = 1.0  # min height
-        self.height_range[env_ids, 0, 1] = 2 * sz    # max height
+        self.height_range[env_ids, 0, 0] = 0.4 * sz    # min height
+        self.height_range[env_ids, 0, 1] = 1.6 * sz    # max height
 
         # Reset visualization buffers if env 0 is reset
         if 0 in env_ids:
@@ -475,54 +475,27 @@ class FollowingEnvResidual(IsaacEnv):
         # -----------------Reward Calculation-----------------
         profiler.start("env/reward_calculation")
         
-        # a. safety reward for static obstacles
+        # a. Safety Penalty (Barrier Function)
+        # Instead of a positive reward for being far, we apply a negative penalty for being close.
+        # This decouples safety from the task when the agent is in safe space.
+        r_safety = 0.0
+        # TODO：只关注human_action输入方向（以及当前速度方向？）上的障碍物，其他方向的障碍物降低权重
         if self.enable_lidar:
-            # lidar_scan: (N, 1, H, W) 或 (N, 1, Rays)
-            # 找到最危险的射线（即 scan 值最大的点）
-            # max_proximity_val 代表探测范围内离障碍物最近点的 "lidar_scan值"
-            max_proximity_val, _ = self.lidar_scan.reshape(self.num_envs, -1).max(dim=-1, keepdim=True)
-            
-            # 将其还原为物理距离 (Physical Distance to closest obstacle)
-            # dist = range - scan
-            min_dist_to_obs = self.lidar_range - max_proximity_val
-
-            # --------- (Positive Reward) ---------
-            # 与最近障碍物的距离的对数奖励（越远离障碍物奖励越高）
-            reward_safety_static = torch.log((min_dist_to_obs).clamp(min=1e-6, max=self.lidar_range))
-            # [原始函数] 与所有障碍物距离的对数奖励平均值
-            # reward_safety_static = torch.log((self.lidar_range-self.lidar_scan).clamp(min=1e-6, max=self.lidar_range)).mean(dim=(2, 3))
-            
-            # --------- (Negative Penalty) ---------    
-            # # 设定参数 # TODO: parametrize these value later
-            # k_collision = 1.0
-            # sigma = 0.4
-            # safe_distance = 0.8
-            
-            # # 指数惩罚 (Bounded Exponential Penalty): P = k * exp(-d / sigma)
-            # # 计算 safe_dist 处的指数基准值 (常数)
-            # cutoff_val = torch.exp(torch.tensor(-safe_distance / sigma))
-            # # 减去基准值，使得在 safe_dist 处刚好为 0
-            # # 使用 clamp 确保不会出现正数奖励
-            # dist_penalty = k_collision * (torch.exp(-min_dist_to_obs / sigma) - cutoff_val).clamp(min=0.0)
-
-            # mask_safe = (min_dist_to_obs < safe_distance).float()  # (N, 1), within safe distance mask
-            # static_safety_penalty = dist_penalty * mask_safe  # only penalize when within safe distance
-            # reward_safety_static = 0.0
-
-        # b. safety reward for dynamic obstacles
-        # if (self.cfg.env_dyn.num_obstacles != 0):
-        #     reward_safety_dynamic = torch.log((closest_dyn_obs_distance_reward).clamp(min=1e-6, max=self.lidar_range)).mean(dim=-1, keepdim=True)
-        # else:
-        #     reward_safety_dynamic = 0.0
+             # min_dist_to_obs: physical distance to nearest obstacle
+             # min_dist_to_obs = self.lidar_range - max_proximity_val
+             max_proximity_val, _ = self.lidar_scan.reshape(self.num_envs, -1).max(dim=-1, keepdim=True)
+             min_dist_to_obs = self.lidar_range - max_proximity_val
+             
+             # Exponential Barrier
+             # Dist = 0.5m -> exp(-1.0) ~= 0.36 -> Penalty: -1.8
+             # Dist = 0.2m -> exp(-2.5) ~= 0.08 -> Penalty: -4.0 (Dominates task reward)
+             # Dist > 1.5m -> Penalty -> 0.0
+             r_safety_dist_scale = 0.5
+             r_safety_weight = 4.0
+             r_safety = -r_safety_weight * torch.exp(-min_dist_to_obs / r_safety_dist_scale)
 
         # c. Velocity following reward (Positive)
-        # 速度方向奖励和速度大小奖励分开加权
-        
-        # 目标速度为上一个step的 human action (in world frame)
         prev_human_action_b = self.prev_human_action.clone()
-
-        # [注意] 只使用 Yaw (航向角) 进行目标速度的坐标系转换
-        # 对于四旋翼无人机来说，为了产生前进的推力，通常需要通过 Pitch(俯仰角) 来实现低头前进。因此，机体坐标系的前向速度实际上需要对应世界坐标系中的一个斜向下的方向。为了消除这种影响，在转换时只考虑 Yaw 角。
         target_vel_w = vec_to_world(
             prev_human_action_b,
             drone_orientation_q,
@@ -531,38 +504,27 @@ class FollowingEnvResidual(IsaacEnv):
         )
 
         # c1. 方向奖励 (Alignment)
-        # 计算余弦相似度
         cosine_sim = torch.cosine_similarity(target_vel_w, drone_vel_w, dim=-1).unsqueeze(-1)
-        # 映射到 [0, 1]
         reward_direction = (cosine_sim + 1.0) / 2.0 
 
         # c2. 速度大小奖励 (Magnitude)
         vel_error = (target_vel_w - drone_vel_w).norm(dim=-1, keepdim=True)
-        # 使用 exp(-k * error) 形式，保证范围 [0, 1]
         reward_speed_match = torch.exp(-2.0 * vel_error) 
+        
+        # Combined Task Reward (calculated for diagnostics)
+        reward_task = 1.0 * reward_speed_match + 0.5 * reward_direction
 
-        # d. Smoothness and Effort Penalty
-
-        # d1. Penalize the difference between consecutive action commands
-        # high frequency change in command -> huge penalty
-        # p_smooth = || a_t - a_(t-1) ||^2 / max_action_vel^2
+        # d. Smoothness Penalty
         action_diff = (self.agent_action - self.prev_action_command).norm(dim=-1, keepdim=True)
         penalty_action_smoothness = (action_diff / self.max_action_vel) ** 2
+        
+        # Total Step Reward
+        # [Analysis]: If enable_task_reward is False, the agent acts as a pure "Safety Shield".
+        # It has no incentive to follow velocity other than the Residual Regularization term in the loss.
+        # This removes the conflict where deviating for safety penalizes task reward.
+        task_reward_term = reward_task if self.enable_task_reward else 0.0
 
-        # d2. smoothness reward for effort smoothness
-        #  Agent 应该倾向于选择容易执行的动作（即与当前速度矢量夹角小的动作）
-        # p_effort = || a_t - v_t || / max_action_vel
-        action_change_cost = (self.agent_action - drone_vel_w).norm(dim=-1, keepdim=True)
-        penalty_effort = action_change_cost / self.max_action_vel
-
-        # d3. Z-axis tracking Penalty (for Spiral Up behavior)
-        # Penalize vertical velocity error more heavily to discourage spiraling up
-        # We separate Z component from velocity matching to give it higher weight
-        target_vel_z = target_vel_w[..., 2:3]
-        current_vel_z = drone_vel_w[..., 2:3]
-        penalty_z_tracking = (target_vel_z - current_vel_z).abs() / self.max_action_vel
-
-        # e. height penalty reward for flying unnessarily high or low
+        # height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
         # penalty when z > h_max + 0.2 or z < h_min - 0.2
         penalty_height = torch.zeros(self.num_envs, 1, device=self.cfg.device)
@@ -572,46 +534,32 @@ class FollowingEnvResidual(IsaacEnv):
         z = self.drone.pos[..., 2:3].reshape(self.num_envs, 1)
         penalty_height = (z - (h_max + 0.2)).clamp(min=0.0) + ((h_min - 0.2) - z).clamp(min=0.0)
         
-        # f. Survival reward (keep flying as long as possible)
-        reward_survival = 1.0
-
-        # 综合任务奖励
-        if self.enable_task_reward:
-            reward_task = (
-                0.5 * reward_direction + 1.0 * reward_speed_match +
-                1.0 * reward_safety_static + 0.1 * reward_survival
-            )
-        else:
-            reward_task = 1.0 * reward_safety_static + 0.1 * reward_survival
+        self.reward = (
+            task_reward_term
+            + r_safety
+            - 0.1 * penalty_action_smoothness
+            - 8.0 * penalty_height
+        )
         
-        # Full reward calculation
-        if not self.enable_lidar:
-            self.reward = 2.0 * reward_task - 0.2 * penalty_action_smoothness - 4.0 * penalty_height
-        else:
-            self.reward = (
-                1.0 * reward_task
-                - 0.1 * penalty_effort
-                - 0.2 * penalty_action_smoothness 
-                # - 0.4 * penalty_z_tracking        
-                # - 8.0 * penalty_height  # height penalty to prevent crashing into ground
-            )
-        profiler.stop("env/reward_calculation")
-
-        # Terminate Conditions
+        # Terminate Conditions & Terminal Penalty
         below_bound = self.drone.pos[..., 2] < 0.2
-        above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0  # 2*sz + 1, where sz is half z range of the map
-        
-        # collision check 
+        above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0 
         static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (self.lidar_range - 0.3)
         collision = static_collision
         
-        # 总终止条件
         self.terminated = below_bound | above_bound | collision
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
         self.truncated = timeout_truncate
 
+        # === Apply Terminal Penalty ===
+        # If crashed (not timed out), give a massive penalty encoded into the reward of this step.
+        # This ensures the Value Function learns to fear these states.
+        crash_penalty = -50.0
+        # Only apply to envs that just terminated due to crash
+        crashed_mask = (collision & ~self.truncated)
+        self.reward[crashed_mask] += crash_penalty
+
         # update previous velocity for smoothness calculation in the next ieteration
-        # self.prev_drone_vel_w = drone_vel_w.clone()
         self.prev_human_action = human_actions_local.clone()
         self.prev_drone_vel_w = drone_vel_w.clone()
 
@@ -714,12 +662,12 @@ class FollowingEnvResidual(IsaacEnv):
         
         # === DIAGNOSTIC: Log internal reward components to stats ===
         self.stats["diag_reward_task"] = reward_task
-        self.stats["diag_penalty_effort"] = penalty_effort
+        # self.stats["diag_penalty_effort"] = penalty_effort
         self.stats["diag_penalty_smooth"] = penalty_action_smoothness
         
         # Calculate Laziness Ratio: Effort Penalty / Task Reward
         # Avoid division by zero
-        self.stats["diag_laziness_ratio"] = penalty_effort / (reward_task + 1e-6)
+        # self.stats["diag_laziness_ratio"] = penalty_effort / (reward_task + 1e-6)
         
         self.stats["terminated"] = self.terminated.float()
         self.stats["collision"] = collision.float()

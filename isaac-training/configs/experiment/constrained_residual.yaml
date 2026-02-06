@@ -23,9 +23,12 @@ algo:
   # === Constrained Optimization Parameters ===
   # use estimate_threshold.py to find suitable threshold based on initial evals
   # Switch to Return-based constraint:
-  # User reports raw return ~4500 over 1000 steps => ~4.5/step. With gamma=0.99, Discounted Return approx 450.
-  # We set a threshold of 200.0 to enforce decent performance while allowing residual deviation.
-  reward_threshold: 50.0  # Target Discounted Return threshold
+  # Adjusted logic after Reward Reshaping (Penalty-based Safety & Terminal Penalty)
+  # Max Task Step Reward ~ 1.5. Discounted ~ 150.
+  # Crash Penalty ~ -50.
+  # Threshold set to 60.0 when task reward enabled (survival + task performance).
+  # set to -25.0 ~ -40.0 when task reward disabled (survival only),
+  reward_threshold: -35.0  # Target Discounted Return threshold
   lambda_lr: 1e-4  # Learning rate for the Lagrange multiplier
 
 # === Training Loop ===

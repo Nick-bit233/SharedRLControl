@@ -281,11 +281,37 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             self.residual_action_module.set_scale(scale)
 
     def __call__(self, tensordict):
+        # === Probe: Check Feature Extractor Output ===
+        # 1. Check Weights (to see if Gradient Explosion happened previously)
+        if torch.isnan(self.actor_net.module[0].weight).any():
+             raise ValueError("NaN detected in Actor Weights! Gradient explosion likely occurred in previous update.")
+
+        # 2. Check Inputs (to see if Environment/Simulation produced NaNs)
+        obs_state = tensordict.get(("agents", "observation", "state"), None)
+        if obs_state is not None and torch.isnan(obs_state).any():
+             print(f"[PPO Debug] NaN in State Input: {obs_state}")
+             raise ValueError("NaN detected in Input: State")
+
+        obs_human = tensordict.get(("agents", "observation", "human_action"), None)
+        if obs_human is not None and torch.isnan(obs_human).any():
+             print(f"[PPO Debug] NaN in Human Action Input")
+             raise ValueError("NaN detected in Input: Human Action")
+
+        if self.has_lidar:
+             obs_lidar = tensordict.get(("agents", "observation", "lidar"), None)
+             if obs_lidar is not None and torch.isnan(obs_lidar).any():
+                 print(f"[PPO Debug] NaN in Lidar Input")
+                 raise ValueError("NaN detected in Input: Lidar")
+
         self.feature_extractor(tensordict)
         
-        # === Probe: Check Feature Extractor Output ===
+        # 3. Check Outputs
         if torch.isnan(tensordict.get("_feature")).any():
-            raise ValueError("NaN in PPO forward pass")
+            # If inputs are clean but output is NaN, check feature extractor weights
+            for name, param in self.feature_extractor.named_parameters():
+                 if torch.isnan(param).any():
+                      raise ValueError(f"NaN detected in Feature Extractor Weights: {name}")
+            raise ValueError("NaN in Feature Extractor Output (Weights OK, Inputs OK -> Check Layers/Normalization)")
         # =============================================
 
         self.actor(tensordict)
