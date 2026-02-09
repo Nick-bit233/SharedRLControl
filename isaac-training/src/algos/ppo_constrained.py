@@ -282,11 +282,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
 
     def __call__(self, tensordict):
         # === Probe: Check Feature Extractor Output ===
-        # 1. Check Weights (to see if Gradient Explosion happened previously)
-        if torch.isnan(self.actor_net.module[0].weight).any():
-             raise ValueError("NaN detected in Actor Weights! Gradient explosion likely occurred in previous update.")
-
-        # 2. Check Inputs (to see if Environment/Simulation produced NaNs)
+        # Check Inputs (to see if Environment/Simulation produced NaNs)
         obs_state = tensordict.get(("agents", "observation", "state"), None)
         if obs_state is not None and torch.isnan(obs_state).any():
              print(f"[PPO Debug] NaN in State Input: {obs_state}")
@@ -305,7 +301,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
 
         self.feature_extractor(tensordict)
         
-        # 3. Check Outputs
+        # Check Outputs
         if torch.isnan(tensordict.get("_feature")).any():
             # If inputs are clean but output is NaN, check feature extractor weights
             for name, param in self.feature_extractor.named_parameters():
@@ -493,19 +489,14 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             loss.backward()
 
             # grad clipping
-            if self.using_rnn:
-                feature_extractor_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.feature_extractor.parameters(), max_norm=5.)
+            feature_extractor_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.feature_extractor.parameters(), max_norm=5.)
             actor_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.actor.parameters(), max_norm=5.) 
             critic_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.critic.parameters(), max_norm=5.)
             
-            if self.using_rnn:
-                self.feature_extractor_optim.step()
-                self.actor_optim.step()
-                self.critic_optim.step()
-            else:
-                self.feature_extractor_optim.step() 
-                self.actor_optim.step()
-                self.critic_optim.step()
+            # optim step
+            self.feature_extractor_optim.step()
+            self.actor_optim.step()
+            self.critic_optim.step()
             
             # Optimize Lambda
             self.lambda_optim.zero_grad()
