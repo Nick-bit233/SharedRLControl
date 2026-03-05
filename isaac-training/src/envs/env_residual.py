@@ -268,10 +268,10 @@ class FollowingEnvResidual(IsaacEnv):
             "debug_vz_target": Unbounded(1),
             "debug_vz_drone": Unbounded(1),
             "debug_z_drone": Unbounded(1),
+            "diag_reward": Unbounded(1),
             "diag_reward_task": Unbounded(1),
-            # "diag_penalty_effort": Unbounded(1),
             "diag_penalty_smooth": Unbounded(1),
-            # "diag_laziness_ratio": Unbounded(1),
+            "diag_penalty_height": Unbounded(1),
             "terminated": Unbounded(1),
             "truncated": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
@@ -474,27 +474,7 @@ class FollowingEnvResidual(IsaacEnv):
             obs["lidar"] = self.lidar_scan
         # -----------------Reward Calculation-----------------
         profiler.start("env/reward_calculation")
-        
-        # a. Safety Penalty (Barrier Function)
-        # Instead of a positive reward for being far, we apply a negative penalty for being close.
-        # This decouples safety from the task when the agent is in safe space.
-        r_safety = 0.0
-        # TODO：只关注human_action输入方向（以及当前速度方向？）上的障碍物，其他方向的障碍物降低权重
-        if self.enable_lidar:
-             # min_dist_to_obs: physical distance to nearest obstacle
-             # min_dist_to_obs = self.lidar_range - max_proximity_val
-             max_proximity_val, _ = self.lidar_scan.reshape(self.num_envs, -1).max(dim=-1, keepdim=True)
-             min_dist_to_obs = self.lidar_range - max_proximity_val
-             
-             # Exponential Barrier
-             # Dist = 0.5m -> exp(-1.0) ~= 0.36 -> Penalty: -1.8
-             # Dist = 0.2m -> exp(-2.5) ~= 0.08 -> Penalty: -4.0 (Dominates task reward)
-             # Dist > 1.5m -> Penalty -> 0.0
-             r_safety_dist_scale = 0.5
-             r_safety_weight = 4.0
-             r_safety = -r_safety_weight * torch.exp(-min_dist_to_obs / r_safety_dist_scale)
 
-        # c. Velocity following reward (Positive)
         prev_human_action_b = self.prev_human_action.clone()
         target_vel_w = vec_to_world(
             prev_human_action_b,
@@ -502,7 +482,98 @@ class FollowingEnvResidual(IsaacEnv):
             orientation_only=True,
             yaw_only=True
         )
+        
+        # a. Safety Penalty (Barrier Function)
+        # Instead of a positive reward for being far, we apply a negative penalty for being close.
+        # This decouples safety from the task when the agent is in safe space.
+        # 只关注human_action输入方向（以及当前速度方向？）上的障碍物，其他方向的障碍物降低权重
+        r_safety = 0.0
+        if self.enable_lidar:
+            # -------------------------------------------------------------------------
+            # 基础准备：获取所有射线的距离和方向
+            # -------------------------------------------------------------------------
+            # 计算每条射线在世界坐标系下的向量 (N, num_rays, 3)
+            ray_vecs_w = self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1)
+            # 计算每条射线的实际物理距离 (N, num_rays)
+            ray_dists = ray_vecs_w.norm(dim=-1).clamp_max(self.lidar_range)
+            # 归一化得到射线方向的单位向量 (N, num_rays, 3)
+            ray_dirs_w = ray_vecs_w / (ray_dists.unsqueeze(-1) + 1e-6)
 
+            # 1. 绝对最小距离 (全局最危险距离)
+            min_dist_to_obs, _ = ray_dists.min(dim=-1, keepdim=True)
+
+            # -------------------------------------------------------------------------
+            # 定义“关注锥角” (Cone Threshold)
+            # -------------------------------------------------------------------------
+            # 设定我们只关心速度方向前方正负 30 度的障碍物
+            # cos(30°) ≈ 0.866
+            cone_threshold = 0.866
+
+            # -------------------------------------------------------------------------
+            # 2. 计算当前速度方向 (v_now) 上的最短距离
+            # -------------------------------------------------------------------------
+            cur_vel_norm = drone_vel_w.norm(dim=-1, keepdim=True)
+            # 防止除零，获取速度单位向量
+            cur_vel_dir = drone_vel_w / (cur_vel_norm + 1e-6) # (N, 3)
+
+            # 计算所有射线方向与当前速度方向的余弦相似度 (N, num_rays)
+            cos_sim_vel = (ray_dirs_w * cur_vel_dir.unsqueeze(1)).sum(dim=-1)
+
+            # 选出落在圆锥视角内的射线，视角外的射线距离强制设为最大安全距离
+            mask_vel = cos_sim_vel > cone_threshold
+            dist_in_vel_cone = torch.where(mask_vel, ray_dists, torch.full_like(ray_dists, self.lidar_range))
+
+            # 获取该方向上的最短距离
+            dist_to_cur_vel_dir, _ = dist_in_vel_cone.min(dim=-1, keepdim=True)
+
+            # 【关键处理】：如果无人机悬停（速度极小），则没有方向，不应产生前方碰撞惩罚
+            is_moving = (cur_vel_norm > 0.1).float()
+            dist_to_cur_vel_dir = is_moving * dist_to_cur_vel_dir + (1.0 - is_moving) * self.lidar_range
+
+            # -------------------------------------------------------------------------
+            # 3. 计算输入指令方向 (v_in) 上的最短距离
+            # -------------------------------------------------------------------------
+            target_vel_norm = target_vel_w.norm(dim=-1, keepdim=True)
+            target_vel_dir = target_vel_w / (target_vel_norm + 1e-6)
+
+            cos_sim_cmd = (ray_dirs_w * target_vel_dir.unsqueeze(1)).sum(dim=-1)
+            mask_cmd = cos_sim_cmd > cone_threshold
+
+            dist_in_cmd_cone = torch.where(mask_cmd, ray_dists, torch.full_like(ray_dists, self.lidar_range))
+            dist_to_human_action_dir, _ = dist_in_cmd_cone.min(dim=-1, keepdim=True)
+
+            has_cmd = (target_vel_norm > 0.1).float()
+            dist_to_human_action_dir = has_cmd * dist_to_human_action_dir + (1.0 - has_cmd) * self.lidar_range
+             
+            # -------------------------------------------------------------------------
+            # 融合指数惩罚
+            # -------------------------------------------------------------------------
+            r_safety_dist_scale = 0.5
+            
+            # 计算三个独立的指数障碍物惩罚项 (范围 0 到 1，越近越接近1)
+            p_min = torch.exp(-min_dist_to_obs / r_safety_dist_scale)
+            p_vel = torch.exp(-dist_to_cur_vel_dir / r_safety_dist_scale)
+            p_cmd = torch.exp(-dist_to_human_action_dir / r_safety_dist_scale)
+            
+            # 分配权重 (这代表了你希望 Agent 对不同危险的重视程度)
+            w_min = 0.1  # 基础安全意识：允许擦墙飞，权重低
+            w_vel = 0.3  # 物理惯性危险：撞墙风险，权重中
+            w_cmd = 0.6  # 主动寻死危险：指令导致撞墙，权重高，必须强制让 Agent 偏离指令
+            
+            # 【截断安全区】：只对距离小于 1.5m 的情况触发惩罚，保证远处安全区的 Return 干净
+            safe_zone = 1.5
+            mask_min = (min_dist_to_obs < safe_zone).float()
+            mask_vel = (dist_to_cur_vel_dir < safe_zone).float()
+            mask_cmd = (dist_to_human_action_dir < safe_zone).float()
+            
+            # 最终的 safety 奖励就是三者的负加权和
+            r_safety = - (
+                w_min * (p_min * mask_min) + 
+                w_vel * (p_vel * mask_vel) + 
+                w_cmd * (p_cmd * mask_cmd)
+            )
+
+        # c. Velocity following reward (Positive)
         # c1. 方向奖励 (Alignment)
         cosine_sim = torch.cosine_similarity(target_vel_w, drone_vel_w, dim=-1).unsqueeze(-1)
         reward_direction = (cosine_sim + 1.0) / 2.0 
@@ -536,8 +607,8 @@ class FollowingEnvResidual(IsaacEnv):
         
         self.reward = (
             task_reward_term
-            + r_safety
-            - 0.1 * penalty_action_smoothness
+            + 1.0 * r_safety
+            - 0.0 * penalty_action_smoothness
             - 8.0 * penalty_height
         )
         
@@ -652,22 +723,12 @@ class FollowingEnvResidual(IsaacEnv):
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
         self.stats["above_bound"] = above_bound.float()
         self.stats["below_bound"] = below_bound.float()
-        
-        # === DIAGNOSTIC: Reward Components Log ===
-        # We use existing keys or repurpose unused ones, or just rely on the fact 
-        # that we can add new keys to stats if they are in the spec?
-        # To avoid Spec errors, we will print debug info periodically or use temporary keys if spec allows.
-        # Ideally, we should add these to the 'stats_spec' in _set_specs, but editing that requires restart.
-        # For now, let's print detailed breakdown when a termination happens due to below_bound in env 0
-        
+    
         # === DIAGNOSTIC: Log internal reward components to stats ===
+        self.stats["diag_reward"] = self.reward
         self.stats["diag_reward_task"] = reward_task
-        # self.stats["diag_penalty_effort"] = penalty_effort
         self.stats["diag_penalty_smooth"] = penalty_action_smoothness
-        
-        # Calculate Laziness Ratio: Effort Penalty / Task Reward
-        # Avoid division by zero
-        # self.stats["diag_laziness_ratio"] = penalty_effort / (reward_task + 1e-6)
+        self.stats["diag_penalty_height"] = penalty_height
         
         self.stats["terminated"] = self.terminated.float()
         self.stats["collision"] = collision.float()

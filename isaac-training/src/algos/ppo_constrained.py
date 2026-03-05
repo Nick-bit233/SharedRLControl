@@ -473,8 +473,8 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             avg_return = self.value_norm.denormalize(minibatch["ret"]).mean()
             
             # Lambda Update
-            # Note: reward_threshold in config should now be on the scale of Returns (e.g., 20.0-50.0), not step rewards (0.5).
-            # [Fix] Clip the error to prevent explosive updates to lambda when performance collapses.
+            # Note: reward_threshold in config should now be on the scale of Returns, not step rewards.
+            # Clip the error to prevent explosive updates to lambda when performance collapses.
             reward_error = (avg_return.detach() - self.reward_threshold).clamp(-20.0, 20.0)
             lambda_loss = lambda_val * reward_error
             # Note: lambda_loss is usually maximized if formulated as Lagrangian, but here we define loss to minimize.
