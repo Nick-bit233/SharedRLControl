@@ -28,11 +28,11 @@ algo:
   # Crash Penalty ~ -50.
   # Threshold set to 60.0 when task reward enabled (survival + task performance).
   # set to -25.0 ~ -40.0 when task reward disabled (survival only),
-  reward_threshold: -15.0  # Target Discounted Return threshold
+  reward_threshold: -0.3  # Target Discounted Return threshold
   lambda_lr: 1e-4  # Learning rate for the Lagrange multiplier
 
 # === Training Loop ===
-max_iterations: 50010
+max_iterations: 10010
 eval_interval: 500
 save_interval: 500
 
@@ -43,7 +43,7 @@ user_model:
     frequency_base: 0.1  # base frequency for user command changes
     frequency_scale: 0.3  # scale for randomizing frequency
 
-  simple_mode: True
+  simple_mode: False
   z_tilt_compensation: 0.0
 
 # === Visualization ===

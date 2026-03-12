@@ -99,6 +99,7 @@ class FollowingEnvResidual(IsaacEnv):
         
         # history action buffer for memory
         with torch.device(self.device):
+            self.root_state = torch.zeros(self.num_envs, 1, 17)  # (num_envs, 1, state_dim), state_dim=17 for drone's root state in world frame
             self.start_pos = torch.zeros(self.num_envs, 3)
             # prev_drone_vel_w is used to compute acceleration-based penalty
             self.prev_drone_vel_w = torch.zeros(self.num_envs, 3)
@@ -107,7 +108,9 @@ class FollowingEnvResidual(IsaacEnv):
             self.agent_action = torch.zeros(self.num_envs, 3)
             # [Added] Previous action command buffer for smoothness reward
             self.prev_action_command = torch.zeros(self.num_envs, 3)
-            
+            # [Added] Original agent action command buffer for debugging
+            self.agent_action_original = torch.zeros(self.num_envs, 3)
+
             self.prev_human_action = torch.zeros(self.num_envs, 3)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
@@ -118,6 +121,7 @@ class FollowingEnvResidual(IsaacEnv):
             self.error_threshold_max = 10.0   # Max threshold (relaxed, when obstacles are very close)
             self.safety_margin = 1.5  # Distance within which we start relaxing the threshold        
         self.common_step_counter = 0
+        
         # visualize options
         self.disable_visualization = True
         self.render_lidar = False
@@ -265,6 +269,7 @@ class FollowingEnvResidual(IsaacEnv):
             "below_bound": Unbounded(1),
             "collision": Unbounded(1),
             "debug_vz_policy": Unbounded(1),
+            "debug_vz_policy_original": Unbounded(1),
             "debug_vz_target": Unbounded(1),
             "debug_vz_drone": Unbounded(1),
             "debug_z_drone": Unbounded(1),
@@ -296,6 +301,8 @@ class FollowingEnvResidual(IsaacEnv):
 
             # generate random start positions (within the platform area near the center of the map)
             pos = s_radius * (torch.rand(env_ids.size(0), 1, 3, dtype=torch.float, device=self.device) - 0.5)
+
+            # [ENV DEBUG] 初始高度固定在5.0m
             heights = 5.0 + torch.zeros(env_ids.size(0), dtype=torch.float, device=self.device)
             # heights = 2.5 + torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * (5.0 - 2.5)
             pos[:, 0, 2] = heights  # pos z: 5.0
@@ -366,26 +373,37 @@ class FollowingEnvResidual(IsaacEnv):
         self.prev_action_command[:] = self.agent_action.clone()
 
         # Get new action command from policy (world frame)
-        action_command = tensordict[("agents", "action")] # (num_envs, 3)
+        action_command = tensordict[("agents", "action")] 
         
         # Ensure actions shape is compatible
         if action_command.ndim == 3:
-            action_command = action_command.squeeze(1)  # (num_envs, 1, 3) -> (num_envs, 3) 
+            action_command = action_command.squeeze(1)
         self.agent_action[:] = action_command.clone()
+        # 添加一个探针来记录原始的agent action command，看看是否是action_command本身的z值导致了高度不稳定
+        self.agent_action_original[:] = action_command.clone()
 
         # Retrieve drone state for controller input
-        # TODO: 调整这里的state赋值，确定与当前状态同步
+        # state赋值确定与当前状态同步(√)
         drone_state = tensordict[("info", "drone_state")][..., :13]  # (num_envs, 1, 13)
-        
+
+        # 判断tensordict[("info", "drone_state")]是否与self.root_state同步
+        if not torch.allclose(drone_state, self.root_state[..., :13], atol=1e-3):
+            print(f"[Warning] Drone state in tensordict is not synchronized with self.root_state!")
+            print(f"  - Drone state in tensordict: {drone_state.squeeze(1)[0].cpu().numpy()}")
+            print(f"  - Drone state in self.root_state: {self.root_state[..., :13][0].cpu().numpy()}")
+
         # Apply action using the Omnidrones controller
         # Notice: Omnidrones requires input tensor be of shape (num_envs, M, ), where M=1 by default
         # need to squeeze the input tensors first
-        if self.enable_yaw_control:
+        if self.enable_yaw_control and action_command.shape[-1] == 4:
             target_vel = action_command[..., :3].unsqueeze(1)  # (num_envs, 1, 3)
             # yaw speed is scaled to [-pi, pi]
             target_yaw = action_command[..., 3:4].unsqueeze(1) * torch.pi  # (num_envs, 1, 1)
         else:
             target_vel = action_command[..., :3].unsqueeze(1)
+            # [ENV DEBUG] TODO: no z-velocity when applying agent action command 
+            target_vel[..., 2] = 0.0
+            self.agent_action[..., 2] = 0.0
             target_yaw = None
         # action_command(target vel) -> actions(thrusts)
         actions = self.controller(
@@ -460,10 +478,8 @@ class FollowingEnvResidual(IsaacEnv):
         else:
             # Step the simulated user model to get human action input
             with profiler.timer("env/user_model_step"):
-                human_actions_local, need_refill = self.user_model.step(
-                    user_input_drone_state,
-                    drone_pos_w
-                )
+                # [ENV DEBUG] 使用全0悬停指令测试环境和reset机制
+                human_actions_local = torch.zeros(self.num_envs, self.human_action_dim, device=self.device)
 
         # -----------------Network Input Final--------------
         obs = {
@@ -734,6 +750,7 @@ class FollowingEnvResidual(IsaacEnv):
         self.stats["collision"] = collision.float()
 
         self.stats["debug_vz_policy"] = self.agent_action[..., 2:3]
+        self.stats["debug_vz_policy_original"] = self.agent_action_original[..., 2:3]
         self.stats["debug_vz_target"] = target_vel_w[..., 2:3]
         self.stats["debug_vz_drone"] = drone_vel_w[..., 2:3]
         self.stats["debug_z_drone"] = drone_pos_w[..., 2:3]
