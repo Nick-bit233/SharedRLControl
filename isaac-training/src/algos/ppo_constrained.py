@@ -301,7 +301,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
 
         self.feature_extractor(tensordict)
         
-        # Check Outputs
+        # Check feature Outputs
         if torch.isnan(tensordict.get("_feature")).any():
             # If inputs are clean but output is NaN, check feature extractor weights
             for name, param in self.feature_extractor.named_parameters():

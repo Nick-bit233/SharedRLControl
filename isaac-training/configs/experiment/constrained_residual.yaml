@@ -7,7 +7,7 @@ env:
   num_obstacles: 300
   env_spacing: 8.0
   map_range: [20.0, 20.0, 5.0]  # [x, y, z], half extents
-  platform_width: 4.0
+  platform_width: 2.0
   enable_lidar: True
   enable_task_reward: False
 
@@ -28,7 +28,7 @@ algo:
   # Crash Penalty ~ -50.
   # Threshold set to 60.0 when task reward enabled (survival + task performance).
   # set to -25.0 ~ -40.0 when task reward disabled (survival only),
-  reward_threshold: -0.3  # Target Discounted Return threshold
+  reward_threshold: -2.0  # Target Discounted Return threshold
   lambda_lr: 1e-4  # Learning rate for the Lagrange multiplier
 
 # === Training Loop ===
