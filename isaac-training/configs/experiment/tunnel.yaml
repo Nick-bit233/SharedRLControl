@@ -1,12 +1,14 @@
 # @package _global_
 
+env_test_mode: False
+
 # === Environment Configuration ===
 env:
   num_envs: 256
   max_episode_length: 1000
-  num_obstacles: 300
+  num_obstacles: 50  # Reduced from 150 for initial training (increase after collision rate drops)
   env_spacing: 8.0
-  map_range: [20.0, 20.0, 5.0]  # [x, y, z], half extents
+  map_range: [6.0, 12.0, 5.0]  # [x, y, z], half extents -> [y, x, z] in isaacsim coordinates
   platform_width: 4.0
   enable_lidar: True
   enable_task_reward: False
@@ -23,9 +25,11 @@ algo:
   # === Constrained Optimization Parameters ===
   # Collision-rate-based constraint: directly target episode-level crash rate.
   # Lambda increases when collision_rate > target, decreases when < target.
+  # Much more interpretable than reward-based thresholds.
   # 0.05 = target 5% collision rate (95% avoidance)
+  # Start with 0.1 (lenient) and decrease to 0.02-0.05 as training progresses
   target_collision_rate: 0.05
-  lambda_lr: 1e-4  # Learning rate for the Lagrange multiplier
+  lambda_lr: 3e-4  # Increased from 1e-4 for faster lambda response
 
 # === Training Loop ===
 max_iterations: 10010
@@ -53,6 +57,6 @@ viewer:
 # === Logging ===
 hydra:
   run:
-    dir: ./outputs/constrained_residual/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ./outputs/tunnel/${now:%Y-%m-%d_%H-%M-%S}
 
-job_name: constrained_residual
+job_name: tunnel
