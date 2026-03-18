@@ -22,14 +22,11 @@ algo:
     enable: False
   training_frame_num: 128 # frames per batch
   
-  # === Constrained Optimization Parameters ===
-  # Collision-rate-based constraint: directly target episode-level crash rate.
-  # Lambda increases when collision_rate > target, decreases when < target.
-  # Much more interpretable than reward-based thresholds.
-  # 0.05 = target 5% collision rate (95% avoidance)
-  # Start with 0.1 (lenient) and decrease to 0.02-0.05 as training progresses
-  target_collision_rate: 0.05
-  lambda_lr: 3e-4  # Increased from 1e-4 for faster lambda response
+  # === Regularization ===
+  # Fixed residual regularization coefficient (replaces Lagrange mechanism).
+  # Small value: allows policy to produce large corrections for safety.
+  # Increase later via curriculum to enforce human-following.
+  reg_coeff: 0.01
 
 # === Training Loop ===
 max_iterations: 10010
@@ -58,5 +55,10 @@ viewer:
 hydra:
   run:
     dir: ./outputs/tunnel/${now:%Y-%m-%d_%H-%M-%S}
+
+# === wandb Configuration ===
+wandb:
+  project: SRLC
+  name: srlc_tunnel
 
 job_name: tunnel

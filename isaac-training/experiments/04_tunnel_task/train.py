@@ -219,7 +219,9 @@ def main(cfg):
             print("[Eval] Enabling renderer and warming up...")
             # 1. 开启渲染
             env.enable_render(True)
-            # 2. 渲染预热
+            # 2. 只显示 env_0 的无人机，隐藏其余环境（物理不受影响）
+            env.set_envs_visibility(visible_env_ids={0})
+            # 3. 渲染预热
             for _ in range(10):
                 env.sim.render()
         else:
@@ -328,9 +330,10 @@ def main(cfg):
                 )
                 logging.info("[Eval] Global camera video saved to wandb")
         
-        # 3. 评估结束，关闭渲染以节省训练资源
+        # 3. 评估结束，恢复所有环境可见性并关闭渲染
         if record_video:
-            print("[Eval] Evaluation done. Disabling renderer.")
+            print("[Eval] Evaluation done. Restoring visibility and disabling renderer.")
+            env.set_envs_visibility(visible_env_ids=None)  # 恢复所有环境可见
             env.enable_render(False)
 
         env.set_visualization(enabled=False)

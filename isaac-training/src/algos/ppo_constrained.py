@@ -96,19 +96,13 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
 
         self.using_rnn = cfg.rnn.enable
         
-        # === Constrained Optimization Params ===
-        # Target collision rate for the safety constraint
-        # Lambda increases when collision_rate > target (unsafe), decreases when < target (safe)
-        # This is much more interpretable than reward-based thresholds
-        self.target_collision_rate = cfg.get("target_collision_rate", 0.05)
-        
-        # Learnable Lagrange Multiplier parameter (unconstrained)
-        # λ is optimized for adjusting the trade-off between reward maximization and residual minimization
-        # Initialize to a negative value so softplus(lambda) starts small (Strong Regularization initially)
-        self.lambda_param = nn.Parameter(torch.tensor([0.0], device=device), requires_grad=True)
-        self.lambda_lr = cfg.get("lambda_lr", 5e-5) # Lower LR to prevent oscillation/explosion
-        self.lambda_optim = torch.optim.Adam([self.lambda_param], lr=self.lambda_lr)
-        # =======================================
+        # === Residual Regularization ===
+        # Fixed coefficient for residual magnitude penalty.
+        # Keeps residuals from exploding but does NOT compete with actor_loss
+        # via a convex combination (which caused the 80% collision plateau).
+        # Can be increased later via curriculum to enforce human-following.
+        self.reg_coeff = cfg.get("reg_coeff", 0.01)
+        # ===============================
 
         # Get obs spec dims
         state_dim = observation_spec["agents", "observation", "state"].shape[-1]
@@ -342,20 +336,6 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
         
         # tensordict: (num_env, num_frames, dim), batchsize = num_env * num_frames
         
-        # Compute episode-level collision rate for lambda constraint
-        # This directly measures what we care about: how often does the drone crash?
-        # Much more interpretable than reward-based thresholds.
-        with torch.no_grad():
-            terminated_flags = tensordict["next", "terminated"]
-            truncated_flags = tensordict.get(("next", "truncated"), None)
-            if truncated_flags is not None:
-                episode_ends = (terminated_flags | truncated_flags)
-            else:
-                episode_ends = terminated_flags
-            n_crashes = terminated_flags.float().sum()
-            n_episodes = episode_ends.float().sum().clamp(min=1.0)
-            batch_collision_rate = n_crashes / n_episodes
-        
         with profiler.timer("ppo/compute_gae"):
             next_tensordict = tensordict["next"]
             with torch.no_grad():
@@ -397,12 +377,12 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
                         if i + t_chunk > t:
                             continue 
                         minibatch = shuffled_tensordict[:, i : i+t_chunk]
-                        infos.append(self._update(minibatch, batch_collision_rate))
+                        infos.append(self._update(minibatch))
             else:
                 for epoch in range(self.cfg.training_epoch_num):
                     batch = make_batch(tensordict, self.cfg.num_minibatches)
                     for minibatch in batch:
-                        infos.append(self._update(minibatch, batch_collision_rate))
+                        infos.append(self._update(minibatch))
 
         infos = torch.stack(infos).to_tensordict()
         
@@ -410,7 +390,7 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
         return {k: v.item() for k, v in infos.items()}    
 
     
-    def _update(self, minibatch, batch_collision_rate): 
+    def _update(self, minibatch): 
         profiler = get_profiler()
         
         with profiler.timer("ppo/update/forward"):
@@ -464,22 +444,12 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             actor_loss = -torch.mean(torch.min(surr1, surr2)) * self.action_dim 
 
             # 3. Regularization Loss (Minimizing Residual Magnitude)
-            # minibatch["_loc_delta"] contains the residual vectors directly from network
+            # Fixed small coefficient — prevents residual from exploding,
+            # but does NOT block the actor from producing large corrections for safety.
             reg_loss = minibatch["_loc_delta"].pow(2).sum(dim=-1).mean()
 
-            # 4. Constrained Optimization
-            # Use softplus to map it to positive domain (better stability than exp)
-            # Clamp lambda to [0.01, 10.0] to prevent degenerate cases:
-            #   - min=0.01: reg_loss weight ≈ 1/1.01 ≈ 99%, but actor_loss still gets ~1% gradient
-            #   - max=10.0: reg_loss weight = 1/11 ≈ 9%, keeps regularization meaningful
-            lambda_val = F.softplus(self.lambda_param).clamp(min=0.01, max=10.0)
-            
-            # Convex combination: 
-            # If lambda is large (constraint violated), weight on actor_loss is high.
-            # If lambda is small (constraint satisfied), weight on reg_loss is high.
-            # Using .detach() on lambda because we don't want to backprop thru lambda here
-            # We want policy to adapt to the current lambda value.
-            loss_pi = (reg_loss + lambda_val.detach() * actor_loss) / (1. + lambda_val.detach())
+            # 4. Policy Loss = actor_loss + fixed reg penalty (no convex combination)
+            loss_pi = actor_loss + self.reg_coeff * reg_loss
             
             # 5. Critic Loss 
             b_value = minibatch["state_value"]
@@ -492,19 +462,6 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
 
             # Total Loss
             loss = entropy_loss + loss_pi + critic_loss
-            
-            # 6. Lambda Loss (Dual Variable Update)
-            # Constraint: collision_rate <= target_collision_rate
-            # We directly use episode-level collision rate instead of reward thresholds.
-            # This is interpretable: target_collision_rate=0.05 means "crash in ≤5% of episodes".
-            #
-            # Lambda update: lambda_loss = lambda * (target - actual_collision_rate)
-            # If collision_rate > target (unsafe): (target - rate) < 0 → lambda_loss < 0
-            #   → minimizing pushes lambda UP → more weight on actor_loss → policy avoids crashes
-            # If collision_rate < target (safe):   (target - rate) > 0 → lambda_loss > 0
-            #   → minimizing pushes lambda DOWN → more weight on reg_loss → policy follows human
-            constraint_error = (self.target_collision_rate - batch_collision_rate).clamp(-1.0, 1.0)
-            lambda_loss = lambda_val * constraint_error
 
         with profiler.timer("ppo/update/backward"):
             # Optimize Policy & Critic
@@ -522,11 +479,6 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
             self.feature_extractor_optim.step()
             self.actor_optim.step()
             self.critic_optim.step()
-            
-            # Optimize Lambda
-            self.lambda_optim.zero_grad()
-            lambda_loss.backward() 
-            self.lambda_optim.step()
 
             explained_var = 1 - F.mse_loss(value, ret) / ret.var()
             
@@ -536,9 +488,6 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
                 "critic_loss": critic_loss,
                 "entropy": entropy_loss,
                 "reg_loss": reg_loss,
-                "lambda": lambda_val.detach(),
-                "lambda_loss": lambda_loss.detach(),
-                "collision_rate": batch_collision_rate,
                 "actor_grad_norm": actor_grad_norm,
                 "critic_grad_norm": critic_grad_norm,
                 "explained_var": explained_var

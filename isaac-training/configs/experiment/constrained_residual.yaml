@@ -20,12 +20,9 @@ algo:
     enable: False
   training_frame_num: 128 # frames per batch
   
-  # === Constrained Optimization Parameters ===
-  # Collision-rate-based constraint: directly target episode-level crash rate.
-  # Lambda increases when collision_rate > target, decreases when < target.
-  # 0.05 = target 5% collision rate (95% avoidance)
-  target_collision_rate: 0.05
-  lambda_lr: 1e-4  # Learning rate for the Lagrange multiplier
+  # === Regularization ===
+  # Fixed residual regularization coefficient (replaces Lagrange mechanism).
+  reg_coeff: 0.01
 
 # === Training Loop ===
 max_iterations: 10010

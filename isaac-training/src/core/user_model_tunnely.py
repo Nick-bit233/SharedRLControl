@@ -112,7 +112,7 @@ class UserModelTunnel:
         # Parameters
         self.buffer_size = cfg.algo.training_frame_num  # training frame num steps (e.g. 128 frames is about 2 seconds)
         self.repulsive_gain = 1.0  # Maxium repulsive force gain for APF
-        self.max_speed = cfg.algo.actor.action_limit
+        self.max_speed = cfg.algo.actor.action_limit * 0.3  # (reduced from 1.0 for longer reaction time)
         self.max_speed_z = 0
         
         # 增加Z轴速度偏置 (Z-axis compensation for tilt-induced lift loss)
@@ -393,9 +393,9 @@ class UserModelTunnel:
             noise_expanded = channel_noise.unsqueeze(-1) 
             # 拼接后形状变为 (K, T, C, 3)
             target_vels = torch.cat([
-                torch.ones_like(noise_expanded),   # vx = 1
-                noise_expanded,                    # vy = noise
-                torch.zeros_like(noise_expanded)   # vz = 0
+                torch.ones_like(noise_expanded),         # vx = 1x
+                noise_expanded,                          # vy = (as noise)
+                torch.zeros_like(noise_expanded)          # vz = 0x
             ], dim=-1)
 
             # (K, T, C, 3) * (3,) 符合广播机制

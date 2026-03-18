@@ -614,20 +614,20 @@ class EnvTunnelResidual(IsaacEnv):
             # -------------------------------------------------------------------------
             # 融合指数惩罚
             # -------------------------------------------------------------------------
-            r_safety_dist_scale = 0.5
+            r_safety_dist_scale = 1.0  # Wider gradient reach (was 0.5)
             
             # 计算三个独立的指数障碍物惩罚项 (范围 0 到 1，越近越接近1)
             p_min = torch.exp(-min_dist_to_obs / r_safety_dist_scale)
             p_vel = torch.exp(-dist_to_cur_vel_dir / r_safety_dist_scale)
             p_cmd = torch.exp(-dist_to_human_action_dir / r_safety_dist_scale)
             
-            # 分配权重 (这代表了你希望 Agent 对不同危险的重视程度)
-            w_min = 0.1  # 基础安全意识：允许擦墙飞，权重低
-            w_vel = 0.3  # 物理惯性危险：撞墙风险，权重中
-            w_cmd = 0.6  # 主动寻死危险：指令导致撞墙，权重高，必须强制让 Agent 偏离指令
+            # 分配权重
+            w_min = 0.2  # 基础安全意识
+            w_vel = 0.4  # 物理惯性危险：撞墙风险
+            w_cmd = 0.4  # 主动寻死危险：指令导致撞墙
             
-            # 【截断安全区】：只对距离小于 1.5m 的情况触发惩罚，保证远处安全区的 Return 干净
-            safe_zone = 1.5
+            # 安全区覆盖LiDAR 75%范围，让策略更早收到安全信号
+            safe_zone = 3.0  # was 1.5
             mask_min = (min_dist_to_obs < safe_zone).float()
             mask_vel = (dist_to_cur_vel_dir < safe_zone).float()
             mask_cmd = (dist_to_human_action_dir < safe_zone).float()
@@ -661,10 +661,9 @@ class EnvTunnelResidual(IsaacEnv):
         # This removes the conflict where deviating for safety penalizes task reward.
         task_reward_term = reward_task if self.enable_task_reward else 0.0
 
-        # Survival reward: small positive reward per step alive
-        # This gives the agent an incentive to stay alive longer (avoid crashes)
-        # and provides a dense signal even when enable_task_reward=False
-        reward_survival = 0.1
+        # Survival reward: positive reward per step alive
+        # Strong signal to incentivize staying alive (avoid crashes)
+        reward_survival = 0.5
 
         # Forward progress reward: incentivize moving along tunnel length axis (pos[0])
         # pos[0] starts at -7.0, increases toward +12.0
@@ -683,9 +682,8 @@ class EnvTunnelResidual(IsaacEnv):
         
         self.reward = (
             task_reward_term
-            + 1.0 * reward_survival
-            # + reward_progress
-            + 1.0 * r_safety
+            + reward_survival
+            + 5.0 * r_safety  # Strong safety signal (was 1.0)
             - 8.0 * penalty_height
         )
         
@@ -695,8 +693,8 @@ class EnvTunnelResidual(IsaacEnv):
         static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (1.0 - 0.3 / self.lidar_range)
         collision = static_collision
         # success if drone traverses the tunnel length (pos[0] is the tunnel length axis)
-        # Drone starts at pos[0] ≈ -7.0, tunnel ends at pos[0] ≈ +12.0
-        success = self.drone.pos[..., 0] > 12.0
+        # Drone starts at pos[0] ≈ -7.0, tunnel ends at pos[0] ≈ +10.0
+        success = self.drone.pos[..., 0] > 10.0
         
         self.terminated = below_bound | above_bound | collision
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
@@ -705,7 +703,7 @@ class EnvTunnelResidual(IsaacEnv):
         # === Apply Terminal Reward & Penalty ===
         # If crashed (not timed out), give a massive penalty encoded into the reward of this step.
         # This ensures the Value Function learns to fear these states.
-        crash_penalty = -50.0
+        crash_penalty = -10.0  # Reduced from -50 to lower return variance
         # Only apply to envs that just terminated due to crash
         crashed_mask = (collision & ~self.truncated)
         self.reward[crashed_mask] += crash_penalty
@@ -904,3 +902,27 @@ class EnvTunnelResidual(IsaacEnv):
         :return: 'global' or 'follow'
         """
         return getattr(self, '_camera_view_mode', 'follow')
+
+    def set_envs_visibility(self, visible_env_ids=None):
+        """
+        Show only specified environment instances and hide the rest.
+        Useful for recording clean evaluation videos with a single drone.
+        Physics simulation is NOT affected — only rendering visibility changes.
+
+        Args:
+            visible_env_ids: list/set of env indices to keep visible.
+                             If None, all envs are made visible (restore).
+        """
+        import omni.usd
+        from pxr import UsdGeom
+        stage = omni.usd.get_context().get_stage()
+        for i in range(self.num_envs):
+            prim_path = f"/World/envs/env_{i}"
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                continue
+            imageable = UsdGeom.Imageable(prim)
+            if visible_env_ids is None or i in visible_env_ids:
+                imageable.MakeVisible()
+            else:
+                imageable.MakeInvisible()

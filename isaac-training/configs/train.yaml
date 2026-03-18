@@ -34,7 +34,7 @@ hydra:
 # wandb Configuration
 wandb:
   project: SRLC
-  name: test_navRL
+  name: srlc_default
   entity: nickbit_ipec_group
   mode: offline 
   run_id: 
