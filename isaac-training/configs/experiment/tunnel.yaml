@@ -29,9 +29,9 @@ algo:
   reg_coeff: 0.01
 
 # === Training Loop ===
-max_iterations: 10010
-eval_interval: 500
-save_interval: 500
+max_iterations: 20010
+eval_interval: 1000
+save_interval: 1000
 
 # === User Model ===
 user_model:
