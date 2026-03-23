@@ -1,0 +1,24 @@
+# @package _global_
+# Stage 4: Very hard — crowded tunnel with wide obstacles.
+# Usage: experiment=tunnel_stage4
+
+defaults:
+  - tunnel
+
+env:
+  num_obstacles: 150
+  obstacle_width_range: [0.4, 1.1]
+  obstacle_height_range: [4.0, 10.0]
+
+max_iterations: 5010
+save_interval: 500
+
+curriculum:
+  enable: False
+
+wandb:
+  name: srlc_tunnel_stage4
+
+hydra:
+  run:
+    dir: ./outputs/curriculum_stage4/${now:%Y-%m-%d_%H-%M-%S}

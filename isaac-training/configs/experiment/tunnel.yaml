@@ -32,6 +32,19 @@ algo:
 max_iterations: 20010
 eval_interval: 1000
 save_interval: 1000
+resume_checkpoint: null
+
+# === Curriculum (Phase 2: reg_coeff ramp, only used in final stage) ===
+curriculum:
+  enable: False
+  check_interval: 50
+  ema_alpha: 0.1
+  promotion_threshold: 0.90
+  demotion_threshold: 0.70
+  patience: 3
+  initial_reg_coeff: 0.01
+  max_reg_coeff: 0.3
+  reg_step: 0.03
 
 # === User Model ===
 user_model:
@@ -60,5 +73,7 @@ hydra:
 wandb:
   project: SRLC
   name: srlc_tunnel
+  group: null
+  mode: online
 
 job_name: tunnel

@@ -66,11 +66,14 @@ def main(cfg):
     # Convert OmegaConf to dict to avoid serialization errors with wandb/dataclasses
     wandb_config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
 
+    wandb_group = cfg.wandb.get("group", None)
+
     if (cfg.wandb.run_id is None):
         run = wandb.init(
             project=cfg.wandb.project,
             name=f"{cfg.wandb.name}/{datetime.datetime.now().strftime('%m-%d_%H-%M')}",
             entity=cfg.wandb.entity,
+            group=wandb_group,
             config=wandb_config,
             mode=cfg.wandb.mode,
             id=wandb.util.generate_id(),
@@ -80,6 +83,7 @@ def main(cfg):
             project=cfg.wandb.project,
             name=f"{cfg.wandb.name}/{datetime.datetime.now().strftime('%m-%d_%H-%M')}",
             entity=cfg.wandb.entity,
+            group=wandb_group,
             config=wandb_config,
             mode=cfg.wandb.mode,
             id=cfg.wandb.run_id,
@@ -157,7 +161,15 @@ def main(cfg):
     # === 初始化 PPO ===
     # === CHANGED: Use ConstrainedResidualPPO ===
     policy = ConstrainedResidualPPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
-    
+
+    # === Resume from checkpoint (for multi-stage curriculum) ===
+    resume_ckpt = cfg.get("resume_checkpoint", None)
+    if resume_ckpt is not None:
+        print(f"[Train] Loading checkpoint: {resume_ckpt}")
+        state_dict = torch.load(resume_ckpt, map_location=cfg.device)
+        policy.load_state_dict(state_dict)
+        print(f"[Train] Checkpoint loaded successfully.")
+
     print("[Train] Environment structure.")
     print(env)
 
@@ -342,6 +354,15 @@ def main(cfg):
         return info
 
     # === 初始化零点验证 (Sanity Check) ===
+    # === Curriculum Scheduler (Phase 2: reg_coeff ramp) ===
+    curriculum_enabled = cfg.get("curriculum", {}).get("enable", False)
+    reg_scheduler = None
+    if curriculum_enabled:
+        from src.core.curriculum import RegCoeffScheduler
+        reg_scheduler = RegCoeffScheduler(cfg.curriculum)
+        print(f"[Train] Curriculum ENABLED: reg_coeff will ramp from "
+              f"{cfg.curriculum.initial_reg_coeff} to {cfg.curriculum.max_reg_coeff}")
+
     print("[Sanity Check] Running Zero-Shot Verification...")
     env.eval() 
     with torch.no_grad(), set_exploration_type(ExplorationType.DETERMINISTIC):
@@ -407,6 +428,15 @@ def main(cfg):
                     stats[f"episode/{key_name}"] = torch.mean(v.float()).item()
                 info.update(stats)
 
+        # === Curriculum: update reg_coeff based on success_rate ===
+        if reg_scheduler is not None and i % reg_scheduler.check_interval == 0:
+            success_rate = info.get("episode/stats_success", None)
+            if success_rate is not None:
+                new_reg = reg_scheduler.update(success_rate)
+                policy.set_reg_coeff(new_reg)
+                info["curriculum/reg_coeff"] = new_reg
+                info["curriculum/ema_success"] = reg_scheduler.ema_success
+
         # 每隔 eval_interval 评估一次
         if eval_interval > 0 and i % eval_interval == 0:
             logging.info(f"Eval at {collector._frames} steps.")
@@ -432,6 +462,18 @@ def main(cfg):
             ckpt_path = os.path.join(save_dir, f"checkpoint_{i}.pt")
             torch.save(policy.state_dict(), ckpt_path)
             print("[RunnerSimple]: model saved at training step: ", i)
+
+    # === Save final checkpoint ===
+    if not profiling_mode:
+        save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
+        os.makedirs(save_dir, exist_ok=True)
+        final_ckpt_path = os.path.join(save_dir, "checkpoint_final.pt")
+        torch.save(policy.state_dict(), final_ckpt_path)
+        print(f"[Train] Final checkpoint saved: {final_ckpt_path}")
+        # Write path to a marker file so pipeline scripts can find it
+        marker_path = os.path.join(cfg.log_output_dir, "final_checkpoint_path.txt")
+        with open(marker_path, "w") as f:
+            f.write(final_ckpt_path)
 
     if profiling_mode:
         profiler.print_summary()

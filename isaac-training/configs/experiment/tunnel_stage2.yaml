@@ -1,0 +1,24 @@
+# @package _global_
+# Stage 2: Medium — more and slightly wider obstacles.
+# Usage: experiment=tunnel_stage2
+
+defaults:
+  - tunnel
+
+env:
+  num_obstacles: 60
+  obstacle_width_range: [0.4, 0.9]
+  obstacle_height_range: [4.0, 9.0]
+
+max_iterations: 5010
+save_interval: 500
+
+curriculum:
+  enable: False
+
+wandb:
+  name: srlc_tunnel_stage2
+
+hydra:
+  run:
+    dir: ./outputs/curriculum_stage2/${now:%Y-%m-%d_%H-%M-%S}

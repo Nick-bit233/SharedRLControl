@@ -270,6 +270,10 @@ class ConstrainedResidualPPO(TensorDictModuleBase):
                 
         self.actor_net.module[-1].apply(init_residual)  # only init the last linear layer of actor net
     
+    def set_reg_coeff(self, value):
+        """Set the residual regularization coefficient (for curriculum)."""
+        self.reg_coeff = value
+
     def set_residual_scale(self, scale):
         """Set the scale of the residual policy output (0.0 to 1.0)"""
         if hasattr(self, "residual_action_module"):
