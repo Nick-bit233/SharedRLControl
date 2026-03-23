@@ -363,6 +363,19 @@ def main(cfg):
         print(f"[Train] Curriculum ENABLED: reg_coeff will ramp from "
               f"{cfg.curriculum.initial_reg_coeff} to {cfg.curriculum.max_reg_coeff}")
 
+    # === Best Checkpoint Tracking ===
+    best_eval_success = -1.0
+    best_policy_state = None
+
+    # === Early Stopping ===
+    es_cfg = cfg.get("early_stopping", {})
+    early_stopping_enabled = es_cfg.get("enable", False)
+    es_patience = es_cfg.get("patience", 5)
+    es_min_delta = es_cfg.get("min_delta", 0.10)
+    es_degradation_count = 0
+    if early_stopping_enabled:
+        print(f"[Train] Early stopping ENABLED: patience={es_patience}, min_delta={es_min_delta}")
+
     print("[Sanity Check] Running Zero-Shot Verification...")
     env.eval() 
     with torch.no_grad(), set_exploration_type(ExplorationType.DETERMINISTIC):
@@ -440,13 +453,39 @@ def main(cfg):
         # 每隔 eval_interval 评估一次
         if eval_interval > 0 and i % eval_interval == 0:
             logging.info(f"Eval at {collector._frames} steps.")
-            info.update(evaluate())
+            eval_info = evaluate()
+            info.update(eval_info)
             print(f"[Train] Eval info at step {collector._frames}: DONE")
 
             if env_test_mode:
                 save_env_image(i)
                 print("[Training Loop] env_test_mode activated, exiting after evaluation.")
                 break
+
+            # === Best Checkpoint Tracking ===
+            current_success = eval_info.get("eval/stats_success", -1.0)
+            if current_success > best_eval_success:
+                best_eval_success = current_success
+                best_policy_state = {k: v.clone() for k, v in policy.state_dict().items()}
+                # Save best checkpoint to disk
+                best_save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
+                os.makedirs(best_save_dir, exist_ok=True)
+                best_ckpt_path = os.path.join(best_save_dir, "checkpoint_best.pt")
+                torch.save(best_policy_state, best_ckpt_path)
+                es_degradation_count = 0
+                print(f"[Train] 🏆 New best model! success={current_success:.3f} at step {i}")
+            elif early_stopping_enabled and best_eval_success > 0:
+                # Check for performance degradation
+                if current_success < best_eval_success - es_min_delta:
+                    es_degradation_count += 1
+                    print(f"[Train] ⚠️ Performance drop: {current_success:.3f} vs best {best_eval_success:.3f} "
+                          f"(degradation {es_degradation_count}/{es_patience})")
+                    if es_degradation_count >= es_patience:
+                        print(f"[Train] 🛑 Early stopping triggered! Restoring best model (success={best_eval_success:.3f})")
+                        policy.load_state_dict(best_policy_state)
+                        break
+                else:
+                    es_degradation_count = 0
 
         # === Profiling: Log timing stats to wandb ===
         if profiling_mode and i > 0 and i % 5 == 0:
@@ -474,6 +513,21 @@ def main(cfg):
         marker_path = os.path.join(cfg.log_output_dir, "final_checkpoint_path.txt")
         with open(marker_path, "w") as f:
             f.write(final_ckpt_path)
+
+        # Write best checkpoint marker (preferred by curriculum pipeline)
+        best_marker_path = os.path.join(cfg.log_output_dir, "best_checkpoint_path.txt")
+        if best_policy_state is not None:
+            best_save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
+            best_ckpt_path = os.path.join(best_save_dir, "checkpoint_best.pt")
+            torch.save(best_policy_state, best_ckpt_path)
+            with open(best_marker_path, "w") as f:
+                f.write(best_ckpt_path)
+            print(f"[Train] Best checkpoint saved: {best_ckpt_path} (success={best_eval_success:.3f})")
+        else:
+            # No eval was run; fall back to final
+            with open(best_marker_path, "w") as f:
+                f.write(final_ckpt_path)
+            print(f"[Train] No eval run; best checkpoint marker points to final.")
 
     if profiling_mode:
         profiler.print_summary()

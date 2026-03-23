@@ -1,20 +1,34 @@
 # @package _global_
-# Stage 4: Very hard — crowded tunnel with wide obstacles.
+# Stage 4: Very hard — crowded tunnel with wider obstacles.
 # Usage: experiment=tunnel_stage4
 
 defaults:
   - tunnel
 
 env:
-  num_obstacles: 150
-  obstacle_width_range: [0.4, 1.1]
+  num_obstacles: 120
+  obstacle_width_range: [0.4, 1.0]
   obstacle_height_range: [4.0, 10.0]
 
-max_iterations: 5010
-save_interval: 500
+# Reduced lr to prevent catastrophic forgetting
+algo:
+  feature_extractor:
+    learning_rate: 3e-5
+  actor:
+    learning_rate: 3e-5
+  critic:
+    learning_rate: 3e-5
+
+max_iterations: 12010
+save_interval: 1000
 
 curriculum:
   enable: False
+
+early_stopping:
+  enable: True
+  patience: 5
+  min_delta: 0.10
 
 wandb:
   name: srlc_tunnel_stage4

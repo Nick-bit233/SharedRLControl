@@ -46,6 +46,12 @@ curriculum:
   max_reg_coeff: 0.3
   reg_step: 0.03
 
+# === Early Stopping (restore best checkpoint on performance degradation) ===
+early_stopping:
+  enable: True
+  patience: 5       # consecutive eval drops before stopping
+  min_delta: 0.10   # success rate drop from best that counts as degradation
+
 # === User Model ===
 user_model:
 

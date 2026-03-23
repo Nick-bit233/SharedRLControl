@@ -678,13 +678,16 @@ class EnvTunnelResidual(IsaacEnv):
         # penalty_height[z > (h_max + 0.2)] = ((z - h_max - 0.2)**2)[z > (h_max + 0.2)]
         # penalty_height[z < (h_min - 0.2)] = ((h_min - 0.2 - z)**2)[z < (h_min - 0.2)]
         z = self.drone.pos[..., 2:3].reshape(self.num_envs, 1)
-        penalty_height = (z - (h_max + 0.2)).clamp(min=0.0) + ((h_min - 0.2) - z).clamp(min=0.0)
+        # Quadratic penalty for height violations (stronger gradient far from boundary)
+        height_excess_up = (z - (h_max + 0.2)).clamp(min=0.0)
+        height_excess_down = ((h_min - 0.2) - z).clamp(min=0.0)
+        penalty_height = height_excess_up ** 2 + height_excess_down ** 2
         
         self.reward = (
             task_reward_term
             + reward_survival
             + 5.0 * r_safety  # Strong safety signal (was 1.0)
-            - 8.0 * penalty_height
+            - 15.0 * penalty_height  # Stronger height penalty (was -8.0 linear, now quadratic)
         )
         
         # Terminate Conditions & Terminal Penalty
@@ -704,8 +707,8 @@ class EnvTunnelResidual(IsaacEnv):
         # If crashed (not timed out), give a massive penalty encoded into the reward of this step.
         # This ensures the Value Function learns to fear these states.
         crash_penalty = -10.0  # Reduced from -50 to lower return variance
-        # Only apply to envs that just terminated due to crash
-        crashed_mask = (collision & ~self.truncated)
+        # Only apply to envs that just terminated due to crash (collision or out-of-bounds)
+        crashed_mask = ((collision | above_bound | below_bound) & ~self.truncated)
         self.reward[crashed_mask] += crash_penalty
 
         # If succeeded, give a reward encoded into the reward of this step.

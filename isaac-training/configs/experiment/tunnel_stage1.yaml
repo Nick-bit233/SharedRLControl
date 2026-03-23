@@ -16,6 +16,11 @@ save_interval: 500
 curriculum:
   enable: False
 
+early_stopping:
+  enable: True
+  patience: 5
+  min_delta: 0.10
+
 wandb:
   name: srlc_tunnel_stage1
 

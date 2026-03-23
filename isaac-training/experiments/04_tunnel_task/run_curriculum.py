@@ -35,20 +35,34 @@ STAGE_CONFIGS = [
 
 
 def find_final_checkpoint(output_dir: str) -> str:
-    """Find the final checkpoint path from a completed training run."""
+    """Find the best (or final) checkpoint path from a completed training run.
+    
+    Prefers best checkpoint (highest eval success) over final checkpoint.
+    """
+    # Prefer best checkpoint (highest eval success rate)
+    best_marker = os.path.join(output_dir, "best_checkpoint_path.txt")
+    if os.path.exists(best_marker):
+        with open(best_marker, "r") as f:
+            path = f.read().strip()
+        if os.path.exists(path):
+            print(f"[Pipeline] Using BEST checkpoint: {path}")
+            return path
+
+    # Fall back to final checkpoint
     marker = os.path.join(output_dir, "final_checkpoint_path.txt")
     if os.path.exists(marker):
         with open(marker, "r") as f:
             path = f.read().strip()
         if os.path.exists(path):
+            print(f"[Pipeline] Using FINAL checkpoint (no best available): {path}")
             return path
     # Fallback: look for checkpoint_final.pt in output_dir
     fallback = os.path.join(output_dir, "checkpoint_final.pt")
     if os.path.exists(fallback):
         return fallback
     raise FileNotFoundError(
-        f"No final checkpoint found in {output_dir}. "
-        f"Checked marker file and {fallback}"
+        f"No checkpoint found in {output_dir}. "
+        f"Checked best_checkpoint_path.txt, final_checkpoint_path.txt, and {fallback}"
     )
 
 

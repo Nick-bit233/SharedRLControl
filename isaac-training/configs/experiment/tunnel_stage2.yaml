@@ -1,20 +1,34 @@
 # @package _global_
-# Stage 2: Medium — more and slightly wider obstacles.
+# Stage 2: Medium — more obstacles, same size range as Stage 1.
 # Usage: experiment=tunnel_stage2
 
 defaults:
   - tunnel
 
 env:
-  num_obstacles: 60
-  obstacle_width_range: [0.4, 0.9]
-  obstacle_height_range: [4.0, 9.0]
+  num_obstacles: 50
+  obstacle_width_range: [0.4, 0.8]
+  obstacle_height_range: [4.0, 8.0]
 
-max_iterations: 5010
+# Fine-tuning: lower lr for stability
+algo:
+  feature_extractor:
+    learning_rate: 7e-5
+  actor:
+    learning_rate: 7e-5
+  critic:
+    learning_rate: 7e-5
+
+max_iterations: 8010
 save_interval: 500
 
 curriculum:
   enable: False
+
+early_stopping:
+  enable: True
+  patience: 5
+  min_delta: 0.10
 
 wandb:
   name: srlc_tunnel_stage2
