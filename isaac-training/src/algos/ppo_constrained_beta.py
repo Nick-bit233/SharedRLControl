@@ -108,7 +108,7 @@ class IndependentScaledBeta(D.Distribution):
     
     ProbabilisticActor expects log_prob to return a scalar per batch element
     (summed over action dims). This wrapper handles that, plus provides
-    .mode and .mean properties.
+    .mode, .mean, and .deterministic_sample properties.
     """
     
     def __init__(self, alpha: torch.Tensor, beta: torch.Tensor):
@@ -116,6 +116,11 @@ class IndependentScaledBeta(D.Distribution):
         batch_shape = alpha.shape[:-1]
         event_shape = alpha.shape[-1:]
         super().__init__(batch_shape, event_shape, validate_args=False)
+    
+    @property
+    def deterministic_sample(self):
+        """Required by TorchRL ProbabilisticActor for DETERMINISTIC mode."""
+        return self._scaled_beta.mode
     
     @property
     def mode(self):
