@@ -16,6 +16,10 @@ save_interval: 500
 curriculum:
   enable: False
 
+# Beta distribution: low concentration for broad exploration in early stage
+algo:
+  min_concentration: 2.0
+
 early_stopping:
   enable: True
   patience: 5

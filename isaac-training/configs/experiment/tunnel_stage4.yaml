@@ -19,6 +19,8 @@ algo:
   critic:
     learning_rate: 3e-5
 
+  min_concentration: 10.0
+
 max_iterations: 12010
 save_interval: 1000
 

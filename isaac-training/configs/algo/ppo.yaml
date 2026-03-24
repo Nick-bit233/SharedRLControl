@@ -1,4 +1,7 @@
 algo:
+  # Distribution type: "tanh_normal" (default) or "beta"
+  distribution: tanh_normal
+  
   feature_extractor:
     learning_rate: 1e-4
     dyn_obs_num: 5
@@ -27,3 +30,6 @@ algo:
   training_frame_num: 128
   training_epoch_num: 10
   num_minibatches: 16 # split into N minibatches
+  
+  # Beta distribution settings (only used when distribution: beta)
+  min_concentration: 2.0  # Minimum concentration for Beta dist (higher → less exploration)

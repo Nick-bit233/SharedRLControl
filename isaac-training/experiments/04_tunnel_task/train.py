@@ -50,8 +50,14 @@ def main(cfg):
 
     # Import environment and algorithm (must after sim_app is instantiated)
     from src.envs.env_tunnel import EnvTunnelResidual
-    # === CHANGED: Import Constrained PPO ===
-    from src.algos.ppo_constrained import ConstrainedResidualPPO
+    # Import PPO algorithm — select via cfg.algo.distribution: "tanh_normal" (default) or "beta"
+    algo_distribution = cfg.algo.get("distribution", "tanh_normal")
+    if algo_distribution == "beta":
+        from src.algos.ppo_constrained_beta import ConstrainedResidualPPO_Beta as ConstrainedResidualPPO
+        print("[Train] Using Beta distribution PPO")
+    else:
+        from src.algos.ppo_constrained import ConstrainedResidualPPO
+        print("[Train] Using TanhNormal distribution PPO")
 
     # === Special Mode Configuration ===
     profiling_mode = cfg.get("profiling_mode", False)  # Enable via CLI: profiling_mode=true
