@@ -198,10 +198,19 @@ def evaluate(
         for k, v in trajs[("next", "stats")].cpu().items()
     }
 
-    info = {
-        "eval/stats." + k: torch.mean(v.float()).item() 
-        for k, v in traj_stats.items()
-    }
+    info = {}
+    for k, v in traj_stats.items():
+        v_mean = torch.mean(v.float(), dim=0)
+        if v_mean.numel() == 1:
+            info["eval/" + k] = v_mean.item()
+        else:
+            clean = k
+            for p in ["debug_", ""]:
+                if clean.startswith(p) and p:
+                    clean = clean[len(p):]
+                    break
+            for suffix, val in zip(["x", "y", "z", "w"][:v_mean.numel()], v_mean.reshape(-1)):
+                info[f"eval_debug/{clean}/{suffix}"] = val.item()
 
     # log video
     info["recording"] = wandb.Video(

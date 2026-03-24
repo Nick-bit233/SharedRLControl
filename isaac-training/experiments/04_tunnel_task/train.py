@@ -317,10 +317,19 @@ def main(cfg):
             for k, v in trajs[("next", "stats")].cpu().items()
         }
 
-        info = {
-            "eval/stats_" + k: torch.mean(v.float()).item() 
-            for k, v in traj_stats.items()
-        }
+        info = {}
+        for k, v in traj_stats.items():
+            v_mean = torch.mean(v.float(), dim=0)
+            if v_mean.numel() == 1:
+                info["eval/" + k] = v_mean.item()
+            else:
+                clean = k
+                for p in ["debug_", ""]:
+                    if clean.startswith(p) and p:
+                        clean = clean[len(p):]
+                        break
+                for suffix, val in zip(["x", "y", "z", "w"][:v_mean.numel()], v_mean.reshape(-1)):
+                    info[f"eval_debug/{clean}/{suffix}"] = val.item()
         logging.info(f"[Eval] eval info: {info}")
         
         env.set_visualization(enabled=False)
@@ -438,7 +447,18 @@ def main(cfg):
                 stats = {}
                 for k, v in episode_stats.pop().items(include_nested=True, leaves_only=True):
                     key_name = k if isinstance(k, str) else "_".join(k)  # key可能是str或tuple
-                    stats[f"episode/{key_name}"] = torch.mean(v.float()).item()
+                    v_mean = torch.mean(v.float(), dim=0)  # mean across episodes, keep vector dims
+                    if v_mean.numel() == 1:
+                        stats[f"episode/{key_name}"] = v_mean.item()
+                    else:
+                        # Multi-dim stats -> group under debug/ section for cleaner wandb dashboard
+                        clean = key_name
+                        for p in ["stats_debug_", "stats_"]:
+                            if clean.startswith(p):
+                                clean = clean[len(p):]
+                                break
+                        for suffix, val in zip(["x", "y", "z", "w"][:v_mean.numel()], v_mean.reshape(-1)):
+                            stats[f"debug/{clean}/{suffix}"] = val.item()
                 info.update(stats)
 
         # === Curriculum: update reg_coeff based on success_rate ===
