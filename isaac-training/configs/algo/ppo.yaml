@@ -1,6 +1,6 @@
 algo:
   # Distribution type: "tanh_normal" (default) or "beta"
-  distribution: tanh_normal
+  distribution: beta
   
   feature_extractor:
     learning_rate: 1e-4
