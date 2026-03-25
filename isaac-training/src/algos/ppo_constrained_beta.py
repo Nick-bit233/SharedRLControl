@@ -197,6 +197,8 @@ class BetaResidualActionModule(nn.Module):
     When mean_delta ≈ 0, mode = human_action (identity initialization).
     """
     
+    MAX_CONCENTRATION = 100.0  # Hard cap to prevent numerical instability
+    
     def __init__(self, action_limit, min_concentration=2.0):
         super().__init__()
         self.action_limit = action_limit
@@ -214,7 +216,8 @@ class BetaResidualActionModule(nn.Module):
         mean = mean.clamp(0.01, 0.99)
         
         # 3) Compute concentration (controls distribution width)
-        concentration = F.softplus(raw_concentration) + self.min_concentration
+        #    Capped at MAX_CONCENTRATION to prevent numerical instability
+        concentration = F.softplus(raw_concentration).clamp(max=self.MAX_CONCENTRATION) + self.min_concentration
         
         # 4) Parameterize Beta with +1 offset to guarantee alpha, beta > 1
         #    This ensures the distribution is always unimodal, and:
@@ -552,12 +555,17 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         
         with profiler.timer("ppo/update/forward"):
             self.feature_extractor(minibatch)
+            
+            # NaN guard: if feature extractor outputs NaN, skip this minibatch
+            features = minibatch.get("_feature")
+            if features is not None and torch.isnan(features).any():
+                print("[PPO-Beta] WARNING: NaN in features during _update, skipping minibatch")
+                return self._nan_info_dict()
 
             action_dist = self.actor.get_dist(minibatch) 
 
             action = minibatch[("agents", "action_normalized")]
             # Beta: actions in (-1, 1). Clamp slightly inward for numerical safety
-            # (much less aggressive than TanhNormal — Beta log_prob is well-behaved in interior)
             action_safe = action.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
             log_probs = action_dist.log_prob(action_safe)
             # log_prob is already summed over action dims by IndependentScaledBeta
@@ -574,7 +582,9 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             old_log_probs = minibatch["sample_log_prob"]
             if old_log_probs.dim() > log_probs.dim():
                 old_log_probs = old_log_probs.sum(dim=-1)
-            ratio = torch.exp(log_probs - old_log_probs).unsqueeze(-1)
+            # Clamp log-ratio before exp to prevent inf/NaN
+            log_ratio = (log_probs - old_log_probs).clamp(-20.0, 20.0)
+            ratio = torch.exp(log_ratio).unsqueeze(-1)
             ratio = ratio.clamp(max=10.0)
             surr1 = advantage * ratio
             surr2 = advantage * ratio.clamp(1.-self.cfg.actor.clip_ratio, 1.+self.cfg.actor.clip_ratio)
@@ -605,6 +615,14 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             self.critic_optim.zero_grad()
             loss.backward()
 
+            # NaN guard: skip optimizer step if any gradient is NaN
+            if self._has_nan_gradients():
+                print("[PPO-Beta] WARNING: NaN gradients detected, skipping optimizer step")
+                self.feature_extractor_optim.zero_grad()
+                self.actor_optim.zero_grad()
+                self.critic_optim.zero_grad()
+                return self._nan_info_dict()
+
             feature_extractor_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.feature_extractor.parameters(), max_norm=5.)
             actor_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.actor.parameters(), max_norm=5.) 
             critic_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.critic.parameters(), max_norm=5.)
@@ -624,3 +642,25 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
                 "critic_grad_norm": critic_grad_norm,
                 "explained_var": explained_var
             }, [])
+    
+    def _has_nan_gradients(self):
+        """Check if any parameter gradient contains NaN."""
+        for param_group in [self.feature_extractor.parameters(), 
+                           self.actor.parameters(), 
+                           self.critic.parameters()]:
+            for p in param_group:
+                if p.grad is not None and torch.isnan(p.grad).any():
+                    return True
+        return False
+    
+    def _nan_info_dict(self):
+        """Return a TensorDict with NaN values for logging when update is skipped."""
+        return TensorDict({
+            "actor_loss": torch.tensor(float('nan')),
+            "critic_loss": torch.tensor(float('nan')),
+            "entropy": torch.tensor(float('nan')),
+            "reg_loss": torch.tensor(float('nan')),
+            "actor_grad_norm": torch.tensor(float('nan')),
+            "critic_grad_norm": torch.tensor(float('nan')),
+            "explained_var": torch.tensor(float('nan')),
+        }, [])
