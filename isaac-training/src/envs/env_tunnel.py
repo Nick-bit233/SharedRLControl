@@ -236,7 +236,7 @@ class EnvTunnelResidual(IsaacEnv):
                         num_obstacles=self.cfg.env.num_obstacles,
                         obstacle_height_mode="choice",
                         obstacle_width_range=tuple(self.cfg.env.get("obstacle_width_range", [0.4, 1.1])),
-                        obstacle_height_range=tuple(self.cfg.env.get("obstacle_height_range", [4.0, 10.0])),
+                        obstacle_height_range=tuple(self.cfg.env.get("obstacle_height_range", [8.0, 20.0])),
                         platform_width=0,
                     ),
                 },
@@ -686,8 +686,9 @@ class EnvTunnelResidual(IsaacEnv):
         self.reward = (
             task_reward_term
             + reward_survival
-            + 5.0 * r_safety  # Strong safety signal (was 1.0)
-            - 15.0 * penalty_height  # Stronger height penalty (was -8.0 linear, now quadratic)
+            + 2.0 * r_safety  # Strong safety signal (was 1.0)
+            - 10.0 * penalty_height  # Stronger height penalty (was -8.0 linear, now quadratic)
+            - 0.5 * penalty_action_smoothness  # Smoothness penalty: penalize large action jumps
         )
         
         # Terminate Conditions & Terminal Penalty

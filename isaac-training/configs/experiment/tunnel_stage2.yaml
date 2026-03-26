@@ -8,7 +8,7 @@ defaults:
 env:
   num_obstacles: 50
   obstacle_width_range: [0.4, 0.8]
-  obstacle_height_range: [4.0, 8.0]
+  obstacle_height_range: [8.0, 16.0]
 
 # Fine-tuning: lower lr for stability
 algo:

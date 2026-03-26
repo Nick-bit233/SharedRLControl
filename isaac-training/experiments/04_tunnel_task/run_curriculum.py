@@ -29,8 +29,6 @@ STAGE_CONFIGS = [
     "tunnel_stage1",
     "tunnel_stage2",
     "tunnel_stage3",
-    "tunnel_stage4",
-    "tunnel_stage5",
 ]
 
 
@@ -93,7 +91,7 @@ def run_stage(
     config_name = STAGE_CONFIGS[stage_idx]
     stage_num = stage_idx + 1
     print(f"\n{'='*60}")
-    print(f"  STAGE {stage_num}/5: {config_name}")
+    print(f"  STAGE {stage_num}/3: {config_name}")
     if checkpoint:
         print(f"  Checkpoint: {checkpoint}")
     else:
@@ -129,11 +127,11 @@ def main():
     parser = argparse.ArgumentParser(description="Multi-stage curriculum training pipeline")
     parser.add_argument(
         "--start-stage", type=int, default=1,
-        help="Stage to start from (1-5, default: 1)",
+        help="Stage to start from (1-3, default: 1)",
     )
     parser.add_argument(
-        "--end-stage", type=int, default=5,
-        help="Stage to end at (1-5, default: 5)",
+        "--end-stage", type=int, default=3,
+        help="Stage to end at (1-3, default: 3)",
     )
     parser.add_argument(
         "--checkpoint", type=str, default=None,
@@ -145,10 +143,10 @@ def main():
     )
     args, extra = parser.parse_known_args()
 
-    if args.start_stage < 1 or args.start_stage > 5:
-        parser.error("--start-stage must be between 1 and 5")
-    if args.end_stage < args.start_stage or args.end_stage > 5:
-        parser.error("--end-stage must be >= start-stage and <= 5")
+    if args.start_stage < 1 or args.start_stage > 3:
+        parser.error("--start-stage must be between 1 and 3")
+    if args.end_stage < args.start_stage or args.end_stage > 3:
+        parser.error("--end-stage must be >= start-stage and <= 3")
 
     group = args.group or f"curriculum_{datetime.datetime.now():%Y%m%d_%H%M%S}"
     checkpoint = args.checkpoint

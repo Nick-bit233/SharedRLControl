@@ -8,7 +8,7 @@ defaults:
 env:
   num_obstacles: 80
   obstacle_width_range: [0.4, 0.9]
-  obstacle_height_range: [4.0, 9.0]
+  obstacle_height_range: [8.0, 18.0]
 
 # Further reduced lr for fine-tuning
 algo:
@@ -19,17 +19,26 @@ algo:
   critic:
     learning_rate: 5e-5
 
-  min_concentration: 5.0
+  min_concentration: 2.0  # Keep low to allow exploration, avoid timeout
 
-max_iterations: 10010
-save_interval: 500
+max_iterations: 20010
+save_interval: 1000
 
+# Phase 2: reg_coeff curriculum (activated in final stage)
 curriculum:
-  enable: False
+  enable: True
+  check_interval: 50
+  ema_alpha: 0.1
+  promotion_threshold: 0.90
+  demotion_threshold: 0.70
+  patience: 5
+  initial_reg_coeff: 0.01
+  max_reg_coeff: 0.05
+  reg_step: 0.005
 
 early_stopping:
   enable: True
-  patience: 5
+  patience: 8
   min_delta: 0.10
 
 wandb:

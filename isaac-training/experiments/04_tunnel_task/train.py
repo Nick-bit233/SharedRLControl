@@ -381,6 +381,7 @@ def main(cfg):
     # === Best Checkpoint Tracking ===
     best_eval_success = -1.0
     best_policy_state = None
+    latest_eval_success = None  # Cached eval success for curriculum scheduler
 
     # === Early Stopping ===
     es_cfg = cfg.get("early_stopping", {})
@@ -467,21 +468,17 @@ def main(cfg):
                             stats[f"debug/{clean}/{suffix}"] = val.item()
                 info.update(stats)
 
-        # === Curriculum: update reg_coeff based on success_rate ===
-        if reg_scheduler is not None and i % reg_scheduler.check_interval == 0:
-            success_rate = info.get("episode/stats_success", None)
-            if success_rate is not None:
-                new_reg = reg_scheduler.update(success_rate)
-                policy.set_reg_coeff(new_reg)
-                info["curriculum/reg_coeff"] = new_reg
-                info["curriculum/ema_success"] = reg_scheduler.ema_success
-
-        # 每隔 eval_interval 评估一次
+        # 每隔 eval_interval 评估一次 (BEFORE curriculum update, so eval data is available)
         if eval_interval > 0 and i % eval_interval == 0:
             logging.info(f"Eval at {collector._frames} steps.")
             eval_info = evaluate()
             info.update(eval_info)
             print(f"[Train] Eval info at step {collector._frames}: DONE")
+
+            # Cache latest eval success rate for curriculum scheduler
+            _latest_eval_success = eval_info.get("eval/stats_success", None)
+            if _latest_eval_success is not None:
+                latest_eval_success = _latest_eval_success
 
             if env_test_mode:
                 save_env_image(i)
@@ -512,6 +509,14 @@ def main(cfg):
                         break
                 else:
                     es_degradation_count = 0
+
+        # === Curriculum: update reg_coeff based on eval success_rate ===
+        if reg_scheduler is not None and i % reg_scheduler.check_interval == 0:
+            if latest_eval_success is not None:
+                new_reg = reg_scheduler.update(latest_eval_success)
+                policy.set_reg_coeff(new_reg)
+                info["curriculum/reg_coeff"] = new_reg
+                info["curriculum/ema_success"] = reg_scheduler.ema_success
 
         # === Profiling: Log timing stats to wandb ===
         if profiling_mode and i > 0 and i % 5 == 0:
