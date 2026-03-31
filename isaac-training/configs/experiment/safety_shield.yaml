@@ -13,7 +13,6 @@ env:
   map_range: [20.0, 20.0, 5.0]  # 40×40m open field, 10m max height
   platform_width: 6.0  # obstacle-free spawn zone at map center (6×6m)
   enable_lidar: True
-  enable_task_reward: True
   # Danger-aware tracking reward params
   danger_safe_dist: 2.0
   danger_relax_factor: 0.8

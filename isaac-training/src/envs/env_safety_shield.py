@@ -80,8 +80,6 @@ class EnvSafetyShield(IsaacEnv):
         # Action limits
         self.max_action_vel = cfg.algo.actor.action_limit
 
-        # Reward config
-        self.enable_task_reward = cfg.env.get("enable_task_reward", True)
         # Danger-aware tracking params
         self.danger_safe_dist = cfg.env.get("danger_safe_dist", 2.0)
         self.danger_relax_factor = cfg.env.get("danger_relax_factor", 0.8)
@@ -518,9 +516,9 @@ class EnvSafetyShield(IsaacEnv):
             )
 
         # ---- (b) Danger-aware tracking reward ----
-        # Compare policy output (world frame) vs human command (world frame)
+        # Compare CURRENT policy output (world frame) vs human command (world frame)
         policy_vel_w = vec_to_world(
-            self.prev_action_command[:, :3],
+            self.agent_action[:, :3],
             drone_orientation_q,
             orientation_only=True,
             yaw_only=True,
@@ -585,8 +583,8 @@ class EnvSafetyShield(IsaacEnv):
         crashed_mask = (collision | above_bound | below_bound | oob_xy) & ~self.truncated
         self.reward[crashed_mask] += crash_penalty
 
-        # Update buffers
-        self.prev_human_action = human_actions_local.clone()
+        # NOTE: prev_human_action update moved AFTER stats block to avoid
+        # stale reference in intervention_norm computation (L682).
 
         # ================================================================
         #                        VISUALIZATION
@@ -698,6 +696,9 @@ class EnvSafetyShield(IsaacEnv):
         self.stats["diag_reward_safety"] = r_safety
         self.stats["diag_penalty_smooth"] = penalty_smoothness
         self.stats["diag_penalty_height"] = penalty_height
+
+        # Update prev_human_action AFTER stats (intervention_norm needs step-t value)
+        self.prev_human_action = human_actions_local.clone()
         self.stats["diag_danger_level"] = danger_level
         self.stats["debug_vec_world"] = drone_vel_w
         self.stats["debug_vec_policy"] = self.agent_action_original
