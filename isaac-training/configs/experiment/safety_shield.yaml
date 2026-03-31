@@ -1,0 +1,88 @@
+# @package _global_
+# Experiment 05: Safety Shield — open obstacle field with danger-aware tracking.
+# Direction-invariant safety shield with diverse multi-modal human inputs.
+
+env_test_mode: False
+
+# === Environment Configuration ===
+env:
+  num_envs: 256
+  max_episode_length: 1000
+  num_obstacles: 50
+  env_spacing: 8.0
+  map_range: [10.0, 10.0, 5.0]  # 20×20m open field, 10m max height
+  platform_width: 0.0
+  enable_lidar: True
+  enable_task_reward: True
+  # Danger-aware tracking reward params
+  danger_safe_dist: 2.0
+  danger_relax_factor: 0.8
+  # Obstacle shape defaults
+  obstacle_width_range: [0.4, 1.0]
+  obstacle_height_range: [4.0, 10.0]
+
+env_dyn:
+  num_obstacles: 0
+
+# === Algorithm Configuration ===
+algo:
+  rnn:
+    enable: False
+  training_frame_num: 128
+  reg_coeff: 0.01
+
+# === Training Loop ===
+max_iterations: 20010
+eval_interval: 1000
+save_interval: 1000
+resume_checkpoint: null
+
+# === Curriculum (Phase 2: reg_coeff ramp, final stage only) ===
+curriculum:
+  enable: False
+  check_interval: 50
+  ema_alpha: 0.1
+  promotion_threshold: 0.85   # survival rate threshold
+  demotion_threshold: 0.60
+  patience: 3
+  initial_reg_coeff: 0.01
+  max_reg_coeff: 0.3
+  reg_step: 0.03
+
+# === Early Stopping ===
+early_stopping:
+  enable: True
+  patience: 5
+  min_delta: 0.10
+
+# === User Model (Diverse multi-modal) ===
+user_model:
+  max_speed_z: 1.0
+  z_tilt_compensation: 0.0
+  mode_weights: [0.40, 0.25, 0.20, 0.15]  # perlin_3d, straight, arc, hover
+  simple_mode: False
+  style:
+    frequency_base: 0.1
+    frequency_scale: 0.3
+
+# === Visualization ===
+record_video: True
+global_view: True
+viewer:
+  eye: [0., 0., 3.]
+  lookat: [0., 0, 1.]
+  resolution: [960, 720]
+
+# === Logging ===
+hydra:
+  run:
+    dir: ./outputs/safety_shield/${now:%Y-%m-%d_%H-%M-%S}
+
+# === wandb Configuration ===
+wandb:
+  project: SRLC
+  name: srlc_safety_shield
+  group: null
+  mode: online
+
+job_name: safety_shield

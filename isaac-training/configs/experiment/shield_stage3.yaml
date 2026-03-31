@@ -1,0 +1,46 @@
+# @package _global_
+# Stage 3: Dense — max density + reg_coeff curriculum to enforce tracking.
+# Usage: experiment=shield_stage3
+
+defaults:
+  - safety_shield
+
+env:
+  num_obstacles: 150
+  obstacle_width_range: [0.4, 1.1]
+  obstacle_height_range: [4.0, 10.0]
+
+algo:
+  feature_extractor:
+    learning_rate: 3e-5
+  actor:
+    learning_rate: 3e-5
+  critic:
+    learning_rate: 3e-5
+  min_concentration: 5.0
+
+max_iterations: 20010
+save_interval: 1000
+
+curriculum:
+  enable: True
+  check_interval: 50
+  ema_alpha: 0.1
+  promotion_threshold: 0.85
+  demotion_threshold: 0.60
+  patience: 5
+  initial_reg_coeff: 0.01
+  max_reg_coeff: 0.05
+  reg_step: 0.005
+
+early_stopping:
+  enable: True
+  patience: 8
+  min_delta: 0.10
+
+wandb:
+  name: srlc_shield_stage3
+
+hydra:
+  run:
+    dir: ./outputs/shield_stage3/${now:%Y-%m-%d_%H-%M-%S}

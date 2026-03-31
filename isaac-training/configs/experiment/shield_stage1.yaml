@@ -1,0 +1,32 @@
+# @package _global_
+# Stage 1: Easy — few small obstacles, learn basic tracking + mild avoidance.
+# Usage: experiment=shield_stage1
+
+defaults:
+  - safety_shield
+
+env:
+  num_obstacles: 30
+  obstacle_width_range: [0.4, 0.8]
+  obstacle_height_range: [8.0, 16.0]
+
+max_iterations: 12010
+save_interval: 500
+
+curriculum:
+  enable: False
+
+algo:
+  min_concentration: 2.0
+
+early_stopping:
+  enable: True
+  patience: 5
+  min_delta: 0.10
+
+wandb:
+  name: srlc_shield_stage1
+
+hydra:
+  run:
+    dir: ./outputs/shield_stage1/${now:%Y-%m-%d_%H-%M-%S}

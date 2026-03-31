@@ -1,0 +1,38 @@
+# @package _global_
+# Stage 2: Medium — more obstacles, reduced lr for stability.
+# Usage: experiment=shield_stage2
+
+defaults:
+  - safety_shield
+
+env:
+  num_obstacles: 80
+  obstacle_width_range: [0.4, 0.9]
+  obstacle_height_range: [6.0, 14.0]
+
+algo:
+  feature_extractor:
+    learning_rate: 5e-5
+  actor:
+    learning_rate: 5e-5
+  critic:
+    learning_rate: 5e-5
+  min_concentration: 2.0
+
+max_iterations: 15010
+save_interval: 1000
+
+curriculum:
+  enable: False
+
+early_stopping:
+  enable: True
+  patience: 5
+  min_delta: 0.10
+
+wandb:
+  name: srlc_shield_stage2
+
+hydra:
+  run:
+    dir: ./outputs/shield_stage2/${now:%Y-%m-%d_%H-%M-%S}
