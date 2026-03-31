@@ -627,7 +627,7 @@ class EnvTunnelResidual(IsaacEnv):
             w_cmd = 0.4  # 主动寻死危险：指令导致撞墙
             
             # 安全区覆盖LiDAR 75%范围，让策略更早收到安全信号
-            safe_zone = 3.0  # was 1.5
+            safe_zone = 4.0  # was 3.0
             mask_min = (min_dist_to_obs < safe_zone).float()
             mask_vel = (dist_to_cur_vel_dir < safe_zone).float()
             mask_cmd = (dist_to_human_action_dir < safe_zone).float()
@@ -662,8 +662,8 @@ class EnvTunnelResidual(IsaacEnv):
         task_reward_term = reward_task if self.enable_task_reward else 0.0
 
         # Survival reward: positive reward per step alive
-        # Strong signal to incentivize staying alive (avoid crashes)
-        reward_survival = 0.5
+        # Reduced to prevent hovering from being optimal (was 0.5)
+        reward_survival = 0.2
 
         # Forward progress reward: incentivize moving along tunnel length axis (pos[0])
         # pos[0] starts at -7.0, increases toward +12.0
@@ -686,7 +686,7 @@ class EnvTunnelResidual(IsaacEnv):
         self.reward = (
             task_reward_term
             + reward_survival
-            + 2.0 * r_safety  # Strong safety signal (was 1.0)
+            + 3.0 * r_safety  # Stronger safety signal (was 2.0)
             - 10.0 * penalty_height  # Stronger height penalty (was -8.0 linear, now quadratic)
             - 0.5 * penalty_action_smoothness  # Smoothness penalty: penalize large action jumps
         )
@@ -711,12 +711,6 @@ class EnvTunnelResidual(IsaacEnv):
         # Only apply to envs that just terminated due to crash (collision or out-of-bounds)
         crashed_mask = ((collision | above_bound | below_bound) & ~self.truncated)
         self.reward[crashed_mask] += crash_penalty
-
-        # If succeeded, give a reward encoded into the reward of this step.
-        success_reward = 10.0
-        # Only apply to envs that just succeeded
-        success_mask = success
-        self.reward[success_mask] += success_reward
 
         # update previous velocity for smoothness calculation in the next ieteration
         self.prev_human_action = human_actions_local.clone()
@@ -823,8 +817,15 @@ class EnvTunnelResidual(IsaacEnv):
         self.stats["truncated"] = self.truncated.float()
 
         self.stats["debug_vec_world"] = drone_vel_w
-        self.stats["debug_vec_policy"] = target_vel_w
-        self.stats["debug_vec_target"] = human_actions_local
+        self.stats["debug_vec_policy"] = self.agent_action_original
+        # Convert human action from body frame to world frame for consistent comparison
+        human_action_w = vec_to_world(
+            human_actions_local[:, :3],
+            drone_orientation_q,
+            orientation_only=True,
+            yaw_only=True
+        )
+        self.stats["debug_vec_target"] = human_action_w
         self.stats["debug_pos_world"] = drone_pos_w
         # [Debug Print] Check if drone is falling despite 0 command
         # if self.common_step_counter % 10 == 0:

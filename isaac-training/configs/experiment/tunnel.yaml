@@ -5,13 +5,13 @@ env_test_mode: False
 # === Environment Configuration ===
 env:
   num_envs: 256
-  max_episode_length: 1000
+  max_episode_length: 1250
   num_obstacles: 50  # Reduced from 150 for initial training (increase after collision rate drops)
   env_spacing: 8.0
   map_range: [6.0, 12.0, 5.0]  # [x, y, z], half extents -> [y, x, z] in isaacsim coordinates
   platform_width: 4.0
   enable_lidar: True
-  enable_task_reward: False
+  enable_task_reward: True
 
 env_dyn:
   num_obstacles: 0

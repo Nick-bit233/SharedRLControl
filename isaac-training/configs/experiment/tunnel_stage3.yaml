@@ -29,7 +29,7 @@ curriculum:
   enable: True
   check_interval: 50
   ema_alpha: 0.1
-  promotion_threshold: 0.90
+  promotion_threshold: 0.82
   demotion_threshold: 0.70
   patience: 5
   initial_reg_coeff: 0.01

@@ -21,7 +21,7 @@ algo:
 
   min_concentration: 2.0
 
-max_iterations: 8010
+max_iterations: 12010
 save_interval: 500
 
 curriculum:
