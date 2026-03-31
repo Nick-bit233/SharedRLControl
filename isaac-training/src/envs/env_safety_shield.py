@@ -69,6 +69,7 @@ class EnvSafetyShield(IsaacEnv):
 
         # Map params
         self.map_range = cfg.env.map_range  # [x, y, z] half-extents
+        self.platform_width = cfg.env.get("platform_width", 6.0)
 
         super().__init__(cfg, cfg.headless)
 
@@ -175,7 +176,7 @@ class EnvSafetyShield(IsaacEnv):
                         obstacle_height_range=tuple(
                             self.cfg.env.get("obstacle_height_range", [4.0, 10.0])
                         ),
-                        platform_width=0,
+                        platform_width=self.platform_width,
                     ),
                 },
             ),
@@ -304,11 +305,10 @@ class EnvSafetyShield(IsaacEnv):
         pos = torch.zeros(K, 1, 3, device=self.device)
 
         if self.training:
-            # Random XY within safe zone (80% of map), fixed height
-            safe_x = sx * 0.6
-            safe_y = sy * 0.6
-            pos[:, 0, 0] = (torch.rand(K, device=self.device) * 2 - 1) * safe_x
-            pos[:, 0, 1] = (torch.rand(K, device=self.device) * 2 - 1) * safe_y
+            # Spawn within obstacle-free platform at map center
+            spawn_radius = self.platform_width / 2.0
+            pos[:, 0, 0] = (torch.rand(K, device=self.device) * 2 - 1) * spawn_radius
+            pos[:, 0, 1] = (torch.rand(K, device=self.device) * 2 - 1) * spawn_radius
             pos[:, 0, 2] = 3.0 + torch.rand(K, device=self.device) * 4.0  # 3-7m height
         else:
             pos[:, 0, 0] = 0.0

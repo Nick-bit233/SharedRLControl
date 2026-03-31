@@ -11,7 +11,7 @@ env:
   num_obstacles: 80
   env_spacing: 8.0
   map_range: [20.0, 20.0, 5.0]  # 40×40m open field, 10m max height
-  platform_width: 0.0
+  platform_width: 6.0  # obstacle-free spawn zone at map center (6×6m)
   enable_lidar: True
   enable_task_reward: True
   # Danger-aware tracking reward params
