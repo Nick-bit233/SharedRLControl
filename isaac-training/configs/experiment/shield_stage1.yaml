@@ -8,7 +8,7 @@ defaults:
 env:
   num_obstacles: 60
   obstacle_width_range: [0.4, 0.8]
-  obstacle_height_range: [8.0, 16.0]
+  obstacle_height_range: [4.0, 10.0]
 
 max_iterations: 12010
 save_interval: 500
