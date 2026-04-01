@@ -11,7 +11,7 @@ env:
   num_obstacles: 80
   env_spacing: 8.0
   map_range: [12.0, 12.0, 5.0]  # 24×24m open field, 10m max height
-  platform_width: 4.0  # obstacle-free spawn zone at map center (4×4m)
+  platform_width: 3.0  # obstacle-free spawn zone at map center (3×3m)
   enable_lidar: True
   # Danger-aware tracking reward params
   danger_safe_dist: 2.0
@@ -41,8 +41,8 @@ algo:
 
 # === Training Loop ===
 max_iterations: 20010
-eval_interval: 1000
-save_interval: 1000
+eval_interval: 500
+save_interval: 500
 resume_checkpoint: null
 
 # === Curriculum (Phase 2: reg_coeff ramp, final stage only) ===

@@ -19,8 +19,8 @@ algo:
     learning_rate: 3e-5
   min_concentration: 5.0
 
-max_iterations: 20010
-save_interval: 1000
+max_iterations: 10010
+save_interval: 500
 
 curriculum:
   enable: True
