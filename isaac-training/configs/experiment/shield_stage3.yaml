@@ -6,7 +6,7 @@ defaults:
   - safety_shield
 
 env:
-  num_obstacles: 300
+  num_obstacles: 200
   obstacle_width_range: [0.4, 1.1]
   obstacle_height_range: [6.0, 12.0]
 

@@ -131,14 +131,19 @@ class UserModelDiverse:
             "noise_freq": torch.rand(num_envs, 1, device=self.device) * self.freq_scale + self.freq_base,
         }
 
+        # Perlin drift: random constant bias added to noise for net displacement
+        self.perlin_drift = torch.zeros(num_envs, 3, device=self.device)
+        self.drift_strength = cfg.user_model.get("drift_strength", 0.5)  # fraction of max_speed
+
         # Straight mode: random direction & speed
         self.straight_vel = torch.zeros(num_envs, 3, device=self.device)
 
-        # Arc mode: radius, angular speed, phase
+        # Arc mode: radius, angular speed, phase, linear drift
         self.arc_radius = torch.zeros(num_envs, device=self.device)
         self.arc_omega = torch.zeros(num_envs, device=self.device)
         self.arc_phase = torch.zeros(num_envs, device=self.device)
         self.arc_vz = torch.zeros(num_envs, device=self.device)
+        self.arc_drift = torch.zeros(num_envs, 2, device=self.device)  # XY drift for spiral
 
         # Previous action for continuity
         self.prev_filtered_action = torch.zeros(num_envs, 3, device=self.device)
@@ -235,6 +240,17 @@ class UserModelDiverse:
             self.straight_vel[env_ids[ids_s], 1] = speed * torch.sin(phi) * torch.sin(theta)
             self.straight_vel[env_ids[ids_s], 2] = speed * torch.cos(phi) * (self.max_speed_z / self.max_speed)
 
+        # Perlin drift: random direction, magnitude = drift_strength * max_speed
+        mask_perlin = self.env_mode[env_ids] == MODE_PERLIN_3D
+        if mask_perlin.any():
+            ids_p = mask_perlin.nonzero(as_tuple=False).squeeze(-1)
+            n_p = ids_p.shape[0]
+            drift_theta = _rand(n_p) * 2 * math.pi
+            drift_mag = (0.3 + _rand(n_p) * 0.7) * self.drift_strength * self.max_speed
+            self.perlin_drift[env_ids[ids_p], 0] = drift_mag * torch.cos(drift_theta)
+            self.perlin_drift[env_ids[ids_p], 1] = drift_mag * torch.sin(drift_theta)
+            self.perlin_drift[env_ids[ids_p], 2] = 0.0  # no z drift
+
         # Arc mode params
         mask_arc = self.env_mode[env_ids] == MODE_ARC
         if mask_arc.any():
@@ -251,6 +267,11 @@ class UserModelDiverse:
             self.arc_phase[env_ids[ids_a]] = _rand(n_a) * 2 * math.pi
             # Gentle z oscillation
             self.arc_vz[env_ids[ids_a]] = (_rand(n_a) - 0.5) * self.max_speed_z * 0.3
+            # XY drift → spiral instead of closed circle
+            arc_drift_theta = _rand(n_a) * 2 * math.pi
+            arc_drift_mag = _rand(n_a) * 0.3 * self.max_speed
+            self.arc_drift[env_ids[ids_a], 0] = arc_drift_mag * torch.cos(arc_drift_theta)
+            self.arc_drift[env_ids[ids_a], 1] = arc_drift_mag * torch.sin(arc_drift_theta)
 
     # ------------------------------------------------------------------
     # Buffer filling (dispatches per mode)
@@ -295,7 +316,7 @@ class UserModelDiverse:
     # Mode generators
     # ------------------------------------------------------------------
     def _gen_perlin_3d(self, global_ids, T, dt):
-        """3-channel independent Perlin noise → (K, T, 3)."""
+        """3-channel independent Perlin noise + directional drift → (K, T, 3)."""
         K = len(global_ids)
         t_start = self.noise_time[global_ids].unsqueeze(1)
         t_steps = torch.arange(T, device=self.device).unsqueeze(0) * dt
@@ -312,6 +333,15 @@ class UserModelDiverse:
         )
         vels = noise * scale
 
+        # Add directional drift so Perlin has net displacement
+        drift = self.perlin_drift[global_ids]  # (K, 3)
+        vels = vels + drift.unsqueeze(1)
+
+        # Clamp to action limits after adding drift
+        vels[:, :, 0].clamp_(-self.max_speed, self.max_speed)
+        vels[:, :, 1].clamp_(-self.max_speed, self.max_speed)
+        vels[:, :, 2].clamp_(-self.max_speed_z, self.max_speed_z)
+
         if self.z_tilt_compensation:
             vels[:, :, 2] += self.z_tilt_compensation
 
@@ -324,22 +354,23 @@ class UserModelDiverse:
         return v.unsqueeze(1).expand(K, T, 3).clone()
 
     def _gen_arc(self, global_ids, T, dt):
-        """Circular arc in body frame → (K, T, 3)."""
+        """Circular arc + linear drift (spiral) in body frame → (K, T, 3)."""
         K = len(global_ids)
         omega = self.arc_omega[global_ids]  # (K,)
         phase = self.arc_phase[global_ids]
         radius = self.arc_radius[global_ids]
         vz_base = self.arc_vz[global_ids]
+        drift_xy = self.arc_drift[global_ids]  # (K, 2)
 
         t_start = self.noise_time[global_ids]
         t_steps = torch.arange(T, device=self.device).float()  # (T,)
         t = t_start.unsqueeze(1) + t_steps.unsqueeze(0) * dt  # (K, T)
         angle = phase.unsqueeze(1) + omega.unsqueeze(1) * t  # (K, T)
 
-        # Tangential velocity in body frame
+        # Tangential velocity in body frame + drift
         tang_speed = (omega * radius).abs()  # (K,)
-        vx = tang_speed.unsqueeze(1) * torch.cos(angle)
-        vy = tang_speed.unsqueeze(1) * torch.sin(angle)
+        vx = tang_speed.unsqueeze(1) * torch.cos(angle) + drift_xy[:, 0:1]
+        vy = tang_speed.unsqueeze(1) * torch.sin(angle) + drift_xy[:, 1:2]
         vz = vz_base.unsqueeze(1).expand(K, T)
 
         # Clamp to action limits

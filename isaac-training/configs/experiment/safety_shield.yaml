@@ -10,8 +10,8 @@ env:
   max_episode_length: 1000
   num_obstacles: 80
   env_spacing: 8.0
-  map_range: [20.0, 20.0, 5.0]  # 40×40m open field, 10m max height
-  platform_width: 6.0  # obstacle-free spawn zone at map center (6×6m)
+  map_range: [12.0, 12.0, 5.0]  # 24×24m open field, 10m max height
+  platform_width: 4.0  # obstacle-free spawn zone at map center (4×4m)
   enable_lidar: True
   # Danger-aware tracking reward params
   danger_safe_dist: 2.0
@@ -67,11 +67,12 @@ early_stopping:
 user_model:
   max_speed_z: 1.0
   z_tilt_compensation: 0.0
+  drift_strength: 0.5  # fraction of max_speed for Perlin drift bias
   mode_weights: [0.40, 0.25, 0.20, 0.15]  # perlin_3d, straight, arc, hover
   simple_mode: False
   style:
-    frequency_base: 0.1
-    frequency_scale: 0.3
+    frequency_base: 0.05    # lower base for longer coherent segments
+    frequency_scale: 0.15   # narrower range: [0.05, 0.20]
 
 # === Visualization ===
 record_video: True
