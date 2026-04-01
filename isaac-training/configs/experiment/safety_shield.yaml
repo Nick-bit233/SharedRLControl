@@ -16,6 +16,15 @@ env:
   # Danger-aware tracking reward params
   danger_safe_dist: 2.0
   danger_relax_factor: 0.8
+  # Height penalty tolerance (meters above/below height bounds)
+  height_margin: 1.0
+  # Reward weights (configurable for ablation)
+  reward_weights:
+    tracking: 3.0    # PRIMARY: follow human input
+    safety: 5.0      # SECONDARY: avoid obstacles
+    smoothness: 0.1   # soft: action smoothness
+    height: 1.0       # soft: altitude band guidance
+    crash: -10.0       # terminal collision penalty
   # Obstacle shape defaults
   obstacle_width_range: [0.4, 1.0]
   obstacle_height_range: [6.0, 12.0]

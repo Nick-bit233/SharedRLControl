@@ -84,6 +84,15 @@ class EnvSafetyShield(IsaacEnv):
         self.danger_safe_dist = cfg.env.get("danger_safe_dist", 2.0)
         self.danger_relax_factor = cfg.env.get("danger_relax_factor", 0.8)
 
+        # Configurable reward weights
+        rw = cfg.env.get("reward_weights", {})
+        self.w_tracking = rw.get("tracking", 3.0)
+        self.w_safety = rw.get("safety", 5.0)
+        self.w_smooth = rw.get("smoothness", 0.1)
+        self.w_height = rw.get("height", 1.0)
+        self.w_crash = rw.get("crash", -10.0)
+        self.height_margin = cfg.env.get("height_margin", 1.0)
+
         # User model
         self.user_model = UserModelDiverse(
             num_envs=self.num_envs,
@@ -211,7 +220,7 @@ class EnvSafetyShield(IsaacEnv):
     # Specs
     # ------------------------------------------------------------------
     def _set_specs(self):
-        drone_state_dim = 10  # vel_b(3) + ang_vel_b(3) + quat(4)
+        drone_state_dim = 11  # vel_b(3) + ang_vel_b(3) + quat(4) + z_normalized(1)
 
         obs_dict = {
             "state": Unbounded((drone_state_dim,), device=self.device),
@@ -419,7 +428,15 @@ class EnvSafetyShield(IsaacEnv):
 
         vel_b = quat_rotate_inverse(drone_orientation_q, drone_vel_w)
         ang_vel_b = quat_rotate_inverse(drone_orientation_q, drone_ang_vel_w)
-        drone_state_b = torch.cat([vel_b, ang_vel_b, drone_orientation_q], dim=-1)
+
+        # Normalized height: (z - h_mid) / (h_range/2), ~[-1, 1] in safe zone
+        h_min_obs = self.height_range[:, 0, 0]
+        h_max_obs = self.height_range[:, 0, 1]
+        h_mid = (h_min_obs + h_max_obs) / 2.0
+        h_half = (h_max_obs - h_min_obs) / 2.0
+        z_normalized = ((drone_pos_w[:, 2] - h_mid) / h_half.clamp(min=0.1)).unsqueeze(-1)
+
+        drone_state_b = torch.cat([vel_b, ang_vel_b, drone_orientation_q, z_normalized], dim=-1)
 
         # ---------- Human input ----------
         human_actions_local = torch.zeros(
@@ -539,16 +556,16 @@ class EnvSafetyShield(IsaacEnv):
         # ---- (d) Height penalty ----
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
         z = self.drone.pos[..., 2:3].reshape(self.num_envs, 1)
-        height_excess_up = (z - (h_max + 0.2)).clamp(min=0.0)
-        height_excess_down = ((h_min - 0.2) - z).clamp(min=0.0)
+        height_excess_up = (z - (h_max + self.height_margin)).clamp(min=0.0)
+        height_excess_down = ((h_min - self.height_margin) - z).clamp(min=0.0)
         penalty_height = height_excess_up ** 2 + height_excess_down ** 2
 
-        # ---- Total reward ----
+        # ---- Total reward (configurable weights) ----
         self.reward = (
-            1.0 * r_tracking
-            + 3.0 * r_safety
-            - 0.3 * penalty_smoothness
-            - 10.0 * penalty_height
+            self.w_tracking * r_tracking
+            + self.w_safety * r_safety
+            - self.w_smooth * penalty_smoothness
+            - self.w_height * penalty_height
         )
 
         profiler.stop("env/reward_calculation")
@@ -579,9 +596,8 @@ class EnvSafetyShield(IsaacEnv):
         self.truncated = timeout_truncate
 
         # Terminal penalty
-        crash_penalty = -10.0
         crashed_mask = (collision | above_bound | below_bound | oob_xy) & ~self.truncated
-        self.reward[crashed_mask] += crash_penalty
+        self.reward[crashed_mask] += self.w_crash
 
         # NOTE: prev_human_action update moved AFTER stats block to avoid
         # stale reference in intervention_norm computation (L682).

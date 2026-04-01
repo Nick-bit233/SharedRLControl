@@ -271,11 +271,11 @@ def main(cfg):
                     info[f"eval_debug/{clean}/{suffix}"] = val.item()
 
         # Compute derived metrics for safety shield
-        episode_len = max(info.get("eval/stats_episode_len", 1.0), 1.0)
-        info["eval/tracking_rmse"] = info.get("eval/stats_tracking_error_sum", 0.0) / episode_len
-        info["eval/intervention_mean"] = info.get("eval/stats_intervention_norm_sum", 0.0) / episode_len
+        episode_len = max(info.get("eval/episode_len", 1.0), 1.0)
+        info["eval/tracking_rmse"] = info.get("eval/tracking_error_sum", 0.0) / episode_len
+        info["eval/intervention_mean"] = info.get("eval/intervention_norm_sum", 0.0) / episode_len
 
-        collision_rate = info.get("eval/stats_collision", 0.5)
+        collision_rate = info.get("eval/collision", 0.0)
         survival_rate = 1.0 - collision_rate
         info["eval/survival_rate"] = survival_rate
         info["eval/collision_rate"] = collision_rate
