@@ -1,0 +1,35 @@
+# @package _global_
+# Pareto Ablation: lower difficulty, sweep reg_coeff to map tracking-safety frontier.
+# Usage: experiment=pareto_ablation algo.reg_coeff=0.1
+
+defaults:
+  - safety_shield
+
+env:
+  num_obstacles: 40               # easier than S1 (60) for clearer signal
+  obstacle_width_range: [0.4, 0.8]
+  obstacle_height_range: [4.0, 12.0]
+
+max_iterations: 12010
+eval_interval: 500
+save_interval: 2000
+
+curriculum:
+  enable: False
+
+algo:
+  reg_coeff: 0.01                 # overridden per run by sweep script
+  min_concentration: 2.0
+
+early_stopping:
+  enable: False                   # run full duration for fair comparison
+
+record_video: False               # save time during sweep
+
+wandb:
+  name: pareto_ablation
+  group: pareto_sweep
+
+hydra:
+  run:
+    dir: ./outputs/pareto_sweep/${now:%Y-%m-%d_%H-%M-%S}
