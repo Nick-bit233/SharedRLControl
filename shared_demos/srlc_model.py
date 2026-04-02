@@ -73,7 +73,7 @@ class MockConfig:
         self.user_model = self.UserModel()
 
 
-def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_lidar=True):
+def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_lidar=True, state_dim=10):
     """
     Load the SRLC model from the given checkpoint path.
     
@@ -83,6 +83,7 @@ def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_li
         device (str or torch.device): Device to load the model on.
         action_dim (int): Action dimension, either 3 (no yaw control) or 4 (with yaw control). Default is 3.
         enable_lidar (bool): Whether the model uses lidar input.
+        state_dim (int): State observation dimension. 10 for standard envs, 11 for safety_shield (adds z_normalized).
 
     Returns:
         policy: The loaded policy model, or None if loading failed.
@@ -104,12 +105,12 @@ def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_li
 
     cfg_model = MockConfig(device=device)
     
-    # Define observation space (State: 10, Human Action: action_dim)
+    # Define observation space
     if enable_lidar:
         observation_spec = Composite({
             "agents": Composite({
                 "observation": Composite({
-                    "state": Unbounded((10, ), device=device),
+                    "state": Unbounded((state_dim, ), device=device),
                     "human_action": Unbounded((action_dim, ), device=device),
                     "lidar": Unbounded((1, 36, 4), device=device),  # default lidar spec: vbeams=4, hbeams=36
                 })
@@ -119,7 +120,7 @@ def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_li
         observation_spec = Composite({
             "agents": Composite({
                 "observation": Composite({
-                    "state": Unbounded((10, ), device=device),
+                    "state": Unbounded((state_dim, ), device=device),
                     "human_action": Unbounded((action_dim, ), device=device),
                 })
             }).expand(1)
@@ -132,7 +133,7 @@ def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_li
         })
     }).expand(1).to(device)
 
-    print(f"[INFO] Loading SRLC model: type={model_type}, checkpoint={checkpoint_path}, action_dim={action_dim}, lidar={enable_lidar}")
+    print(f"[INFO] Loading SRLC model: type={model_type}, checkpoint={checkpoint_path}, action_dim={action_dim}, state_dim={state_dim}, lidar={enable_lidar}")
     policy = ppo_model(cfg_model.algo, observation_spec, action_spec, device)
     try:
         policy.load_state_dict(torch.load(checkpoint_path, map_location=device))

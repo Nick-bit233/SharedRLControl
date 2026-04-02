@@ -28,6 +28,7 @@ import os
 import torch
 import numpy as np
 import logging
+import pygame
 from datetime import datetime
 import isaacsim.core.utils.prims as prim_utils
 import isaaclab.sim as sim_utils
@@ -115,10 +116,13 @@ def setup_logger(log_dir="logs"):
 # ============== Visualizer ==============
 
 class Visualizer:
-    def __init__(self, max_steps=500):
+    def __init__(self, max_steps=500, model_vel_smooth=0.3):
         self._draw = _debug_draw.acquire_debug_draw_interface()
         self.max_steps = max_steps
         self.history = []
+        # EMA smoothing factor for model velocity (0~1, smaller = smoother)
+        self._model_vel_alpha = model_vel_smooth
+        self._model_vel_ema = None  # [x, y, z]
 
     def update(self, pos, human_vel_w, model_vel_w, human_yaw_rate=None, model_yaw_rate=None):
         if isinstance(pos, torch.Tensor):
@@ -160,11 +164,16 @@ class Visualizer:
             colors.append((0.0, 1.0, 1.0, 1.0))
             sizes.append(4.0)
 
-        # Model velocity: Blue
+        # Model velocity: Blue (EMA-smoothed)
         if model_vel_w is not None:
             if isinstance(model_vel_w, torch.Tensor):
                 model_vel_w = model_vel_w.detach().cpu().squeeze().tolist()
-            end_m = [p + v for p, v in zip(pos, model_vel_w)]
+            a = self._model_vel_alpha
+            if self._model_vel_ema is None:
+                self._model_vel_ema = list(model_vel_w)
+            else:
+                self._model_vel_ema = [a * v + (1 - a) * s for v, s in zip(model_vel_w, self._model_vel_ema)]
+            end_m = [p + v for p, v in zip(pos, self._model_vel_ema)]
             starts.append(pos)
             ends.append(end_m)
             colors.append((0.0, 0.0, 1.0, 1.0))
@@ -204,7 +213,9 @@ def main():
         drone_model_name, drone_controller_name, device
     )
     # Spawn at the tunnel start position (same as env_tunnel _reset_idx)
-    drone.spawn(translations=torch.tensor([[-8.0, 0.0, 3.0]], device=device))
+    INIT_POS = torch.tensor([[-8.0, 0.0, 4.0]], device=device)
+    INIT_QUAT = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device)
+    drone.spawn(translations=INIT_POS)
 
     # --- Lighting ---
     light_cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
@@ -247,7 +258,7 @@ def main():
                         num_obstacles=args_cli.num_obstacles,
                         obstacle_height_mode="choice",
                         obstacle_width_range=(0.4, 1.1),
-                        obstacle_height_range=(4.0, 10.0),
+                        obstacle_height_range=(8.0, 20.0),
                         platform_width=0,
                     ),
                 },
@@ -286,7 +297,7 @@ def main():
     drone.initialize()
 
     joystick = JoystickInterface()
-    vis = Visualizer(max_steps=500)
+    vis = Visualizer(max_steps=500, model_vel_smooth=0.1)
 
     # --- 初始化 UserModelTunnel (如果启用) ---
     user_model = None
@@ -315,6 +326,10 @@ def main():
     max_speed_z = 1.0
     max_yaw_rate = 0.5
 
+    # 死区阈值: 手柄输入速度都很小时，忽略模型输出
+    DEADZONE_HUMAN_VEL = 0.1   # human action body-frame speed threshold
+    # DEADZONE_DRONE_VEL = 0.15  # drone world-frame speed threshold
+
     VIEWER_EYE_OFFSET = [-4.0, 0.0, 2.0]
     VIEWER_LOOKAT_OFFSET = [0.0, 0.0, 1.0]
 
@@ -325,6 +340,22 @@ def main():
     print(f"[INFO]: UserModel: {args_cli.usermodel}")
     print(f"[INFO]: LiDAR: {not args_cli.no_lidar}")
     print(f"[INFO]: Obstacles: {args_cli.num_obstacles}")
+    print("[INFO]: Press joystick 'Start' (button 7) or keyboard 'R' to reset drone")
+
+    def reset_drone():
+        """Reset drone to initial pose with zero velocity."""
+        env_ids = torch.tensor([0], device=device)
+        drone._reset_idx(env_ids, train=False)
+        pos = INIT_POS.unsqueeze(1)   # (1, 1, 3)
+        quat = INIT_QUAT.unsqueeze(1) # (1, 1, 4)
+        drone.set_world_poses(pos, quat, env_ids)
+        zero_vel = torch.zeros(1, 1, 6, device=device)
+        drone.set_velocities(zero_vel, env_ids)
+        vis._model_vel_ema = None
+        vis.history.clear()
+        if user_model is not None:
+            user_model.reset(INIT_POS, INIT_QUAT, env_ids)
+        logger.info("Drone reset to initial position")
 
     # ===== 仿真循环 =====
     NUM_FRAMES = 20000
@@ -337,6 +368,20 @@ def main():
             break
 
         if sim.is_playing():
+            # 检查重置按钮 (joystick Start button 7 / keyboard R)
+            reset_requested = False
+            for event in pygame.event.get():
+                if event.type == pygame.JOYBUTTONDOWN and event.button == 7:
+                    reset_requested = True
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                    reset_requested = True
+            if reset_requested:
+                reset_drone()
+                prev_human_action = torch.zeros((1, action_dim), device=device)
+                sim.step(render=True)
+                frame_count += 1
+                continue
+
             # 1. 获取无人机状态
             root_state = drone.get_state()[..., :13]  # (1, 1, 13)
             current_pos = root_state[..., :3]
@@ -419,6 +464,13 @@ def main():
                 policy(obs)
                 # 获取模型输出 (World Frame Velocity)
                 model_action_w = obs["agents", "command"]  # (1, action_dim)
+
+            # 死区: 手柄输入速度都很小时，忽略模型输出
+            human_speed = torch.norm(human_action_input[..., :3], dim=-1)  # (1,)
+            # drone_speed = torch.norm(current_vel_w.squeeze(1), dim=-1)     # (1,)
+            in_deadzone = (human_speed < DEADZONE_HUMAN_VEL)
+            if in_deadzone.any():
+                model_action_w = torch.zeros_like(model_action_w)
 
             # 4. 应用控制
             if args_cli.model_yaw_control and action_dim == 4:

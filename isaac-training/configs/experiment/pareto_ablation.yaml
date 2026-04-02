@@ -8,10 +8,10 @@ defaults:
 env:
   num_obstacles: 40               # easier than S1 (60) for clearer signal
   obstacle_width_range: [0.4, 0.8]
-  obstacle_height_range: [4.0, 12.0]
+  obstacle_height_range: [8.0, 20.0]
 
-max_iterations: 12010
-eval_interval: 500
+max_iterations: 20010
+eval_interval: 2000
 save_interval: 2000
 
 curriculum:
@@ -28,7 +28,6 @@ record_video: False               # save time during sweep
 
 wandb:
   name: pareto_ablation
-  group: pareto_sweep
 
 hydra:
   run:

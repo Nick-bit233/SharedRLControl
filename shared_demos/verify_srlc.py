@@ -4,11 +4,13 @@ import argparse
 
 # 添加命令行参数
 parser = argparse.ArgumentParser(description="Verify SRLC Model")
-parser.add_argument("--model_type", type=str, default="Residual", choices=["Simple", "Residual", "Constrained"], help="Type of SRLC model to load")
+parser.add_argument("--model_type", type=str, default="Residual", choices=["Simple", "Residual", "Constrained", "ConstrainedBeta"], help="Type of SRLC model to load")
 parser.add_argument("--checkpoint", type=str, default="/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/shared_demos/ckpts/0106-1123/checkpoint_1500.pt", help="Path to model checkpoint")
 parser.add_argument("--usermodel", action="store_true", help="Use UserModel to generate human action instead of joystick")
 parser.add_argument("--model_yaw_control", action="store_true", help="Enable model yaw control")
 parser.add_argument("--no_lidar", action="store_true", help="Disable lidar input for the model")
+parser.add_argument("--state_dim", type=int, default=10, choices=[10, 11], help="State observation dim. Use 11 for safety_shield models (adds z_normalized)")
+parser.add_argument("--height_range_z", type=float, default=5.0, help="Map z half-extent for z_normalized (state_dim=11). height=[0.5*z, 1.5*z]")
 # parser.add_argument("--use_obstacles", action="store_true", help="Enable obstacle forest environment")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -166,7 +168,7 @@ def main():
     drone, controller = MultirotorBase.make(
         drone_model_name, drone_controller_name, device
     )
-    drone.spawn(translations=torch.tensor([[0.0, 0.0, 1.0]], device=device))
+    drone.spawn(translations=torch.tensor([[0.0, 0.0, 4.0]], device=device))
 
     # --- 构建环境 ---
     # Light
@@ -199,9 +201,9 @@ def main():
                         vertical_scale=0.1,
                         border_width=0.0,
                         num_obstacles=20, 
-                        obstacle_height_mode="choice",
+                        obstacle_height_mode="fixed",
                         obstacle_width_range=(0.8, 2.0),
-                        obstacle_height_range=(8.0, 16.0),
+                        obstacle_height_range=(4.0, 10.0),
                         platform_width=4.0,
                     ),
                 },
@@ -258,8 +260,9 @@ def main():
 
     # --- 加载模型 ---
     action_dim = 4 if args_cli.model_yaw_control else 3
+    state_dim = args_cli.state_dim
     model_type = args_cli.model_type
-    policy = load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=action_dim, enable_lidar=not args_cli.no_lidar)
+    policy = load_srlc_model_simple(model_type, checkpoint_path, device, action_dim=action_dim, enable_lidar=not args_cli.no_lidar, state_dim=state_dim)
     if policy is None:
         return
 
@@ -272,6 +275,10 @@ def main():
     max_speed_xy = 2.0 
     max_speed_z = 1.0  
     max_yaw_rate = 0.5 
+
+    # 死区阈值: 手柄输入速度和无人机实际速度都很小时，忽略模型输出
+    DEADZONE_HUMAN_VEL = 0.1   # human action body-frame speed threshold
+    DEADZONE_DRONE_VEL = 0.15  # drone world-frame speed threshold
 
     VIEWER_EYE_OFFSET = [0.0, 0.0, 2.0]
     VIEWER_LOOKAT_OFFSET = [0.0, 0.0, 1.0]
@@ -305,10 +312,20 @@ def main():
             current_vel_w = root_state[..., 7:10]
             current_ang_vel_w = root_state[..., 10:13]
 
-            # 计算 Body Frame 状态 (State: 10 dims)
+            # 计算 Body Frame 状态
             vel_b = quat_rotate_inverse(current_quat.squeeze(1), current_vel_w.squeeze(1))
             ang_vel_b = quat_rotate_inverse(current_quat.squeeze(1), current_ang_vel_w.squeeze(1))
-            drone_state = torch.cat([vel_b, ang_vel_b, current_quat.squeeze(1)], dim=-1) # (1, 10)
+            state_parts = [vel_b, ang_vel_b, current_quat.squeeze(1)]  # (1, 10)
+            if state_dim == 11:
+                # z_normalized: normalized height relative to allowed altitude range
+                sz = args_cli.height_range_z
+                h_min, h_max = 0.5 * sz, 1.5 * sz
+                h_mid = (h_min + h_max) / 2.0
+                h_half = max((h_max - h_min) / 2.0, 0.1)
+                z_val = current_pos.squeeze(1)[..., 2:3]  # (1, 1)
+                z_normalized = (z_val - h_mid) / h_half
+                state_parts.append(z_normalized)
+            drone_state = torch.cat(state_parts, dim=-1)  # (1, state_dim)
 
             # 2. 获取 Human Action (Body Frame)
             if user_model is not None:
@@ -356,7 +373,7 @@ def main():
             }, batch_size=[1], device=device)
 
             # 3. 模型推理
-            if model_type == "Constrained":
+            if model_type in ("Constrained", "ConstrainedBeta"):
                 exploration_type = ExplorationType.DETERMINISTIC
             else:
                 exploration_type = ExplorationType.MEAN
@@ -365,6 +382,13 @@ def main():
                 # 获取模型输出 (World Frame Velocity, as per user instruction)
                 # (1, 4) if model_yaw_control else (1, 3)
                 model_action_w = obs["agents", "command"]
+
+            # 死区: 手柄输入和无人机实际速度都很小时，忽略模型输出
+            human_speed = torch.norm(human_action_input[..., :3], dim=-1)  # (1,)
+            drone_speed = torch.norm(current_vel_w.squeeze(1), dim=-1)     # (1,)
+            in_deadzone = (human_speed < DEADZONE_HUMAN_VEL) & (drone_speed < DEADZONE_DRONE_VEL)
+            if in_deadzone.any():
+                model_action_w = torch.zeros_like(model_action_w)
 
             # 4. 应用控制
             if args_cli.model_yaw_control:

@@ -176,12 +176,12 @@ class EnvSafetyShield(IsaacEnv):
                         vertical_scale=0.1,
                         border_width=0.0,
                         num_obstacles=self.cfg.env.num_obstacles,
-                        obstacle_height_mode="fixed",
+                        obstacle_height_mode="choice",
                         obstacle_width_range=tuple(
                             self.cfg.env.get("obstacle_width_range", [0.4, 1.1])
                         ),
                         obstacle_height_range=tuple(
-                            self.cfg.env.get("obstacle_height_range", [4.0, 10.0])
+                            self.cfg.env.get("obstacle_height_range", [8.0, 20.0])
                         ),
                         platform_width=self.platform_width,
                     ),
