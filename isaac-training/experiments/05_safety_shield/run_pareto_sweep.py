@@ -29,11 +29,11 @@ DEFAULT_REG_VALUES = [0.0, 0.01, 0.05, 0.1, 0.3, 1.0]
 
 def run_single(
     reg_coeff: float,
-    group: str,
+    sweep_tag: str,
     extra_overrides: list[str],
 ) -> int:
     """Run a single training with the given reg_coeff. Returns exit code."""
-    run_name = f"pareto_reg_{reg_coeff:.4f}".rstrip("0").rstrip(".")
+    run_name = f"{sweep_tag}_reg_{reg_coeff:.4f}".rstrip("0").rstrip(".")
     output_dir = f"./outputs/pareto_sweep/reg_{reg_coeff}"
 
     print(f"\n{'='*60}")
@@ -46,7 +46,6 @@ def run_single(
         "experiments/05_safety_shield/train.py",
         "experiment=pareto_ablation",
         f"algo.reg_coeff={reg_coeff}",
-        f"+wandb.group={group}",
         f"wandb.name={run_name}",
         f"hydra.run.dir={output_dir}/${{now:%Y-%m-%d_%H-%M-%S}}",
     ]
@@ -69,27 +68,27 @@ def main():
         help="Skip reg_coeff values before this (for resuming)",
     )
     parser.add_argument(
-        "--group", type=str, default=None,
-        help="WandB group name (default: auto-generated)",
+        "--tag", type=str, default=None,
+        help="WandB run name prefix (default: auto-generated, e.g. pareto_20260402)",
     )
     args, extra = parser.parse_known_args()
 
     reg_values = args.reg_values or DEFAULT_REG_VALUES
-    group = args.group or f"pareto_{datetime.datetime.now():%Y%m%d_%H%M%S}"
+    sweep_tag = args.tag or f"pareto_{datetime.datetime.now():%Y%m%d_%H%M%S}"
 
     if args.start_from is not None:
         reg_values = [r for r in reg_values if r >= args.start_from]
 
     print(f"[Sweep] Pareto Ablation Sweep")
     print(f"[Sweep] reg_coeff values: {reg_values}")
-    print(f"[Sweep] WandB group: {group}")
+    print(f"[Sweep] WandB name prefix: {sweep_tag}")
     print(f"[Sweep] Extra overrides: {extra}")
     print(f"[Sweep] Total runs: {len(reg_values)}")
 
     results = {}
     for i, reg in enumerate(reg_values):
         print(f"\n[Sweep] === Run {i+1}/{len(reg_values)}: reg_coeff={reg} ===")
-        rc = run_single(reg, group, extra)
+        rc = run_single(reg, sweep_tag, extra)
         results[reg] = rc
         if rc != 0:
             print(f"[Sweep] WARNING: reg_coeff={reg} exited with code {rc}")
