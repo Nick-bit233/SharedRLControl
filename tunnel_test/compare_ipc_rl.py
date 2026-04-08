@@ -96,6 +96,13 @@ drone_model_name = "Hummingbird"
 drone_controller_name = "LeePositionController"
 
 
+def _shutdown_sim():
+    """Close Isaac Sim and force-exit if it hangs (common in headless/subprocess mode)."""
+    import threading
+    threading.Timer(5.0, lambda: os._exit(0)).start()
+    simulation_app.close()
+
+
 def setup_logger(log_dir="logs", verbose=False):
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -477,7 +484,7 @@ def main():
     )
     if policy is None:
         logger.error("Failed to load RL model!")
-        simulation_app.close()
+        _shutdown_sim()
         return
 
     NUM_FRAMES = args_cli.num_frames
@@ -730,7 +737,7 @@ def main():
     # ===== Aggregate and print results =====
     if args_cli.skip_aggregate:
         logger.info(f"Skipping aggregation (--skip_aggregate). Results saved to: {results_path}")
-        simulation_app.close()
+        _shutdown_sim()
         return
 
     def aggregate(trials):
@@ -874,7 +881,7 @@ def main():
     elif viz_mode != "none":
         logger.debug("Skipping visualization — incomplete trial data")
 
-    simulation_app.close()
+    _shutdown_sim()
 
 
 if __name__ == "__main__":

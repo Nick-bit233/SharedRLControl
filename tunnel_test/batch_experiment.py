@@ -34,6 +34,21 @@ from datetime import datetime
 import numpy as np
 
 
+def _kill_proc_tree(pid: int):
+    """Kill a process group (all children spawned by the subprocess)."""
+    import signal
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    # Give 5s for graceful shutdown, then SIGKILL
+    time.sleep(5)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Batch runner: compare_ipc_rl.py across multiple terrain maps")
@@ -45,6 +60,8 @@ def parse_args():
                         help="Trials per batch per method (default: 5)")
     parser.add_argument("--num_frames", type=int, default=1600,
                         help="Frames per trial (default: 1600)")
+    parser.add_argument("--timeout_per_trial", type=int, default=600,
+                        help="Max seconds per trial before force-killing batch (default: 600 = 10 min)")
 
     # Seed control
     parser.add_argument("--terrain_seeds", type=int, nargs="*", default=None,
@@ -252,6 +269,7 @@ def main():
         "num_batches": args.num_batches,
         "trials_per_batch": args.trials_per_batch,
         "num_frames": args.num_frames,
+        "timeout_per_trial": args.timeout_per_trial,
         "master_seed": args.master_seed,
         "seed_pairs": [{"terrain_seed": ts, "start_seed": ss} for ts, ss in seed_pairs],
         "num_obstacles": args.num_obstacles,
@@ -302,20 +320,25 @@ def main():
         cmd = build_command(args, terrain_seed, start_seed, batch_dir)
         print(f"  CMD: {' '.join(cmd[:6])}...")
 
+        # Timeout = startup overhead + (per-trial budget × num_trials × 2 methods)
+        batch_timeout = 120 + args.timeout_per_trial * args.trials_per_batch * 2
+        print(f"  Timeout: {batch_timeout}s "
+              f"({args.timeout_per_trial}s/trial × {args.trials_per_batch} trials × 2 methods + 120s overhead)")
+
         t0 = time.time()
+        proc = None
         try:
-            result = subprocess.run(
-                cmd,
-                timeout=3600,  # 1 hour max per batch
-                capture_output=False,  # let stdout/stderr flow through
-            )
+            proc = subprocess.Popen(cmd, start_new_session=True)
+            returncode = proc.wait(timeout=batch_timeout)
             elapsed = time.time() - t0
-            returncode = result.returncode
         except subprocess.TimeoutExpired:
             elapsed = time.time() - t0
+            print(f"  TIMEOUT after {elapsed:.0f}s — killing process tree...")
+            _kill_proc_tree(proc.pid)
             returncode = -1
-            print(f"  TIMEOUT after {elapsed:.0f}s")
         except KeyboardInterrupt:
+            if proc is not None:
+                _kill_proc_tree(proc.pid)
             print(f"\n  Interrupted at batch {batch_idx+1}. Aggregating completed results...")
             break
 
