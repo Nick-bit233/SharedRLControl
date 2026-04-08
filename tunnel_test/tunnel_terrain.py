@@ -29,10 +29,65 @@ INIT_QUAT = [1.0, 0.0, 0.0, 0.0]
 # and regenerate_heightfield() will replay the same state.
 TERRAIN_LEGACY_SEED = 42
 
+# --------------- Heightfield Capture Mechanism ---------------
+# The terrain function below saves its output so we can build
+# the occupancy grid from the REAL heightfield, not a re-generated copy.
+_captured_tiles: list[dict] = []
+
+
+def clear_captured_tiles():
+    """Clear the capture buffer.  Call BEFORE creating TerrainImporter."""
+    global _captured_tiles
+    _captured_tiles = []
+
+
+def get_captured_heightfield(terrain_gen_cfg):
+    """Assemble the full bordered heightfield from tiles captured during
+    the actual terrain generation.
+
+    Must be called AFTER ``TerrainImporter`` creation.
+
+    Returns:
+        Full heightfield as int16 ndarray, or *None* if nothing was captured.
+    """
+    if not _captured_tiles:
+        return None
+
+    h_scale = terrain_gen_cfg.horizontal_scale
+    size = terrain_gen_cfg.size
+    num_rows = terrain_gen_cfg.num_rows
+    num_cols = terrain_gen_cfg.num_cols
+
+    sub_w_px = int(size[0] / h_scale) + 1
+    sub_l_px = int(size[1] / h_scale) + 1
+    full_w = sub_w_px * num_cols
+    full_l = sub_l_px * num_rows
+    full_hf = np.zeros((full_w, full_l), dtype=np.int16)
+
+    for index, tile in enumerate(_captured_tiles):
+        sub_row, sub_col = np.unravel_index(index, (num_rows, num_cols))
+        hf_inner = tile["hf_inner"]
+        border_px = tile["border_px"]
+
+        bordered = np.zeros((sub_w_px, sub_l_px), dtype=np.int16)
+        bordered[border_px : border_px + hf_inner.shape[0],
+                 border_px : border_px + hf_inner.shape[1]] = hf_inner
+
+        x0 = sub_col * sub_w_px
+        y0 = sub_row * sub_l_px
+        full_hf[x0 : x0 + sub_w_px, y0 : y0 + sub_l_px] = bordered
+
+    return full_hf
+
 
 @height_field_to_mesh
 def tunnel_obstacles_terrain(difficulty: float, cfg: HfDiscreteObstaclesTerrainCfg) -> np.ndarray:
-    """Custom terrain with walls forming a tunnel + interior obstacles."""
+    """Custom terrain with walls forming a tunnel + interior obstacles.
+
+    Side-effect: appends the produced heightfield to ``_captured_tiles``
+    so that :func:`get_captured_heightfield` can assemble the exact tile
+    without PRNG replication.
+    """
     hf_raw = hf_terrains.discrete_obstacles_terrain.__wrapped__(difficulty, cfg)
 
     wall_thickness_meters = 1.0
@@ -50,6 +105,12 @@ def tunnel_obstacles_terrain(difficulty: float, cfg: HfDiscreteObstaclesTerrainC
     # Side walls
     hf_raw[:, 0:wall_thickness_pixels] = wall_height_steps
     hf_raw[:, -wall_thickness_pixels:] = wall_height_steps
+
+    # Capture for offline occupancy grid construction
+    _captured_tiles.append({
+        "hf_inner": hf_raw.copy(),
+        "border_px": int(cfg.border_width / cfg.horizontal_scale) + 1,
+    })
 
     return hf_raw
 
@@ -171,11 +232,16 @@ def regenerate_heightfield(terrain_gen_cfg, tunnel_mode=False):
 
 def extract_obstacles_from_heightfield(terrain_gen_cfg, tunnel_mode=False) -> tuple:
     """
-    Regenerate the heightfield and extract obstacles as rectangular pillars.
+    Extract obstacles from the heightfield.
+
+    Prefers the **captured** heightfield (recorded during actual terrain
+    generation) for exact accuracy.  Falls back to
+    :func:`regenerate_heightfield` for offline use (e.g. ``render_viz.py``).
 
     Args:
         terrain_gen_cfg: TerrainGeneratorCfg object.
-        tunnel_mode: If True, regenerate with tunnel wall modifications.
+        tunnel_mode: If True, regenerate with tunnel wall modifications
+            (only used in fallback path).
 
     Returns:
         (heightfield, obstacles_list)
@@ -183,7 +249,11 @@ def extract_obstacles_from_heightfield(terrain_gen_cfg, tunnel_mode=False) -> tu
     """
     from scipy import ndimage
 
-    hf = regenerate_heightfield(terrain_gen_cfg, tunnel_mode=tunnel_mode)
+    # Prefer captured heightfield (exact match with simulation)
+    hf = get_captured_heightfield(terrain_gen_cfg)
+    if hf is None:
+        # Fallback for offline / no-sim usage
+        hf = regenerate_heightfield(terrain_gen_cfg, tunnel_mode=tunnel_mode)
     h_scale = terrain_gen_cfg.horizontal_scale
     v_scale = terrain_gen_cfg.vertical_scale
     size = terrain_gen_cfg.size

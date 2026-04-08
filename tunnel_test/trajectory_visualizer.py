@@ -77,6 +77,18 @@ class FlightDataRecorder:
         # Each entry: (N_rays, 3) or None
         self._lidar_hits: List[Optional[np.ndarray]] = []
 
+        # Static metadata (set once, not per-frame)
+        self._occupancy_grid: Optional[dict] = None  # from OccupancyGrid.get_2d_slice()
+
+    def set_occupancy_grid(self, occ_data: dict):
+        """Store a 2D occupancy grid slice for diagnostic visualisation.
+
+        Args:
+            occ_data: dict from ``OccupancyGrid.get_2d_slice()`` with keys
+                ``occupied_xy``, ``resolution``, ``grid_origin``, ``grid_shape``.
+        """
+        self._occupancy_grid = occ_data
+
     def record_frame(
         self,
         pos: np.ndarray,
@@ -164,6 +176,12 @@ class FlightDataRecorder:
         if any(h is not None for h in self._lidar_hits):
             save_dict["lidar_hits"] = np.array(self._lidar_hits, dtype=object)
 
+        # Static occupancy grid slice for diagnostic rendering
+        if self._occupancy_grid is not None:
+            occ = self._occupancy_grid
+            save_dict["occ_grid_xy"] = occ["occupied_xy"]
+            save_dict["occ_grid_resolution"] = np.float64(occ["resolution"])
+
         np.savez_compressed(path, **save_dict)
         logger.info(f"Flight data saved: {path} ({self.num_frames} frames)")
 
@@ -190,6 +208,9 @@ class FlightDataRecorder:
             result["ref_path"] = data["ref_path"]
         if "lidar_hits" in data:
             result["lidar_hits"] = data["lidar_hits"]
+        if "occ_grid_xy" in data:
+            result["occ_grid_xy"] = data["occ_grid_xy"]
+            result["occ_grid_resolution"] = float(data["occ_grid_resolution"])
         return result
 
 
@@ -354,6 +375,52 @@ class TrajectoryVisualizer:
         ax.grid(True, alpha=0.2, linewidth=0.5)
         self._draw_obstacles(ax)
 
+    @staticmethod
+    def _draw_occupancy_grid(ax: plt.Axes, data: dict):
+        """Draw IPC occupancy grid cells as pink/magenta semi-transparent squares.
+
+        The grid is static (same for all frames), so draw once during setup.
+        """
+        if "occ_grid_xy" not in data:
+            return
+        occ_xy = np.asarray(data["occ_grid_xy"])
+        res = data.get("occ_grid_resolution", 0.1)
+        if occ_xy.size == 0:
+            return
+
+        # Draw as a collection of rectangles for efficiency
+        half = res / 2.0
+        rects = []
+        for x, y in occ_xy:
+            rects.append(mpatches.Rectangle(
+                (x - half, y - half), res, res,
+            ))
+        if rects:
+            collection = mcoll.PatchCollection(
+                rects, facecolor="#FF69B4", edgecolor="none",
+                alpha=0.35, zorder=1,
+            )
+            ax.add_collection(collection)
+
+    @staticmethod
+    def _compute_user_intent_trajectory(
+        positions: np.ndarray, human_vels_w: np.ndarray, dt: float = 1.0 / 60.0
+    ) -> np.ndarray:
+        """Integrate user velocity commands to get the 'unmodified' trajectory.
+
+        Starting from the actual initial position, accumulates user velocity
+        over time to show where the drone would have gone without IPC/RL.
+
+        Returns:
+            (T, 2) array of X,Y positions.
+        """
+        n = len(positions)
+        intent = np.zeros((n, 2))
+        intent[0] = positions[0, :2]
+        for i in range(1, n):
+            intent[i] = intent[i - 1] + human_vels_w[i - 1, :2] * dt
+        return intent
+
     def render_trial(
         self,
         data_path: str,
@@ -441,6 +508,9 @@ class TrajectoryVisualizer:
             data["ref_path"] = last_ref
         if any(h is not None for h in recorder._lidar_hits):
             data["lidar_hits"] = recorder._lidar_hits
+        if recorder._occupancy_grid is not None:
+            data["occ_grid_xy"] = recorder._occupancy_grid["occupied_xy"]
+            data["occ_grid_resolution"] = recorder._occupancy_grid["resolution"]
         return data
 
     # ---- Internal rendering methods ----
@@ -611,9 +681,11 @@ class TrajectoryVisualizer:
             plt.Line2D([0], [0], color="m", linestyle="--", alpha=0.5, label="A* path (IPC)"),
             plt.Line2D([0], [0], color="green", alpha=0.5, label="LiDAR rays (RL)"),
             plt.Line2D([0], [0], marker="x", color="red", linestyle="None", label="Collision"),
+            mpatches.Patch(color="#FF69B4", alpha=0.35, label="Occupancy grid (IPC)"),
+            plt.Line2D([0], [0], color="#FFD700", linestyle="--", alpha=0.6, label="User intent traj."),
         ]
-        fig.legend(handles=legend_elements, loc="lower center", ncol=6,
-                   fontsize=9, framealpha=0.8, bbox_to_anchor=(0.5, 0.01))
+        fig.legend(handles=legend_elements, loc="lower center", ncol=4,
+                   fontsize=8, framealpha=0.8, bbox_to_anchor=(0.5, 0.01))
 
         # Altitude colorbar (shared)
         sm = plt.cm.ScalarMappable(cmap=self._z_cmap, norm=self._z_norm)
@@ -631,6 +703,18 @@ class TrajectoryVisualizer:
             rp = ipc_data["ref_path"]
             ax_ipc.plot(rp[:, 0], rp[:, 1], '--', color='m',
                         alpha=0.5, linewidth=1.0, zorder=2)
+
+        # Static: IPC occupancy grid (pink cells — diagnostic overlay)
+        self._draw_occupancy_grid(ax_ipc, ipc_data)
+
+        # Static: User intent trajectory (dashed line on both panels)
+        for ax, data in [(ax_ipc, ipc_data), (ax_rl, rl_data)]:
+            if len(data["positions"]) > 1:
+                intent_xy = self._compute_user_intent_trajectory(
+                    data["positions"], data["human_vels_w"])
+                ax.plot(intent_xy[:, 0], intent_xy[:, 1], '--',
+                        color='#FFD700', linewidth=1.2, alpha=0.6, zorder=2,
+                        label="User intent traj.")
 
         # Create artist containers for each side
         def _make_artists(ax):
@@ -808,9 +892,20 @@ class TrajectoryVisualizer:
         if trial_label:
             fig.suptitle(trial_label, fontsize=13, fontweight="bold")
 
+        # Static: IPC occupancy grid (pink cells)
+        self._draw_occupancy_grid(ax_ipc, ipc_data)
+
         for ax, data, label in [(ax_ipc, ipc_data, "IPC"), (ax_rl, rl_data, "RL")]:
             pos = data["positions"]
             cols = data["collisions"]
+
+            # User intent trajectory (dashed gold line)
+            if len(pos) > 1:
+                intent_xy = self._compute_user_intent_trajectory(
+                    pos, data["human_vels_w"])
+                ax.plot(intent_xy[:, 0], intent_xy[:, 1], '--',
+                        color='#FFD700', linewidth=1.2, alpha=0.6, zorder=2,
+                        label="User intent traj.")
 
             # Full trajectory colored by altitude
             if len(pos) > 1:

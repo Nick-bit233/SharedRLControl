@@ -323,6 +323,41 @@ class OccupancyGrid:
         return True
 
     # ------------------------------------------------------------------
+    # Export / visualisation helpers
+    # ------------------------------------------------------------------
+
+    def get_2d_slice(self, z: float, use_inflated: bool = False) -> dict:
+        """Return a 2D occupancy slice at altitude *z* for visualisation.
+
+        Returns a dict with:
+            ``occupied_xy`` — (N, 2) world-frame cell centres that are occupied,
+            ``resolution``  — cell size in metres,
+            ``grid_origin``  — (2,) world XY of index [0, 0],
+            ``grid_shape``   — (nx, ny) of the slice.
+        """
+        grid = self.inflated_grid if use_inflated else self.raw_grid
+        z_idx = int(np.floor((z - self.grid_origin[2]) * self.inv_resolution))
+        if z_idx < 0 or z_idx >= self.grid_shape[2]:
+            return {
+                "occupied_xy": np.empty((0, 2)),
+                "resolution": self.resolution,
+                "grid_origin": self.grid_origin[:2].copy(),
+                "grid_shape": (self.grid_shape[0], self.grid_shape[1]),
+            }
+        slice_2d = grid[:, :, z_idx]  # (nx, ny) bool
+        occ_ij = np.argwhere(slice_2d)  # (M, 2)
+        if occ_ij.size == 0:
+            occupied_xy = np.empty((0, 2))
+        else:
+            occupied_xy = self.grid_origin[:2] + (occ_ij + 0.5) * self.resolution
+        return {
+            "occupied_xy": occupied_xy,
+            "resolution": self.resolution,
+            "grid_origin": self.grid_origin[:2].copy(),
+            "grid_shape": (self.grid_shape[0], self.grid_shape[1]),
+        }
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

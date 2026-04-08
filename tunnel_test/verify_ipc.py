@@ -48,6 +48,7 @@ from tunnel_terrain import (
     tunnel_obstacles_terrain, HfTunnelObstaclesTerrainCfg,
     INIT_POS, INIT_QUAT, TERRAIN_LEGACY_SEED,
     quat_to_rotation_matrix, extract_obstacles_from_heightfield,
+    clear_captured_tiles,
 )
 
 # Joystick & UserModel
@@ -225,7 +226,7 @@ def main():
         collision_group=-1,
         debug_vis=False,
     )
-    # Seed legacy np.random so offline heightfield regeneration matches
+    clear_captured_tiles()
     np.random.seed(TERRAIN_LEGACY_SEED)
     terrain = terrain_cfg.class_type(terrain_cfg)
 

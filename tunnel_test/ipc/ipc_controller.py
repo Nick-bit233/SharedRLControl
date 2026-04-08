@@ -162,6 +162,10 @@ class IPCController:
             raise ValueError("Must provide obstacles, heightfield, or point_cloud")
         self._map_built = True
 
+    def get_occupancy_2d_slice(self, z: float, use_inflated: bool = False) -> dict:
+        """Expose occupancy grid 2D slice for diagnostic visualisation."""
+        return self.occ_grid.get_2d_slice(z, use_inflated=use_inflated)
+
     def step(self, pos_w: np.ndarray, vel_w: np.ndarray, acc_w: np.ndarray,
              user_vel_body: np.ndarray, rotation_matrix: np.ndarray) -> np.ndarray:
         """

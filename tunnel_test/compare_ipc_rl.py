@@ -15,8 +15,10 @@ parser.add_argument("--num_obstacles", type=int, default=60,
                     help="Number of obstacles in the tunnel terrain")
 parser.add_argument("--num_trials", type=int, default=5,
                     help="Number of trials per controller for statistical significance")
-parser.add_argument("--num_frames", type=int, default=2000,
+parser.add_argument("--num_frames", type=int, default=1600,
                     help="Number of frames per trial")
+parser.add_argument("--start_seed", type=int, default=42,
+                    help="Starting seed for trials (trial i uses start_seed + i)")
 parser.add_argument("--success_x", type=float, default=12.0,
                     help="X coordinate threshold for successful tunnel traversal")
 parser.add_argument("--no_viz", action="store_true",
@@ -79,6 +81,7 @@ from tunnel_terrain import (
     extract_obstacles_from_heightfield, quat_to_rotation_matrix,
     tunnel_obstacles_terrain, HfTunnelObstaclesTerrainCfg,
     INIT_POS, INIT_QUAT, TERRAIN_LEGACY_SEED,
+    clear_captured_tiles, get_captured_heightfield,
 )
 
 drone_model_name = "Hummingbird"
@@ -307,7 +310,9 @@ def main():
         visual_material=None, max_init_terrain_level=None,
         collision_group=-1, debug_vis=False,
     )
-    # Seed legacy np.random so offline heightfield regeneration matches
+    # Clear capture buffer, then create terrain — the terrain function
+    # records its actual heightfield so we get a guaranteed-exact match.
+    clear_captured_tiles()
     np.random.seed(TERRAIN_LEGACY_SEED)
     terrain = terrain_cfg.class_type(terrain_cfg)
 
@@ -443,6 +448,7 @@ def main():
             "config": {
                 "num_trials": NUM_TRIALS,
                 "num_frames": NUM_FRAMES,
+                "start_seed": args_cli.start_seed,
                 "num_obstacles": args_cli.num_obstacles,
                 "success_x": args_cli.success_x,
                 "model_type": args_cli.model_type,
@@ -462,7 +468,7 @@ def main():
             if not simulation_app.is_running():
                 break
 
-            trial_seed = 42 + trial_idx
+            trial_seed = args_cli.start_seed + trial_idx
             logger.debug(f"\n{'='*50}")
             logger.debug(f"Trial {trial_idx+1}/{NUM_TRIALS} — {trial_name} (seed={trial_seed})")
             logger.debug(f"{'='*50}")
@@ -473,6 +479,12 @@ def main():
             metrics = MetricsCollector(success_x=args_cli.success_x)
             # Always record flight data (saved to disk for offline rendering)
             recorder = FlightDataRecorder(controller_type=trial_name)
+
+            # Attach occupancy grid slice to IPC recorder for diagnostic rendering
+            if use_ipc and ipc is not None:
+                occ_slice = ipc.get_occupancy_2d_slice(
+                    z=ipc_cfg.altitude_hold, use_inflated=False)
+                recorder.set_occupancy_grid(occ_slice)
             # Only keep in memory for inline visualization
             need_inline_viz = (viz_mode == "all") or (viz_mode == "first" and trial_idx == 0)
             prev_vel_w_np = np.zeros(3)
@@ -694,6 +706,7 @@ def main():
         "config": {
             "num_trials": NUM_TRIALS,
             "num_frames": NUM_FRAMES,
+            "start_seed": args_cli.start_seed,
             "num_obstacles": args_cli.num_obstacles,
             "success_x": args_cli.success_x,
             "model_type": args_cli.model_type,
@@ -734,7 +747,7 @@ def main():
         )
 
         for tidx in sorted(set(all_recorders["IPC"].keys()) & set(all_recorders["RL"].keys())):
-            trial_seed = 42 + tidx
+            trial_seed = args_cli.start_seed + tidx
             label = f"Trial {tidx+1} (seed={trial_seed})"
 
             # Side-by-side animated comparison

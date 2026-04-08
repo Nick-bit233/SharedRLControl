@@ -23,8 +23,8 @@ mpc:
   D_z: 0.0
   
   # Velocity bounds (m/s) — restored to original ±10.0
-  v_max: [10.0, 10.0, 10.0]
-  v_min: [-10.0, -10.0, -10.0]
+  v_max: [3.0, 3.0, 3.0]
+  v_min: [-3.0, -3.0, -3.0]
   
   # Acceleration bounds (m/s²) — restored to original ±20.0
   a_max: [20.0, 20.0, 20.0]
@@ -36,7 +36,7 @@ mpc:
 
 # ---- A* Path Planner ----
 astar:
-  resolution: 0.5          # Grid resolution for A* (coarser than original 0.1 for speed)
+  resolution: 0.1          # Grid resolution for A* (coarser than original 0.1 for speed)
   timeout: 0.05            # Search timeout (s)
   tie_breaker: 1.00001
 
