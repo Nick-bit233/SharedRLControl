@@ -90,6 +90,13 @@ def tunnel_obstacles_terrain(difficulty: float, cfg: HfDiscreteObstaclesTerrainC
     """
     hf_raw = hf_terrains.discrete_obstacles_terrain.__wrapped__(difficulty, cfg)
 
+    # Convert pits (negative heights) to pillars of the same magnitude.
+    # In "choice" mode the base function randomly assigns negative heights
+    # to ~50% of obstacles, halving effective density.  Taking abs keeps
+    # the height variety (half / full) while ensuring all obstacles are
+    # physical pillars above ground.
+    np.abs(hf_raw, out=hf_raw)
+
     wall_thickness_meters = 1.0
     wall_height_meters = 10.0
     wall_start_meters = 2.0
@@ -230,9 +237,14 @@ def regenerate_heightfield(terrain_gen_cfg, tunnel_mode=False):
     return full_hf
 
 
-def extract_obstacles_from_heightfield(terrain_gen_cfg, tunnel_mode=False) -> tuple:
-    """
-    Extract obstacles from the heightfield.
+def extract_obstacles_from_heightfield(terrain_gen_cfg, tunnel_mode=False,
+                                       flight_z: float = 4.0) -> tuple:
+    """Extract **collision-relevant** obstacles from the heightfield.
+
+    Only POSITIVE obstacles (pillars extending upward above the ground)
+    are returned.  Negative heightfield values represent pits below ground
+    level and do not constitute collision hazards for a drone flying at
+    *flight_z*.
 
     Prefers the **captured** heightfield (recorded during actual terrain
     generation) for exact accuracy.  Falls back to
@@ -242,6 +254,8 @@ def extract_obstacles_from_heightfield(terrain_gen_cfg, tunnel_mode=False) -> tu
         terrain_gen_cfg: TerrainGeneratorCfg object.
         tunnel_mode: If True, regenerate with tunnel wall modifications
             (only used in fallback path).
+        flight_z: Nominal flight altitude.  Obstacles whose peak is below
+            this altitude are excluded (they cannot cause collisions).
 
     Returns:
         (heightfield, obstacles_list)
@@ -261,12 +275,16 @@ def extract_obstacles_from_heightfield(terrain_gen_cfg, tunnel_mode=False) -> tu
     origin_x = -size[0] / 2.0
     origin_y = -size[1] / 2.0
 
-    # Threshold: cells with |height| > 2m (captures both pillars and pits)
-    threshold = 2.0 / v_scale
-    obstacle_mask = np.abs(hf) > threshold
+    # Only extract POSITIVE obstacles (pillars).  Negative heightfield
+    # values are pits below ground — harmless at the flight altitude.
+    # Threshold: height must exceed flight_z (with a small margin) to be
+    # a collision hazard.  We also use a minimum of 2m to skip flat ground
+    # and border noise.
+    min_height_steps = max(2.0 / v_scale, flight_z / v_scale)
+    obstacle_mask = hf >= min_height_steps
 
     if not obstacle_mask.any():
-        print("[WARN] No elevated cells found in regenerated heightfield")
+        print("[WARN] No positive obstacles found in heightfield")
         return hf, []
 
     labeled, num_features = ndimage.label(obstacle_mask)
@@ -285,13 +303,11 @@ def extract_obstacles_from_heightfield(terrain_gen_cfg, tunnel_mode=False) -> tu
         radius = max(x_extent, y_extent) / 2.0 + 0.1
 
         raw_height = float(np.max(hf[labeled == label_id])) * v_scale
-        # Use absolute height for obstacle volume; pits extend downward
-        height = abs(raw_height) if raw_height != 0 else 1.0
 
         obstacles.append({
             'center': (cx, cy),
             'radius': max(radius, 0.2),
-            'height': height,
+            'height': raw_height,
             'z_base': 0.0,
         })
 

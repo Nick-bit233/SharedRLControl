@@ -11,7 +11,7 @@ parser.add_argument("--ipc_config", type=str, default=None,
                     help="Path to IPC config YAML (default: ipc_config.yaml in same dir)")
 parser.add_argument("--no_sfc", action="store_true", help="Disable CIRI SFC for IPC")
 parser.add_argument("--state_dim", type=int, default=10, choices=[10, 11])
-parser.add_argument("--num_obstacles", type=int, default=60,
+parser.add_argument("--num_obstacles", type=int, default=30,
                     help="Number of obstacles in the tunnel terrain")
 parser.add_argument("--num_trials", type=int, default=5,
                     help="Number of trials per controller for statistical significance")
@@ -33,6 +33,14 @@ parser.add_argument("--debug", action="store_true",
 parser.add_argument("--ipc_speed_profile", type=str, default=None,
                     choices=["fast", "balanced"],
                     help="Apply IPC speed tuning preset: fast (~500+ FPS) or balanced (~100-300 FPS)")
+parser.add_argument("--tcr_spacing", type=float, default=0.5,
+                    help="Arc-length spacing (m) for TCR ground-truth sampling (default: 0.5)")
+parser.add_argument("--terrain_seed", type=int, default=42,
+                    help="Seed for terrain generation (controls obstacle layout)")
+parser.add_argument("--skip_aggregate", action="store_true",
+                    help="Skip final aggregation (used by batch_experiment.py)")
+parser.add_argument("--log_dir", type=str, default=None,
+                    help="Output log directory (default: logs/ in script dir)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
@@ -80,7 +88,7 @@ from user_model_tunnely import UserModelTunnel
 from tunnel_terrain import (
     extract_obstacles_from_heightfield, quat_to_rotation_matrix,
     tunnel_obstacles_terrain, HfTunnelObstaclesTerrainCfg,
-    INIT_POS, INIT_QUAT, TERRAIN_LEGACY_SEED,
+    INIT_POS, INIT_QUAT,
     clear_captured_tiles, get_captured_heightfield,
 )
 
@@ -113,13 +121,14 @@ class MetricsCollector:
     MAP_HALF_Y = 11.0
     MAP_Z_MAX = 12.0
 
-    def __init__(self, success_x: float = 10.0):
+    def __init__(self, success_x: float = 10.0, tcr_spacing: float = 0.2, dt: float = 1.0 / 60.0):
         self.success_x = success_x
+        self.tcr_spacing = tcr_spacing
+        self.dt = dt
         self.positions = []
         self.velocities = []
         self.human_vels_w = []
         self.ctrl_vels_w = []
-        self.collision_frames = 0
         self.total_frames = 0
         self.inference_times = []
         self._prev_vel = None
@@ -138,9 +147,6 @@ class MetricsCollector:
         self.ctrl_vels_w.append(ctrl_vel_w.copy())
         self.total_frames += 1
 
-        if is_collision:
-            self.collision_frames += 1
-
         if inference_time > 0:
             self.inference_times.append(inference_time)
 
@@ -148,9 +154,12 @@ class MetricsCollector:
         if pos[0] > self.success_x:
             self._reached_goal = True
 
-        # Check crash: multiple conditions (skip if already succeeded)
+        # Check crash: collision = immediate failure
         if not self._crashed and not self._reached_goal:
-            if pos[2] < 0.5:
+            if is_collision:
+                self._crashed = True
+                self._crash_reason = "collision"
+            elif pos[2] < 0.5:
                 self._crashed = True
                 self._crash_reason = f"fell below ground (z={pos[2]:.2f})"
             elif abs(pos[0]) > self.MAP_HALF_X:
@@ -165,11 +174,111 @@ class MetricsCollector:
 
         self._prev_vel = vel.copy()
 
+    @staticmethod
+    def _resample_by_arclength(traj: np.ndarray, spacing: float) -> np.ndarray:
+        """Resample a 3D trajectory at uniform arc-length intervals.
+
+        Args:
+            traj: (T, 3) trajectory points.
+            spacing: Desired arc-length between samples (meters).
+
+        Returns:
+            (N, 3) resampled trajectory.
+        """
+        if len(traj) < 2:
+            return traj.copy()
+        diffs = np.diff(traj, axis=0)
+        seg_lens = np.linalg.norm(diffs, axis=1)
+        cum_len = np.concatenate([[0.0], np.cumsum(seg_lens)])
+        total_len = cum_len[-1]
+        if total_len < 1e-6:
+            return traj[:1].copy()
+        n_samples = max(int(total_len / spacing), 2)
+        target_dists = np.linspace(0.0, total_len, n_samples)
+        # Interpolate along the polyline
+        indices = np.searchsorted(cum_len, target_dists, side='right') - 1
+        indices = np.clip(indices, 0, len(traj) - 2)
+        t = (target_dists - cum_len[indices]) / np.clip(seg_lens[indices], 1e-8, None)
+        t = np.clip(t, 0.0, 1.0)
+        sampled = traj[indices] + t[:, None] * diffs[indices]
+        return sampled
+
+    @staticmethod
+    def _point_to_polyline_dist(points: np.ndarray, polyline: np.ndarray) -> np.ndarray:
+        """Compute min distance from each point to a polyline (vectorized).
+
+        Args:
+            points: (N, 3) query points.
+            polyline: (M, 3) polyline vertices.
+
+        Returns:
+            (N,) minimum distances.
+        """
+        if len(polyline) < 2:
+            if len(polyline) == 1:
+                return np.linalg.norm(points - polyline[0], axis=1)
+            return np.full(len(points), np.inf)
+
+        seg_starts = polyline[:-1]  # (M-1, 3)
+        seg_ends = polyline[1:]     # (M-1, 3)
+        seg_dirs = seg_ends - seg_starts  # (M-1, 3)
+        seg_lens_sq = np.sum(seg_dirs ** 2, axis=1)  # (M-1,)
+
+        min_dists = np.full(len(points), np.inf)
+        # Process in chunks to manage memory (N × M-1 can be large)
+        chunk_size = 2000
+        n_segs = len(seg_starts)
+        for i in range(0, len(points), chunk_size):
+            pts = points[i:i + chunk_size]  # (C, 3)
+            # (C, M-1, 3)
+            diff = pts[:, None, :] - seg_starts[None, :, :]
+            # Project onto segments: t = dot(diff, seg_dir) / |seg_dir|²
+            t = np.sum(diff * seg_dirs[None, :, :], axis=2) / np.clip(seg_lens_sq[None, :], 1e-12, None)
+            t = np.clip(t, 0.0, 1.0)  # (C, M-1)
+            # Closest point on each segment
+            proj = seg_starts[None, :, :] + t[:, :, None] * seg_dirs[None, :, :]  # (C, M-1, 3)
+            dists = np.linalg.norm(pts[:, None, :] - proj, axis=2)  # (C, M-1)
+            min_dists[i:i + chunk_size] = np.min(dists, axis=1)
+        return min_dists
+
+    def _compute_gt_trajectory(self) -> np.ndarray:
+        """Integrate user model world-frame velocities from initial position.
+
+        Returns:
+            (T, 3) ground-truth trajectory (independent of actual drone position).
+        """
+        human_vels = np.array(self.human_vels_w)
+        positions = np.array(self.positions)
+        n = len(positions)
+        gt = np.zeros((n, 3))
+        gt[0] = positions[0]
+        for i in range(1, n):
+            gt[i] = gt[i - 1] + human_vels[i - 1] * self.dt
+        return gt
+
+    def _compute_tcr(self, thresholds: list[float]) -> dict[str, float]:
+        """Compute Trajectory Coverage Rate at multiple thresholds.
+
+        Returns:
+            Dict mapping f"tcr_at_{k}" to float values.
+        """
+        if len(self.positions) < 2 or len(self.human_vels_w) < 2:
+            return {f"tcr_at_{k}": 0.0 for k in thresholds}
+
+        gt_full = self._compute_gt_trajectory()
+        gt_sampled = self._resample_by_arclength(gt_full, self.tcr_spacing)
+        pred = np.array(self.positions)
+        dists = self._point_to_polyline_dist(gt_sampled, pred)
+
+        result = {}
+        for k in thresholds:
+            tcr = float(np.mean(dists < k))
+            result[f"tcr_at_{k}"] = tcr
+        return result
+
     def summary(self) -> dict:
         positions = np.array(self.positions)
         vels = np.array(self.velocities)
-        human_vels = np.array(self.human_vels_w)
-        ctrl_vels = np.array(self.ctrl_vels_w)
 
         # Path length
         path_length = np.sum(np.linalg.norm(np.diff(positions, axis=0), axis=1)) if len(positions) > 1 else 0.0
@@ -180,35 +289,8 @@ class MetricsCollector:
         # Success: reached goal and not crashed
         success = self._reached_goal and not self._crashed
 
-        # Collision rate
-        collision_rate = self.collision_frames / max(self.total_frames, 1)
-
-        # Trajectory following: cosine similarity between user vel and ctrl vel
-        h_norms = np.linalg.norm(human_vels, axis=1, keepdims=True)
-        c_norms = np.linalg.norm(ctrl_vels, axis=1, keepdims=True)
-        # Only compute when user is actually commanding movement
-        active_mask = h_norms.squeeze() > 0.1
-        if active_mask.any():
-            h_active = human_vels[active_mask]
-            c_active = ctrl_vels[active_mask]
-            h_n = np.linalg.norm(h_active, axis=1, keepdims=True).clip(1e-8)
-            c_n = np.linalg.norm(c_active, axis=1, keepdims=True).clip(1e-8)
-            cos_sim = np.sum((h_active / h_n) * (c_active / c_n), axis=1)
-            tracking_cosine_mean = float(np.mean(cos_sim))
-            tracking_cosine_std = float(np.std(cos_sim))
-
-            # Magnitude ratio: |ctrl| / |human|
-            mag_ratio = np.linalg.norm(c_active, axis=1) / np.linalg.norm(h_active, axis=1).clip(1e-8)
-            tracking_mag_mean = float(np.mean(mag_ratio))
-
-            # Velocity error
-            tracking_error = np.linalg.norm(c_active - h_active, axis=1)
-            tracking_error_mean = float(np.mean(tracking_error))
-        else:
-            tracking_cosine_mean = 0.0
-            tracking_cosine_std = 0.0
-            tracking_mag_mean = 0.0
-            tracking_error_mean = 0.0
+        # TCR@1/2/5
+        tcr_results = self._compute_tcr([1, 2, 5])
 
         # Inference performance
         inf_times = np.array(self.inference_times) if self.inference_times else np.array([0.0])
@@ -217,34 +299,34 @@ class MetricsCollector:
         inference_max_ms = float(np.max(inf_times) * 1000)
         inference_p50_ms = float(np.percentile(inf_times, 50) * 1000)
         inference_p95_ms = float(np.percentile(inf_times, 95) * 1000)
-        # Effective controller FPS (how fast the controller alone could run)
+        # Effective controller FPS
         ctrl_fps = float(1.0 / np.mean(inf_times)) if np.mean(inf_times) > 0 else 0.0
+        # Ratio of inference time to frame time (dt)
+        frame_time_ms = self.dt * 1000.0
+        inference_frame_ratio = inference_mean_ms / frame_time_ms if frame_time_ms > 0 else 0.0
 
-        return {
+        result = {
             "success": success,
             "crashed": self._crashed,
             "crash_reason": self._crash_reason,
             "reached_goal": self._reached_goal,
             "max_x_reached": max_x,
             "total_frames": self.total_frames,
-            "collision_frames": self.collision_frames,
-            "collision_rate": collision_rate,
             "path_length_m": float(path_length),
-            "tracking_cosine_mean": tracking_cosine_mean,
-            "tracking_cosine_std": tracking_cosine_std,
-            "tracking_mag_ratio_mean": tracking_mag_mean,
-            "tracking_error_mean": tracking_error_mean,
             "inference_mean_ms": inference_mean_ms,
             "inference_std_ms": inference_std_ms,
             "inference_max_ms": inference_max_ms,
             "inference_p50_ms": inference_p50_ms,
             "inference_p95_ms": inference_p95_ms,
+            "inference_frame_ratio": inference_frame_ratio,
             "ctrl_fps": ctrl_fps,
             "avg_speed": float(np.mean(np.linalg.norm(vels, axis=1))),
             "sfc_attempts": self.sfc_attempts,
             "sfc_successes": self.sfc_successes,
             "sfc_success_rate": self.sfc_successes / max(self.sfc_attempts, 1),
         }
+        result.update(tcr_results)
+        return result
 
 
 def check_collision_lidar(lidar, lidar_range, threshold=0.3):
@@ -259,7 +341,7 @@ def check_collision_lidar(lidar, lidar_range, threshold=0.3):
 
 
 def main():
-    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    log_dir = args_cli.log_dir or os.path.join(os.path.dirname(__file__), "logs")
     logger, log_file = setup_logger(log_dir, verbose=args_cli.debug)
     logger.debug(f"Log file: {log_file}")
 
@@ -313,7 +395,8 @@ def main():
     # Clear capture buffer, then create terrain — the terrain function
     # records its actual heightfield so we get a guaranteed-exact match.
     clear_captured_tiles()
-    np.random.seed(TERRAIN_LEGACY_SEED)
+    terrain_seed = args_cli.terrain_seed
+    np.random.seed(terrain_seed)
     terrain = terrain_cfg.class_type(terrain_cfg)
 
     # --- LiDAR ---
@@ -438,6 +521,7 @@ def main():
     obs_meta = {
         "obstacles": obstacles if obstacles else [],
         "terrain_size": list(terrain_cfg.terrain_generator.size),
+        "terrain_seed": terrain_seed,
     }
     with open(os.path.join(data_dir, "obstacles.json"), 'w') as f:
         json.dump(obs_meta, f, default=lambda o: list(o) if isinstance(o, tuple) else o)
@@ -450,11 +534,13 @@ def main():
                 "num_frames": NUM_FRAMES,
                 "start_seed": args_cli.start_seed,
                 "num_obstacles": args_cli.num_obstacles,
+                "terrain_seed": terrain_seed,
                 "success_x": args_cli.success_x,
                 "model_type": args_cli.model_type,
                 "checkpoint": args_cli.checkpoint,
                 "use_sfc": not args_cli.no_sfc,
                 "ipc_speed_profile": args_cli.ipc_speed_profile,
+                "tcr_spacing": args_cli.tcr_spacing,
                 "completed_trials": sum(len(v) for v in all_results.values()),
             },
             "data_dir": data_dir,
@@ -476,7 +562,7 @@ def main():
             print(f"\r  [{trial_name}] {trial_idx+1}/{NUM_TRIALS}", end="", flush=True)
 
             reset_drone(trial_seed)
-            metrics = MetricsCollector(success_x=args_cli.success_x)
+            metrics = MetricsCollector(success_x=args_cli.success_x, tcr_spacing=args_cli.tcr_spacing, dt=dt)
             # Always record flight data (saved to disk for offline rendering)
             recorder = FlightDataRecorder(controller_type=trial_name)
 
@@ -634,14 +720,19 @@ def main():
                 sfc_info = f", sfc_rate={trial_summary['sfc_success_rate']:.1%}"
             logger.debug(f"  {trial_name} trial {trial_idx+1}: success={trial_summary['success']}, "
                         f"max_x={trial_summary['max_x_reached']:.2f}, "
-                        f"col_rate={trial_summary['collision_rate']:.4f}, "
-                        f"tracking_cos={trial_summary['tracking_cosine_mean']:.4f}, "
+                        f"tcr@1={trial_summary['tcr_at_1']:.3f}, "
+                        f"tcr@5={trial_summary['tcr_at_5']:.3f}, "
                         f"inference={trial_summary['inference_mean_ms']:.2f}ms{sfc_info}")
 
             # Incremental save — crash-safe, always has latest results
             _save_results_incremental()
 
     # ===== Aggregate and print results =====
+    if args_cli.skip_aggregate:
+        logger.info(f"Skipping aggregation (--skip_aggregate). Results saved to: {results_path}")
+        simulation_app.close()
+        return
+
     def aggregate(trials):
         """Compute mean ± std over trials."""
         if not trials:
@@ -670,19 +761,18 @@ def main():
     # Key metrics table
     key_metrics = [
         ("Success Rate",           "success_rate",              "{:.1%}"),
-        ("Collision Rate (mean)",  "collision_rate_mean",       "{:.4f}"),
-        ("Collision Rate (std)",   "collision_rate_std",        "{:.4f}"),
         ("Max X Reached (mean)",   "max_x_reached_mean",       "{:.2f}"),
-        ("Tracking Cosine (mean)", "tracking_cosine_mean_mean", "{:.4f}"),
-        ("Tracking Cosine (std)",  "tracking_cosine_mean_std",  "{:.4f}"),
-        ("Tracking Error (mean)",  "tracking_error_mean_mean",  "{:.4f}"),
-        ("Mag Ratio (mean)",       "tracking_mag_ratio_mean_mean", "{:.4f}"),
-        ("Ctrl FPS (mean)",        "ctrl_fps_mean",             "{:.1f}"),
-        ("Ctrl FPS (std)",         "ctrl_fps_std",              "{:.1f}"),
+        ("TCR@1 (mean)",           "tcr_at_1_mean",             "{:.3f}"),
+        ("TCR@1 (std)",            "tcr_at_1_std",              "{:.3f}"),
+        ("TCR@2 (mean)",           "tcr_at_2_mean",             "{:.3f}"),
+        ("TCR@2 (std)",            "tcr_at_2_std",              "{:.3f}"),
+        ("TCR@5 (mean)",           "tcr_at_5_mean",             "{:.3f}"),
+        ("TCR@5 (std)",            "tcr_at_5_std",              "{:.3f}"),
         ("Latency mean ms",       "inference_mean_ms_mean",    "{:.2f}"),
         ("Latency p50 ms",        "inference_p50_ms_mean",     "{:.2f}"),
         ("Latency p95 ms",        "inference_p95_ms_mean",     "{:.2f}"),
-        ("Latency max ms",        "inference_max_ms_mean",     "{:.2f}"),
+        ("Inf/Frame Ratio (mean)", "inference_frame_ratio_mean", "{:.3f}"),
+        ("Ctrl FPS (mean)",        "ctrl_fps_mean",             "{:.1f}"),
         ("Path Length m (mean)",   "path_length_m_mean",        "{:.2f}"),
         ("Avg Speed (mean)",       "avg_speed_mean",            "{:.4f}"),
         ("SFC Success Rate (mean)","sfc_success_rate_mean",     "{:.1%}"),
@@ -708,11 +798,13 @@ def main():
             "num_frames": NUM_FRAMES,
             "start_seed": args_cli.start_seed,
             "num_obstacles": args_cli.num_obstacles,
+            "terrain_seed": terrain_seed,
             "success_x": args_cli.success_x,
             "model_type": args_cli.model_type,
             "checkpoint": args_cli.checkpoint,
             "use_sfc": not args_cli.no_sfc,
             "ipc_speed_profile": args_cli.ipc_speed_profile,
+            "tcr_spacing": args_cli.tcr_spacing,
             "completed_trials": sum(len(v) for v in all_results.values()),
         },
         "data_dir": data_dir,

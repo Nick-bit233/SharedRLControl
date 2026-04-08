@@ -62,23 +62,23 @@ def list_trials(results: dict):
             continue
         print(f"\n  {method} Trials ({len(trials)} completed):")
         print(f"  {'ID':>4}  {'Seed':>6}  {'OK':>4}  {'MaxX':>7}  "
-              f"{'ColRate':>8}  {'TrackCos':>9}  {'FPS':>7}  {'Lat_ms':>7}  {'Data File'}")
+              f"{'TCR@1':>7}  {'TCR@5':>7}  {'FPS':>7}  {'Lat_ms':>7}  {'Data File'}")
         print(f"  {'-'*4}  {'-'*6}  {'-'*4}  {'-'*7}  "
-              f"{'-'*8}  {'-'*9}  {'-'*7}  {'-'*7}  {'-'*20}")
+              f"{'-'*7}  {'-'*7}  {'-'*7}  {'-'*7}  {'-'*20}")
         for t in trials:
             tid = t.get("trial_id", "?")
             seed = t.get("trial_seed", "?")
             succ = "✓" if t.get("success") else "✗"
             mx = t.get("max_x_reached", 0)
-            cr = t.get("collision_rate", 0)
-            tc = t.get("tracking_cosine_mean", 0)
+            tcr1 = t.get("tcr_at_1", 0)
+            tcr5 = t.get("tcr_at_5", 0)
             fps = t.get("ctrl_fps", 0)
             lat = t.get("inference_mean_ms", 0)
             df = t.get("data_file", "N/A")
             crash = t.get("crash_reason", "")
             extra = f"  ({crash})" if crash and not t.get("success") else ""
             print(f"  {tid:>4}  {seed:>6}  {succ:>4}  {mx:>7.2f}  "
-                  f"{cr:>8.4f}  {tc:>9.4f}  {fps:>7.0f}  {lat:>7.2f}  {df}{extra}")
+                  f"{tcr1:>7.3f}  {tcr5:>7.3f}  {fps:>7.0f}  {lat:>7.2f}  {df}{extra}")
 
     # Compute aggregated on the fly (handles partial results)
     print(f"\n  Aggregated:")
@@ -89,12 +89,12 @@ def list_trials(results: dict):
             continue
         import numpy as _np
         sr = sum(1 for t in trials if t.get("success")) / len(trials)
-        cr = _np.mean([t.get("collision_rate", 0) for t in trials])
-        tc = _np.mean([t.get("tracking_cosine_mean", 0) for t in trials])
+        tcr1 = _np.mean([t.get("tcr_at_1", 0) for t in trials])
+        tcr5 = _np.mean([t.get("tcr_at_5", 0) for t in trials])
         fps = _np.mean([t.get("ctrl_fps", 0) for t in trials])
         lat = _np.mean([t.get("inference_mean_ms", 0) for t in trials])
-        print(f"    {method}: success={sr:.1%}, collision={cr:.4f}, "
-              f"tracking={tc:.4f}, ctrl_fps={fps:.0f}, latency={lat:.2f}ms")
+        print(f"    {method}: success={sr:.1%}, TCR@1={tcr1:.3f}, "
+              f"TCR@5={tcr5:.3f}, ctrl_fps={fps:.0f}, latency={lat:.2f}ms")
     print()
 
 
@@ -114,9 +114,18 @@ def resolve_data_dir(results: dict, results_path: str) -> str:
     )
 
 
-def load_obstacles(data_dir: str) -> list:
-    """Load obstacle metadata from data directory."""
-    meta_path = os.path.join(data_dir, "obstacles.json")
+def load_obstacles(data_dir: str, batch_idx: int | None = None) -> list:
+    """Load obstacle metadata from data directory.
+
+    For merged batch results, pass batch_idx to load the batch-specific
+    obstacles file (e.g., b000_obstacles.json).
+    """
+    if batch_idx is not None:
+        meta_path = os.path.join(data_dir, f"b{batch_idx:03d}_obstacles.json")
+        if not os.path.exists(meta_path):
+            meta_path = os.path.join(data_dir, "obstacles.json")
+    else:
+        meta_path = os.path.join(data_dir, "obstacles.json")
     if not os.path.exists(meta_path):
         return [], (24.0, 12.0)
     with open(meta_path, 'r') as f:
@@ -127,23 +136,36 @@ def load_obstacles(data_dir: str) -> list:
 
 
 def get_trial_data_files(results: dict, trial_idx: int, data_dir: str):
-    """Get IPC and RL data file paths for a given trial index."""
+    """Get IPC and RL data file paths for a given trial index.
+
+    For single-batch results, matches by trial_id field.
+    For merged batch results (where trial_id repeats), uses list position.
+    """
     ipc_file = None
     rl_file = None
 
     for method, key in [("IPC", "ipc"), ("RL", "rl")]:
         trials = results["per_trial"].get(method, [])
+        # Try matching by trial_id first
+        matched = None
         for t in trials:
             if t.get("trial_id") == trial_idx:
-                fname = t.get("data_file")
-                if fname:
-                    path = os.path.join(data_dir, fname)
-                    if os.path.exists(path):
-                        if method == "IPC":
-                            ipc_file = path
-                        else:
-                            rl_file = path
+                matched = t
                 break
+        # Fallback: use list index (works for merged batch results)
+        if matched is None and 0 <= trial_idx < len(trials):
+            matched = trials[trial_idx]
+
+        if matched:
+            fname = matched.get("data_file")
+            if fname:
+                path = os.path.join(data_dir, fname)
+                if os.path.exists(path):
+                    if method == "IPC":
+                        ipc_file = path
+                    else:
+                        rl_file = path
+
         # Fallback: try standard naming
         if method == "IPC" and ipc_file is None:
             fallback = os.path.join(data_dir, f"ipc_trial{trial_idx:04d}.npz")
@@ -168,7 +190,16 @@ def render_trial(
 ):
     """Render a single trial comparison."""
     data_dir = resolve_data_dir(results, results_path)
-    obstacles, terrain_size = load_obstacles(data_dir)
+
+    # For merged batch results, find batch_idx from trial metadata
+    batch_idx = None
+    for method in ["IPC", "RL"]:
+        trials = results["per_trial"].get(method, [])
+        if 0 <= trial_idx < len(trials):
+            batch_idx = trials[trial_idx].get("batch_idx")
+            break
+
+    obstacles, terrain_size = load_obstacles(data_dir, batch_idx=batch_idx)
     obs_info = obstacles_to_info(obstacles) if obstacles else []
 
     tx_half = terrain_size[0] / 2.0

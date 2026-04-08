@@ -141,9 +141,11 @@ class OccupancyGrid:
         wy = self.grid_origin[1] + (np.arange(self.grid_shape[1]) + 0.5) * self.resolution
         wz = self.grid_origin[2] + (np.arange(self.grid_shape[2]) + 0.5) * self.resolution
 
-        # Map grid positions to heightfield indices (axis 0 = x, axis 1 = y)
-        hf_xi = ((wx - origin[0]) / horizontal_scale).astype(int)
-        hf_yj = ((wy - origin[1]) / horizontal_scale).astype(int)
+        # Map grid positions to nearest heightfield indices.
+        # Use np.round (not truncation) to avoid systematic off-by-one from
+        # floating-point imprecision when wx aligns with pixel boundaries.
+        hf_xi = np.round((wx - origin[0]) / horizontal_scale).astype(int)
+        hf_yj = np.round((wy - origin[1]) / horizontal_scale).astype(int)
 
         # Mask for valid index ranges
         valid_x = (hf_xi >= 0) & (hf_xi < hf_w)
@@ -163,6 +165,23 @@ class OccupancyGrid:
         self.raw_grid = (wz[None, None, :] < terrain_h[:, :, None])
 
         self.inflate()
+
+        # --- Diagnostic stats ---
+        n_positive = int(np.sum(heightfield > 0))
+        n_negative = int(np.sum(heightfield < 0))
+        hf_max = float(np.max(heightfield) * vertical_scale) if heightfield.size else 0
+        hf_min = float(np.min(heightfield) * vertical_scale) if heightfield.size else 0
+        n_raw = int(np.sum(self.raw_grid))
+        n_inflated = int(np.sum(self.inflated_grid))
+        import logging
+        logging.getLogger("occupancy_grid").debug(
+            f"build_from_heightfield: hf shape={heightfield.shape}, "
+            f"positive_px={n_positive}, negative_px={n_negative}, "
+            f"height_range=[{hf_min:.1f}, {hf_max:.1f}]m, "
+            f"raw_occ={n_raw}, inflated_occ={n_inflated}, "
+            f"valid_x={int(np.sum(valid_x))}/{len(valid_x)}, "
+            f"valid_y={int(np.sum(valid_y))}/{len(valid_y)}"
+        )
 
     def build_from_point_cloud(self, points: np.ndarray) -> None:
         """Build occupancy from a (N, 3) array of world-frame points."""
@@ -329,6 +348,9 @@ class OccupancyGrid:
     def get_2d_slice(self, z: float, use_inflated: bool = False) -> dict:
         """Return a 2D occupancy slice at altitude *z* for visualisation.
 
+        Uses a conservative z-offset (half a cell below *z*) so that
+        obstacles whose top surface is at exactly *z* are included.
+
         Returns a dict with:
             ``occupied_xy`` — (N, 2) world-frame cell centres that are occupied,
             ``resolution``  — cell size in metres,
@@ -336,14 +358,10 @@ class OccupancyGrid:
             ``grid_shape``   — (nx, ny) of the slice.
         """
         grid = self.inflated_grid if use_inflated else self.raw_grid
-        z_idx = int(np.floor((z - self.grid_origin[2]) * self.inv_resolution))
-        if z_idx < 0 or z_idx >= self.grid_shape[2]:
-            return {
-                "occupied_xy": np.empty((0, 2)),
-                "resolution": self.resolution,
-                "grid_origin": self.grid_origin[:2].copy(),
-                "grid_shape": (self.grid_shape[0], self.grid_shape[1]),
-            }
+        # Query slightly below z to catch obstacles at exactly the flight alt
+        z_query = z - self.resolution * 0.5
+        z_idx = int(np.floor((z_query - self.grid_origin[2]) * self.inv_resolution))
+        z_idx = np.clip(z_idx, 0, self.grid_shape[2] - 1)
         slice_2d = grid[:, :, z_idx]  # (nx, ny) bool
         occ_ij = np.argwhere(slice_2d)  # (M, 2)
         if occ_ij.size == 0:
