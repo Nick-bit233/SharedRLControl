@@ -115,3 +115,5 @@ outputs/
 
 shared_demos/ckpts/
 shared_demos/drift_analysis_results/
+
+tunnel_test/logs/

@@ -1,0 +1,106 @@
+# IPC Controller Configuration
+# Ported from slope_inspection/IPC/config/param_sim.yaml
+# Parameters restored to match original where possible (see IPC_analysis_report.md)
+
+# ---- MPC Trajectory Optimizer ----
+mpc:
+  horizon: 15              # Prediction horizon steps — matches original param_sim.yaml
+  step: 0.1               # Time step per MPC step (s) → 1.5s total lookahead
+  
+  # Cost weights (all match original param_sim.yaml)
+  R_p: 200.0              # Position tracking weight
+  R_v: 0.0                # Velocity tracking weight
+  R_a: 0.0                # Acceleration tracking weight
+  R_u: 0.1                # Input (jerk) smoothness weight
+  R_u_con: 0.2            # Input continuity weight
+  R_pN: 200.0             # Terminal position weight
+  R_vN: 100.0             # Terminal velocity weight
+  R_aN: 100.0             # Terminal acceleration weight
+  
+  # Drag coefficients (set to 0 for ideal simulation)
+  D_x: 0.0
+  D_y: 0.0
+  D_z: 0.0
+  
+  # Velocity bounds (m/s) — restored to original ±10.0
+  v_max: [10.0, 10.0, 10.0]
+  v_min: [-10.0, -10.0, -10.0]
+  
+  # Acceleration bounds (m/s²) — restored to original ±20.0
+  a_max: [20.0, 20.0, 20.0]
+  a_min: [-20.0, -20.0, -20.0]
+  
+  # Jerk bounds (m/s³)
+  u_max: [50.0, 50.0, 50.0]
+  u_min: [-50.0, -50.0, -50.0]
+
+# ---- A* Path Planner ----
+astar:
+  resolution: 0.5          # Grid resolution for A* (coarser than original 0.1 for speed)
+  timeout: 0.05            # Search timeout (s)
+  tie_breaker: 1.00001
+
+# ---- CIRI Safe Flight Corridor ----
+ciri:
+  robot_radius: 0.35       # Safety margin around drone (m) — matches original
+  iterations: 1            # Alternating optimization iterations — matches original
+  epsilon: 1.0e-10         # Numerical tolerance — restored to original (was 1e-6)
+
+# ---- Occupancy Grid ----
+occupancy_grid:
+  resolution: 0.2          # Occupancy grid cell size (m) — coarser than original 0.1
+  inflation_steps: 2       # Inflation radius in cells (0.4m at 0.2 resolution)
+  map_size: [34.0, 22.0, 12.0]  # Tunnel: 24m + 2×5m border = 34 x 22 extent
+  map_origin: [0.0, 0.0, 0.0]   # Center of the map (world frame)
+
+# ---- IPC Controller ----
+controller:
+  lookahead_time: 2.0      # How far ahead to place goal from user velocity (s)
+  replan_interval: 20      # Replan A* path every N control steps
+  use_sfc: true            # Enable CIRI safe flight corridors
+  fallback_to_simple: true # If CIRI fails, use MPC without SFC
+  altitude_hold: 4.0       # Default flight altitude (m)
+  max_speed: 2.0           # Speed limit for user commands (m/s)
+  max_sfc_steps: 5         # Compute SFC for first N MPC steps (raised from 3)
+  max_obstacle_points: 200 # Max obstacle points passed to CIRI
+  
+  # Local obstacle query box (meters around drone)
+  obstacle_query_radius: 6.0  # Increased from 4.0 to reduce empty polytope rate
+
+# ==================================================================
+# IPC Speed Tuning Guide
+# ==================================================================
+# The following parameters have the most impact on IPC per-frame
+# latency (ordered by impact, largest first). Tune these to match
+# RL inference speed for a fair latency-controlled comparison.
+#
+# Parameter             | Default | Fast    | Effect
+# ----------------------+---------+---------+-------------------------------
+# max_sfc_steps         |    5    |  1–2    | CIRI calls per frame (dominant cost)
+# mpc.horizon           |   15    |  5–8    | QP size = 3×horizon states
+# replan_interval        |   20    | 30–60   | A* frequency (expensive)
+# max_obstacle_points   |  200    | 50–100  | CIRI obstacle set size
+# obstacle_query_radius |  6.0    |  3.0    | Fewer points queried
+# astar.resolution      |  0.5    |  1.0    | Coarser A* grid (4× fewer nodes)
+# astar.timeout         |  0.05   |  0.02   | Shorter A* search budget
+# ciri.iterations       |    1    |    1    | Already minimum
+# occupancy_grid.resolution | 0.2 |  0.4    | Coarser grid (8× fewer cells)
+#
+# Example "fast" profile (targets ~500-1000 FPS):
+#   max_sfc_steps: 1
+#   mpc.horizon: 5
+#   replan_interval: 40
+#   max_obstacle_points: 80
+#   obstacle_query_radius: 3.0
+#   astar.resolution: 1.0
+#
+# Example "balanced" profile (targets ~100-300 FPS):
+#   max_sfc_steps: 2
+#   mpc.horizon: 8
+#   replan_interval: 30
+#   max_obstacle_points: 120
+#   obstacle_query_radius: 4.0
+#
+# Use --ipc_speed_profile fast|balanced with compare_ipc_rl.py
+# to automatically apply these presets at runtime.
+# ==================================================================
