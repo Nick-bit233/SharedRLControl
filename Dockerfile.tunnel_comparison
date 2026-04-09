@@ -1,0 +1,65 @@
+# =============================================================
+# Dockerfile: RL vs IPC Tunnel Comparison Environment
+# Extends slope_inspection:test (has IPC + OsqpEigen + mavros)
+# Adds: Gazebo 11 + CERLAB simulator + PyTorch + scipy
+# =============================================================
+FROM slope_inspection:test
+
+LABEL description="RL vs IPC tunnel comparison on CERLAB Gazebo"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---------- Gazebo 11 ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gazebo11 \
+    libgazebo11-dev \
+    ros-noetic-gazebo-ros \
+    ros-noetic-gazebo-ros-pkgs \
+    ros-noetic-gazebo-plugins \
+    ros-noetic-cv-bridge \
+    ros-noetic-image-transport \
+    ros-noetic-rviz \
+    ros-noetic-pcl-ros \
+    python3-pip \
+    python3-setuptools \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- Python dependencies ----------
+RUN pip3 install --no-cache-dir \
+    numpy==1.24.4 \
+    scipy==1.10.1 \
+    matplotlib==3.7.5 \
+    torch==2.0.1+cpu -f https://download.pytorch.org/whl/cpu/torch_stable.html
+
+# ---------- Build CERLAB packages ----------
+# Copy ROS1 packages (uav_simulator, map_manager, onboard_detector, navigation_runner)
+ENV CATKIN_WS=/root/catkin_ws
+RUN mkdir -p ${CATKIN_WS}/src
+
+COPY ros1/uav_simulator  ${CATKIN_WS}/src/uav_simulator
+COPY ros1/map_manager    ${CATKIN_WS}/src/map_manager
+COPY ros1/onboard_detector ${CATKIN_WS}/src/onboard_detector
+COPY ros1/navigation_runner ${CATKIN_WS}/src/navigation_runner
+
+# Symlink IPC packages from slope_ws for quadrotor_msgs
+RUN ln -s /root/slope_ws/src/mars_quadrotor_msgs ${CATKIN_WS}/src/quadrotor_msgs 2>/dev/null || true
+
+# Build catkin workspace
+SHELL ["/bin/bash", "-c"]
+RUN source /opt/ros/noetic/setup.bash && \
+    source /root/slope_ws/devel/setup.bash && \
+    cd ${CATKIN_WS} && \
+    catkin_make -DCMAKE_BUILD_TYPE=Release \
+               -DPYTHON_EXECUTABLE=/usr/bin/python3
+
+# ---------- Environment ----------
+RUN echo 'source /opt/ros/noetic/setup.bash' >> /root/.bashrc && \
+    echo 'source /root/slope_ws/devel/setup.bash' >> /root/.bashrc && \
+    echo 'source /root/catkin_ws/devel/setup.bash' >> /root/.bashrc
+
+ENV GAZEBO_MODEL_PATH=/usr/share/gazebo-11/models:${CATKIN_WS}/src/uav_simulator/models
+
+# ---------- Default working directory ----------
+WORKDIR ${CATKIN_WS}
+
+CMD ["/bin/bash"]

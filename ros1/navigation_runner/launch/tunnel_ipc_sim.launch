@@ -1,0 +1,102 @@
+<launch>
+    <!-- ============================================================ -->
+    <!-- IPC Tunnel Simulation: slope_inspection IPC on CERLAB Gazebo -->
+    <!-- ============================================================ -->
+
+    <arg name="start_gazebo" default="true"/>
+    <arg name="tunnel_map" default="$(find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd"/>
+    <arg name="trial_id" default="0"/>
+    <arg name="record" default="true"/>
+    <arg name="rviz" default="true"/>
+    <arg name="output_dir" default="/tmp/flight_data"/>
+
+    <!-- ===== Gazebo CERLAB Simulator ===== -->
+    <group if="$(arg start_gazebo)">
+        <include file="$(find uav_simulator)/launch/start.launch">
+            <arg name="gui" value="false"/>
+        </include>
+    </group>
+
+    <!-- ===== Bridge Adapter Layer ===== -->
+
+    <!-- Fake MAVROS: services + state for IPC -->
+    <node pkg="navigation_runner" type="mavros_fake_node.py"
+          name="mavros_fake" output="screen"/>
+
+    <!-- IMU Bridge: CERLAB odom/acc -> /mavros/imu/data -->
+    <node pkg="navigation_runner" type="imu_bridge_node.py"
+          name="imu_bridge" output="screen">
+        <param name="rate" value="100"/>
+    </node>
+
+    <!-- LiDAR Simulator: PCD -> PointCloud2 -->
+    <node pkg="navigation_runner" type="lidar_sim_node.py"
+          name="lidar_sim" output="screen">
+        <param name="pcd_file" value="$(arg tunnel_map)"/>
+        <param name="rate" value="10"/>
+        <param name="max_range" value="50.0"/>
+        <param name="noise_stddev" value="0.02"/>
+    </node>
+
+    <!-- RC Simulator: automated mode switching + forward command -->
+    <node pkg="navigation_runner" type="rc_sim_node.py"
+          name="rc_sim" output="screen">
+        <param name="switch_delay" value="3.0"/>
+        <param name="forward_stick" value="0.8"/>
+    </node>
+
+    <!-- Command Bridge: PositionCommand -> cmd_vel -->
+    <node pkg="navigation_runner" type="cmd_bridge_node.py"
+          name="cmd_bridge" output="screen">
+        <param name="max_vel" value="3.0"/>
+        <param name="yaw_gain" value="1.0"/>
+    </node>
+
+    <!-- ===== IPC Node (from slope_inspection) ===== -->
+    <node pkg="ipc" type="ipc_node" name="ipc_node" output="screen">
+        <!-- Service remaps -->
+        <remap from="reboot"    to="/mavros/cmd/command"/>
+        <remap from="arming"    to="/mavros/cmd/arming"/>
+        <remap from="set_mode"  to="/mavros/set_mode"/>
+
+        <!-- Publish remaps -->
+        <remap from="pvaj_cmd"   to="/planning/pos_cmd"/>
+        <remap from="px4_cmd"    to="/mavros/setpoint_raw/attitude"/>
+        <remap from="astar_path" to="/astar/path"/>
+        <remap from="astar_map"  to="/astar/map"/>
+        <remap from="mpc_path"   to="/ipc/path"/>
+        <remap from="goal_pub"   to="/ipc/goal"/>
+        <remap from="sfc"        to="/ipc/sfc"/>
+
+        <!-- Subscribe remaps: bridge from CERLAB Gazebo -->
+        <remap from="odom"     to="/CERLAB/quadcopter/odom_raw"/>
+        <remap from="imu"      to="/mavros/imu/data"/>
+        <remap from="imu_raw"  to="/mavros/imu/data_raw"/>
+        <remap from="battery"  to="/mavros/battery"/>
+        <remap from="goal"     to="/goal"/>
+        <remap from="rc"       to="/mavros/rc/in"/>
+        <remap from="state"    to="/mavros/state"/>
+        <remap from="local_pc" to="/pcl_render_node/cloud"/>
+
+        <rosparam command="load"
+                  file="$(find navigation_runner)/cfg/tunnel/ipc_gazebo_param.yaml"/>
+    </node>
+
+    <!-- ===== Flight Recorder ===== -->
+    <group if="$(arg record)">
+        <node pkg="navigation_runner" type="flight_recorder.py"
+              name="flight_recorder" output="screen">
+            <param name="method" value="ipc"/>
+            <param name="trial_id" value="$(arg trial_id)"/>
+            <param name="output_dir" value="$(arg output_dir)"/>
+            <param name="rate" value="50"/>
+            <param name="goal_x" value="15.0"/>
+        </node>
+    </group>
+
+    <!-- ===== RViz ===== -->
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="rviz_ipc"
+              args="-d $(find navigation_runner)/cfg/tunnel/tunnel.rviz"/>
+    </group>
+</launch>

@@ -1,0 +1,69 @@
+<launch>
+    <!-- ============================================================ -->
+    <!-- Tunnel Comparison: unified launcher for RL vs IPC            -->
+    <!-- Usage: roslaunch navigation_runner tunnel_comparison.launch   -->
+    <!--        method:=rl   (or method:=ipc)                        -->
+    <!-- ============================================================ -->
+
+    <arg name="method" default="rl" doc="rl or ipc"/>
+    <arg name="tunnel_map"
+         default="$(find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd"/>
+    <arg name="checkpoint"
+         default="$(find navigation_runner)/cfg/tunnel/checkpoint_best.pt"/>
+    <arg name="trial_id" default="0"/>
+    <arg name="record" default="true"/>
+    <arg name="rviz" default="true"/>
+    <arg name="device" default="cpu"/>
+    <arg name="output_dir" default="/tmp/flight_data"/>
+
+    <!-- ===== Shared: Gazebo CERLAB Simulator ===== -->
+    <include file="$(find uav_simulator)/launch/start.launch">
+        <arg name="gui" value="false"/>
+    </include>
+
+    <!-- ===== RL Mode ===== -->
+    <group if="$(eval method == 'rl')">
+        <!-- Map Manager for RL LiDAR -->
+        <include file="$(find map_manager)/launch/map_manager.launch">
+            <arg name="pcd_file" value="$(arg tunnel_map)"/>
+        </include>
+
+        <!-- RL Navigation Node -->
+        <node pkg="navigation_runner" type="tunnel_navigation.py"
+              name="tunnel_navigator" output="screen">
+            <param name="checkpoint_path" value="$(arg checkpoint)"/>
+            <param name="device" value="$(arg device)"/>
+            <param name="use_px4" value="false"/>
+            <param name="user_model_mode" value="online"/>
+        </node>
+    </group>
+
+    <!-- ===== IPC Mode ===== -->
+    <group if="$(eval method == 'ipc')">
+        <include file="$(find navigation_runner)/launch/tunnel_ipc_sim.launch">
+            <arg name="start_gazebo" value="false"/>
+            <arg name="tunnel_map" value="$(arg tunnel_map)"/>
+            <arg name="trial_id" value="$(arg trial_id)"/>
+            <arg name="record" value="false"/>
+            <arg name="rviz" value="false"/>
+        </include>
+    </group>
+
+    <!-- ===== Shared: Flight Recorder ===== -->
+    <group if="$(arg record)">
+        <node pkg="navigation_runner" type="flight_recorder.py"
+              name="flight_recorder" output="screen">
+            <param name="method" value="$(arg method)"/>
+            <param name="trial_id" value="$(arg trial_id)"/>
+            <param name="output_dir" value="$(arg output_dir)"/>
+            <param name="rate" value="50"/>
+            <param name="goal_x" value="15.0"/>
+        </node>
+    </group>
+
+    <!-- ===== Shared: RViz ===== -->
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="rviz"
+              args="-d $(find navigation_runner)/cfg/tunnel/tunnel.rviz"/>
+    </group>
+</launch>
