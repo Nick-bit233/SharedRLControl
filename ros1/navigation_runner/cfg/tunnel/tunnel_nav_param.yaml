@@ -1,0 +1,28 @@
+# Tunnel RL policy deployment parameters
+# --- Policy ---
+checkpoint_path: ""   # REQUIRED: path to checkpoint_best.pt
+action_limit: 2.0     # m/s, must match training config
+device: "cpu"          # "cpu" or "cuda:0"
+deterministic: true    # true = use mean action (no sampling noise)
+
+# --- LiDAR sensor (must match training config) ---
+lidar_range: 4.0
+lidar_vfov: [-10.0, 20.0]
+lidar_vbeams: 4
+lidar_hres: 10.0
+
+# --- Control ---
+control_freq: 20.0    # Hz
+use_px4: false         # true for PX4/MAVROS, false for Gazebo sim
+height_control: true   # true = 3D velocity control, false = fix height at takeoff_height
+takeoff_height: 1.0    # meters
+
+# --- User model (forward command generator) ---
+user_model_simple: true       # true = constant forward speed
+user_model_speed: 2.0         # m/s, max forward speed
+user_model_freq_base: 0.1     # Perlin noise base frequency (online mode)
+user_model_freq_scale: 0.3    # Perlin noise frequency scale (online mode)
+
+# --- Safety ---
+use_safety_shield: false      # Use ORCA safe_action_node
+safety_min_dist: 0.3          # Emergency stop distance (meters)

@@ -1,0 +1,76 @@
+<launch>
+    <!-- ============================================================ -->
+    <!--  Tunnel RL Policy Deployment — Full Simulation Stack          -->
+    <!--  Usage:                                                       -->
+    <!--    roslaunch navigation_runner tunnel_sim.launch               -->
+    <!--        checkpoint:=/path/to/checkpoint_best.pt                -->
+    <!--        tunnel_map:=/path/to/tunnel_map.pcd                    -->
+    <!-- ============================================================ -->
+
+    <!-- Arguments -->
+    <arg name="checkpoint"      default="" doc="Path to RL policy checkpoint (.pt)" />
+    <arg name="tunnel_map"      default="" doc="Path to prebuilt tunnel PCD map" />
+    <arg name="use_px4"         default="false" />
+    <arg name="use_safety_shield" default="false" />
+    <arg name="device"          default="cpu" doc="cpu or cuda:0" />
+    <arg name="rviz"            default="true" />
+    <arg name="user_model_simple" default="true" doc="true=constant forward, false=Perlin noise" />
+    <arg name="spawn_x"        default="-15.0" />
+    <arg name="spawn_y"        default="0.0" />
+    <arg name="spawn_z"        default="0.1" />
+
+    <!-- Global param -->
+    <param name="rl/use_px4" value="$(arg use_px4)" />
+
+    <!-- ============================================================ -->
+    <!--  1. Gazebo Simulator + Quadrotor                              -->
+    <!-- ============================================================ -->
+    <include file="$(find uav_simulator)/launch/start.launch" unless="$(arg use_px4)">
+        <!-- Pass custom world if needed -->
+    </include>
+
+    <!-- Override spawn position (re-spawn model at desired location) -->
+    <!-- NOTE: uav_simulator/launch/start.launch already spawns at -15,0,0.1 -->
+    <!-- Modify the start.launch or use arg if different position is needed -->
+
+    <!-- ============================================================ -->
+    <!--  2. Occupancy Map (for RayCast LiDAR simulation)              -->
+    <!-- ============================================================ -->
+    <rosparam file="$(find navigation_runner)/cfg/tunnel/occupancy_map_tunnel.yaml" 
+              ns="/occupancy_map" />
+    <!-- Override map path from argument -->
+    <param name="/occupancy_map/prebuilt_map_directory" value="$(arg tunnel_map)" 
+           if="$(eval tunnel_map != '')" />
+    <node pkg="map_manager" type="occupancy_map_node" name="occupancy_map_node" 
+          output="screen" />
+
+    <!-- ============================================================ -->
+    <!--  3. Safety Shield (optional)                                  -->
+    <!-- ============================================================ -->
+    <group if="$(arg use_safety_shield)">
+        <include file="$(find navigation_runner)/launch/safety_shield.launch" />
+    </group>
+
+    <!-- ============================================================ -->
+    <!--  4. Tunnel Navigation Node (RL Policy)                        -->
+    <!-- ============================================================ -->
+    <node pkg="navigation_runner" type="tunnel_navigation.py" 
+          name="tunnel_navigator" output="screen">
+        <rosparam file="$(find navigation_runner)/cfg/tunnel/tunnel_nav_param.yaml" />
+        <!-- Override critical params from launch args -->
+        <param name="checkpoint_path"     value="$(arg checkpoint)" />
+        <param name="device"              value="$(arg device)" />
+        <param name="use_px4"             value="$(arg use_px4)" />
+        <param name="use_safety_shield"   value="$(arg use_safety_shield)" />
+        <param name="user_model_simple"   value="$(arg user_model_simple)" />
+    </node>
+
+    <!-- ============================================================ -->
+    <!--  5. RViz Visualization                                        -->
+    <!-- ============================================================ -->
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="tunnel_rviz"
+              args="-d $(find navigation_runner)/cfg/tunnel/tunnel.rviz"
+              if="$(eval optenv('DISPLAY', '') != '')" />
+    </group>
+</launch>

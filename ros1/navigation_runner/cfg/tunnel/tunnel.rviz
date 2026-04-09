@@ -1,0 +1,66 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    - Class: rviz/Grid
+      Name: Grid
+      Plane Cell Count: 50
+      Reference Frame: map
+
+    - Class: rviz/TF
+      Name: TF
+      Show Arrows: true
+      Show Names: true
+
+    - Class: rviz/MarkerArray
+      Name: Occupancy Map
+      Marker Topic: /occupancy_map/map_vis
+
+    - Class: rviz/MarkerArray
+      Name: RL Command
+      Marker Topic: /tunnel_nav/cmd_vel_vis
+
+    - Class: rviz/MarkerArray
+      Name: Human Command
+      Marker Topic: /tunnel_nav/human_cmd_vis
+
+    - Class: rviz/Odometry
+      Name: Drone Odom
+      Topic: /CERLAB/quadcopter/odom
+      Keep: 100
+      Shape:
+        Alpha: 1.0
+        Axes Length: 0.3
+        Head Length: 0.07
+        Head Radius: 0.03
+        Shaft Length: 0.15
+        Shaft Radius: 0.015
+        Value: Arrow
+
+  Global Options:
+    Fixed Frame: map
+    Frame Rate: 30
+
+  Tools:
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+
+  Views:
+    Current:
+      Class: rviz/ThirdPersonFollower
+      Distance: 15
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 1
+      Name: Current View
+      Pitch: 0.5
+      Yaw: 0
+Window Geometry:
+  Width: 1200
+  Height: 900

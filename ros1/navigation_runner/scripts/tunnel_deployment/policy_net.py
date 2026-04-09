@@ -1,0 +1,244 @@
+"""
+Standalone ConstrainedResidualPPO network for inference only.
+No TorchRL / TensorDict dependency — pure PyTorch.
+
+Architecture (training-identical):
+  LidarCNN: (N, 1, 36, 4) → 128
+  Concat:   [cnn_feat(128), state(10), human_action(3)] → 141
+  LayerNorm(141)
+  MLP:      141 → 256 → 256  (_feature)
+  ActorMLP: 256 → 256 → 256 → 6  (loc_delta[3], scale_raw[3])
+  Residual: loc = loc_delta * residual_scale + atanh(human_action / action_limit)
+  Sample:   TanhNormal(loc, softplus(scale_raw) + 1e-4)  → action_norm ∈ (-1, 1)
+  Scale:    action = action_norm * action_limit            → m/s
+  Transform: body-frame → world-frame (yaw-only rotation)
+"""
+import torch
+import torch.nn as nn
+import math
+
+from .quat_utils import vec_to_world
+
+NORM_EPS = 1e-3
+
+
+class _LidarCNN(nn.Module):
+    """3-layer Conv2d for LiDAR range images. Input: (N, 1, 36, 4) → Output: (N, 128)."""
+
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 4, kernel_size=(5, 3), padding=(2, 1)),
+            nn.ELU(),
+            nn.Conv2d(4, 16, kernel_size=(5, 3), stride=(2, 1), padding=(2, 1)),
+            nn.ELU(),
+            nn.Conv2d(16, 16, kernel_size=(5, 3), stride=(2, 2), padding=(2, 1)),
+            nn.ELU(),
+            nn.Flatten(),  # (N, 16*9*2) = (N, 288)
+            nn.Linear(288, 128),
+            nn.LayerNorm(128, eps=NORM_EPS),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+def _make_mlp(dims: list) -> nn.Sequential:
+    layers = []
+    for d in dims:
+        layers.extend([nn.LazyLinear(d), nn.LeakyReLU(), nn.LayerNorm(d, eps=NORM_EPS)])
+    return nn.Sequential(*layers)
+
+
+class TunnelPolicyNet(nn.Module):
+    """
+    Self-contained inference network that mirrors the training-time
+    ConstrainedResidualPPO architecture.
+
+    Call signature:
+        action_world = net(state, human_action, lidar, deterministic=True)
+
+    Where:
+        state:        (N, 10)  [vel_b(3), ang_vel_b(3), quat(4)]
+        human_action: (N, 3)   body-frame velocity command
+        lidar:        (N, 1, 36, 4) normalised range image
+    Returns:
+        action_world: (N, 3)   world-frame velocity command  (m/s)
+    """
+
+    def __init__(self, action_limit: float = 2.0):
+        super().__init__()
+        self.action_limit = action_limit
+
+        # ---- Feature extractor ----
+        self.lidar_cnn = _LidarCNN()
+        # Input to layer_norm: cnn(128) + state(10) + human_action(3) = 141
+        self.input_norm = nn.LayerNorm(141, eps=NORM_EPS)
+        self.feature_mlp = _make_mlp([256, 256])
+
+        # ---- Actor head ----
+        self.actor_mlp = nn.Sequential(
+            _make_mlp([256, 256]),
+            nn.Linear(256, 6),  # loc_delta(3) + scale_raw(3)
+        )
+
+        # ---- Residual module ----
+        self.residual_scale = nn.Parameter(torch.tensor(1.0), requires_grad=False)
+
+    # ------------------------------------------------------------------
+    # Forward (inference)
+    # ------------------------------------------------------------------
+    def forward(
+        self,
+        state: torch.Tensor,
+        human_action: torch.Tensor,
+        lidar: torch.Tensor,
+        deterministic: bool = True,
+    ) -> torch.Tensor:
+        # 1. Feature extraction
+        cnn_feat = self.lidar_cnn(lidar)                     # (N, 128)
+        cat_feat = torch.cat([cnn_feat, state, human_action], dim=-1)  # (N, 141)
+        normed = self.input_norm(cat_feat)
+
+        # Initialise lazy layers on first call
+        feature = self.feature_mlp(normed)                   # (N, 256)
+
+        # 2. Actor
+        logits = self.actor_mlp(feature)                     # (N, 6)
+        loc_delta, scale_raw = logits.split(3, dim=-1)
+
+        # 3. Residual: combine with human action in pre-tanh space
+        eps = 1e-6
+        ha_norm = (human_action / self.action_limit).clamp(-1.0 + eps, 1.0 - eps)
+        ha_pre_tanh = torch.atanh(ha_norm)
+        loc = loc_delta * self.residual_scale + ha_pre_tanh
+
+        if deterministic:
+            action_norm = torch.tanh(loc)
+        else:
+            scale = torch.nn.functional.softplus(scale_raw) + 1e-4
+            # Sample from TanhNormal: sample z ~ Normal(loc, scale), then tanh(z)
+            z = torch.distributions.Normal(loc, scale).rsample()
+            action_norm = torch.tanh(z)
+
+        # 4. Scale to physical units
+        action_body = action_norm * self.action_limit         # (N, 3) body-frame m/s
+
+        # 5. Transform body → world (yaw-only)
+        action_world = vec_to_world(action_body, state, yaw_only=True)
+        return action_world
+
+    # ------------------------------------------------------------------
+    # Checkpoint loading
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_checkpoint(cls, ckpt_path: str, action_limit: float = 2.0,
+                        device: str = "cpu") -> "TunnelPolicyNet":
+        """
+        Load a training checkpoint and map weights into this standalone net.
+
+        The training checkpoint uses TensorDict module paths like:
+            feature_extractor.module.0.module.net.0.weight   (LidarCNN)
+            feature_extractor.module.1.module.weight         (CatTensors – no params)
+            feature_extractor.module.2.module.0.weight       (LayerNorm)
+            feature_extractor.module.3.module.0.weight       (feature MLP)
+            actor.module.module.0.module.0.weight            (actor MLP layer 1)
+            ...
+        """
+        net = cls(action_limit=action_limit).to(device)
+
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        # ckpt can be a plain state_dict or a dict with 'policy' key
+        if isinstance(ckpt, dict) and "policy" in ckpt:
+            src = ckpt["policy"]
+        elif isinstance(ckpt, dict) and any(k.startswith("feature_extractor") for k in ckpt):
+            src = ckpt
+        else:
+            src = ckpt
+
+        # Build mapping: training key prefix → standalone param name
+        mapped = _map_checkpoint(src, net, device)
+
+        # Load
+        missing, unexpected = net.load_state_dict(mapped, strict=False)
+        if missing:
+            print(f"[TunnelPolicyNet] Missing keys (expected for critic): {missing}")
+        if unexpected:
+            print(f"[TunnelPolicyNet] Unexpected keys: {unexpected}")
+
+        # Materialise any remaining lazy layers with a dummy forward
+        dummy_state = torch.zeros(1, 10, device=device)
+        dummy_ha = torch.zeros(1, 3, device=device)
+        dummy_lidar = torch.zeros(1, 1, 36, 4, device=device)
+        with torch.no_grad():
+            net(dummy_state, dummy_ha, dummy_lidar)
+
+        net.eval()
+        return net
+
+
+# ======================================================================
+# Weight mapping helpers
+# ======================================================================
+def _map_checkpoint(src: dict, net: "TunnelPolicyNet", device: str) -> dict:
+    """
+    Heuristic mapper: walk the source state_dict and figure out where
+    each tensor belongs in the standalone network.
+    """
+    dst = {}
+
+    for k, v in src.items():
+        target_key = _translate_key(k)
+        if target_key is not None:
+            dst[target_key] = v.to(device)
+
+    return dst
+
+
+def _translate_key(k: str):
+    """Map a single training-checkpoint key to the standalone key, or None to skip.
+
+    Checkpoint has duplicated paths (same tensor via different module refs).
+    We prefer the shorter ``actor_net.module.*`` path over the longer
+    ``actor.module.0.module.0.module.*`` path.
+    """
+
+    # ---- LiDAR CNN ----
+    # Training:  feature_extractor.module.0.module.net.{idx}.{weight|bias}
+    # Standalone: lidar_cnn.net.{idx}.{weight|bias}
+    prefix_cnn = "feature_extractor.module.0.module.net."
+    if k.startswith(prefix_cnn):
+        suffix = k[len(prefix_cnn):]
+        return f"lidar_cnn.net.{suffix}"
+
+    # ---- Input LayerNorm ----
+    # Training:  feature_extractor.module.2.module.{weight|bias}
+    prefix_inorm = "feature_extractor.module.2.module."
+    if k.startswith(prefix_inorm):
+        suffix = k[len(prefix_inorm):]
+        return f"input_norm.{suffix}"
+
+    # ---- Feature MLP ----
+    # Training:  feature_extractor.module.3.module.{idx}.{weight|bias}
+    prefix_fmlp = "feature_extractor.module.3.module."
+    if k.startswith(prefix_fmlp):
+        suffix = k[len(prefix_fmlp):]
+        return f"feature_mlp.{suffix}"
+
+    # ---- Actor MLP (short path via self.actor_net) ----
+    # Training:  actor_net.module.0.{idx}.{weight|bias}   (make_mlp layers)
+    #            actor_net.module.1.{weight|bias}          (final Linear(256→6))
+    # Standalone: actor_mlp.0.{idx}.{weight|bias}
+    #             actor_mlp.1.{weight|bias}
+    prefix_actornet = "actor_net.module."
+    if k.startswith(prefix_actornet):
+        suffix = k[len(prefix_actornet):]
+        return f"actor_mlp.{suffix}"
+
+    # ---- Residual scale (short path) ----
+    if k == "residual_action_module.residual_scale":
+        return "residual_scale"
+
+    # Skip: critic, value_norm, gae, duplicate actor.module.* paths,
+    #        and the duplicate actor.module.0.module.2.module.residual_scale
+    return None
