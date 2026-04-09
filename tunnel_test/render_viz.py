@@ -291,7 +291,12 @@ def main():
         sys.exit(1)
 
     # Determine which trials to render
-    num_trials = results["config"]["num_trials"]
+    # Support both single-batch ("config") and merged-batch ("batch_config") formats
+    cfg = results.get("config") or results.get("batch_config", {})
+    ipc_trials = results.get("per_trial", {}).get("IPC", [])
+    rl_trials = results.get("per_trial", {}).get("RL", [])
+    num_trials = max(len(ipc_trials), len(rl_trials), cfg.get("num_trials", 0))
+
     if args.all:
         trial_indices = list(range(num_trials))
     else:
