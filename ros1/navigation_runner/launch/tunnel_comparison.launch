@@ -17,7 +17,7 @@
     <arg name="output_dir" default="/tmp/flight_data"/>
 
     <!-- ===== Shared: Gazebo CERLAB Simulator ===== -->
-    <include file="$(find uav_simulator)/launch/start.launch">
+    <include file="$(find uav_simulator)/launch/start_headless.launch">
         <arg name="gui" value="false"/>
     </include>
 

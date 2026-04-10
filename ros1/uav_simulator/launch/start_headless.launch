@@ -1,0 +1,59 @@
+<launch>
+  <!-- Headless-compatible version of start.launch for Docker/CI -->
+  <arg name="gui" default="false"/>
+  <arg name="paused" default="false"/>
+  <arg name="verbose" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="debug" default="false"/>
+  <arg name="spawn_x" default="-15.0"/>
+  <arg name="spawn_y" default="0.0"/>
+  <arg name="spawn_z" default="0.1"/>
+  <arg name="spawn_Y" default="0.0"/>
+
+  <arg name="world_name"
+       default="$(find uav_simulator)/worlds/generated_env/generated_env_static.world"/>
+
+  <!-- Ensure Gazebo can find the quadcopter plugin -->
+  <env name="GAZEBO_PLUGIN_PATH"
+       value="$(find uav_simulator)/plugins:$(optenv GAZEBO_PLUGIN_PATH)"/>
+
+  <!-- Gazebo (headless when gui:=false) -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="paused"        value="$(arg paused)"/>
+    <arg name="world_name"    value="$(arg world_name)"/>
+    <arg name="verbose"       value="$(arg verbose)"/>
+    <arg name="use_sim_time"  value="$(arg use_sim_time)"/>
+    <arg name="debug"         value="$(arg debug)"/>
+    <arg name="gui"           value="$(arg gui)"/>
+  </include>
+
+  <!-- Robot URDF -->
+  <param name="robot_description"
+         command="cat '$(find uav_simulator)/urdf/quadcopter.urdf'"/>
+
+  <!-- Spawn drone -->
+  <node name="spawn_gazebo_model" pkg="gazebo_ros" type="spawn_model"
+        args="-urdf -param robot_description -model quadcopter
+              -x $(arg spawn_x) -y $(arg spawn_y) -z $(arg spawn_z) -Y $(arg spawn_Y)"
+        respawn="false"/>
+
+  <!-- Throttle topics -->
+  <node pkg="topic_tools" type="throttle" name="gt_pose_throttle"
+        args="messages /CERLAB/quadcopter/pose_raw 30 /CERLAB/quadcopter/pose"/>
+  <node pkg="topic_tools" type="throttle" name="gt_vel_throttle"
+        args="messages /CERLAB/quadcopter/vel_raw 30 /CERLAB/quadcopter/vel"/>
+  <node pkg="topic_tools" type="throttle" name="gt_acc_throttle"
+        args="messages /CERLAB/quadcopter/acc_raw 30 /CERLAB/quadcopter/acc"/>
+  <node pkg="topic_tools" type="throttle" name="gt_odom_throttle"
+        args="messages /CERLAB/quadcopter/odom_raw 30 /CERLAB/quadcopter/odom"/>
+
+  <!-- TF -->
+  <include file="$(find uav_simulator)/launch/setupTF.launch">
+    <arg name="pose_topic" value="/CERLAB/quadcopter/pose"/>
+  </include>
+
+  <!-- Keyboard control only when GUI is enabled -->
+  <group if="$(arg gui)">
+    <node name="keyboard_control" pkg="uav_simulator" type="keyboard_control"/>
+  </group>
+</launch>

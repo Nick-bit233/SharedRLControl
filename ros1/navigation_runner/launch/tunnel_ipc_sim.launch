@@ -12,7 +12,7 @@
 
     <!-- ===== Gazebo CERLAB Simulator ===== -->
     <group if="$(arg start_gazebo)">
-        <include file="$(find uav_simulator)/launch/start.launch">
+        <include file="$(find uav_simulator)/launch/start_headless.launch">
             <arg name="gui" value="false"/>
         </include>
     </group>
