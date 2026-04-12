@@ -6,10 +6,11 @@
     <!-- ============================================================ -->
 
     <arg name="method" default="rl" doc="rl or ipc"/>
+    <arg name="gui" default="false" doc="Show Gazebo GUI (requires X11 display)"/>
     <arg name="tunnel_map"
          default="$(find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd"/>
     <arg name="checkpoint"
-         default="$(find navigation_runner)/cfg/tunnel/checkpoint_best.pt"/>
+         default="$(find navigation_runner)/checkpoints/curriculum_stage5/2026-03-24_14-02-37/wandb/run-20260324_140244-w85uemxv/files/checkpoint_best.pt"/>
     <arg name="trial_id" default="0"/>
     <arg name="record" default="true"/>
     <arg name="rviz" default="true"/>
@@ -18,23 +19,26 @@
 
     <!-- ===== Shared: Gazebo CERLAB Simulator ===== -->
     <include file="$(find uav_simulator)/launch/start_headless.launch">
-        <arg name="gui" value="false"/>
+        <arg name="gui" value="$(arg gui)"/>
     </include>
 
     <!-- ===== RL Mode ===== -->
     <group if="$(eval method == 'rl')">
-        <!-- Map Manager for RL LiDAR -->
-        <include file="$(find map_manager)/launch/map_manager.launch">
-            <arg name="pcd_file" value="$(arg tunnel_map)"/>
-        </include>
+        <!-- Map Manager for RL LiDAR (occupancy map with RayCast service) -->
+        <rosparam file="$(find navigation_runner)/cfg/tunnel/occupancy_map_tunnel.yaml"
+                  ns="/occupancy_map" />
+        <param name="/occupancy_map/prebuilt_map_directory" value="$(arg tunnel_map)"/>
+        <node pkg="map_manager" type="occupancy_map_node" name="occupancy_map_node"
+              output="screen"/>
 
         <!-- RL Navigation Node -->
         <node pkg="navigation_runner" type="tunnel_navigation.py"
               name="tunnel_navigator" output="screen">
+            <rosparam file="$(find navigation_runner)/cfg/tunnel/tunnel_nav_param.yaml"/>
             <param name="checkpoint_path" value="$(arg checkpoint)"/>
             <param name="device" value="$(arg device)"/>
             <param name="use_px4" value="false"/>
-            <param name="user_model_mode" value="online"/>
+            <param name="user_model_simple" value="true"/>
         </node>
     </group>
 

@@ -55,6 +55,12 @@ RUN source /opt/ros/noetic/setup.bash && \
                -DPYTHON_EXECUTABLE=/usr/bin/python3 \
                -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
+# Register ipc package for rospack/roslaunch (source cleaned in base image, binary remains)
+# rospack crawls the src dirs listed in .catkin, so create a stub package there
+RUN mkdir -p /root/slope_ws/src/ipc && \
+    printf '<?xml version="1.0"?>\n<package format="2">\n  <name>ipc</name>\n  <version>0.0.0</version>\n  <description>IPC planner (binary-only)</description>\n  <maintainer email="ipc@localhost.local">maintainer</maintainer>\n  <license>MIT</license>\n  <buildtool_depend>catkin</buildtool_depend>\n</package>\n' \
+    > /root/slope_ws/src/ipc/package.xml
+
 # ---------- Environment ----------
 RUN echo 'source /opt/ros/noetic/setup.bash' >> /root/.bashrc && \
     echo 'source /root/slope_ws/devel/setup.bash' >> /root/.bashrc && \

@@ -27,7 +27,7 @@ import tf.transformations
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point, PoseStamped, TwistStamped, Quaternion
 from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool, Empty, Float64
 
 # Conditional PX4 imports
 try:
@@ -436,12 +436,12 @@ class TunnelNavigator:
             except rospy.ServiceException:
                 pass
         else:
-            # Gazebo: send takeoff command, then hover
+            # Gazebo: send takeoff command (std_msgs/Empty), then hover
             takeoff_pub = rospy.Publisher(
-                "/CERLAB/quadcopter/takeoff", Float64, queue_size=1
+                "/CERLAB/quadcopter/takeoff", Empty, queue_size=1
             )
             rospy.sleep(0.5)
-            takeoff_pub.publish(Float64(data=self.cfg.takeoff_height))
+            takeoff_pub.publish(Empty())
             rospy.loginfo("[TunnelNav] Takeoff command sent, waiting 3s...")
             rospy.sleep(3.0)
 
