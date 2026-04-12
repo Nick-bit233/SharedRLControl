@@ -155,6 +155,7 @@ ros1/uav_simulator/worlds/                          → /root/catkin_ws/src/uav_
 | `/tunnel_nav/cmd_vel_vis` | `visualization_msgs/MarkerArray` | 20 Hz | RL 速度指令箭头（绿色） |
 | `/tunnel_nav/human_cmd_vis` | `visualization_msgs/MarkerArray` | 20 Hz | 用户模型指令箭头（蓝色） |
 | `/tunnel_nav/status` | `std_msgs/String` | 20 Hz | 状态文本：位置、指令、最近障碍距离 |
+| `/tunnel_nav/collision` | `std_msgs/Bool` | latched | 碰撞检测（min_dist < collision_dist 时发布 True） |
 
 **服务调用：**
 
@@ -222,8 +223,14 @@ takeoff_height: 4.0      # 米（CERLAB 插件默认悬停高度）
 deterministic: true      # 确定性输出
 user_model_simple: true  # 恒速前进
 user_model_speed: 2.0    # m/s
-safety_min_dist: 0.3     # 米，紧急停止距离
+safety_min_dist: 0.3     # 米，安全停止距离（0 = 禁用）
+collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失败）
 ```
+
+**安全机制说明：**
+- `min_dist > safety_min_dist`：正常控制
+- `collision_dist < min_dist < safety_min_dist`：安全停止（零速指令），距离恢复后自动继续
+- `min_dist < collision_dist`：碰撞！发布 `/tunnel_nav/collision` (True)，永久停止。对比实验中视为任务失败
 
 ### UserModel 模式
 
@@ -274,12 +281,15 @@ action = tanh(loc) × action_limit                   → 世界帧 m/s
 
 ```
 1. _takeoff()      — 等待 odom → 发送 Empty 到 /takeoff → 等 3s
-2. _raycast_callback (30Hz) — 调用 RayCast 服务 → 更新 self.raypoints
+2. _raycast_callback (30Hz) — 调用 RayCast 服务 → 更新 self.raypoints_np (numpy)
                               → 发布 PointCloud2 到 /tunnel_nav/lidar_cloud
-3. _control_callback (20Hz) — if not ready: hover
-                              if safety_stop: zero cmd
+3. _control_callback (20Hz) — if collision: permanent stop
+                              if safety_stop: zero cmd (距离恢复后自动继续)
                               else: _build_obs → policy → _publish_cmd → _publish_vis
-4. _safety_check (10Hz bg)  — 计算 min_dist → 触发/解除 safety_stop
+4. _safety_check (10Hz bg)  — 向量化 min_dist 计算：
+                              min_dist < collision_dist → 碰撞 (任务失败)
+                              min_dist < safety_min_dist → 安全停止
+                              min_dist >= safety_min_dist → 正常
 ```
 
 ## 7. RViz 可视化
@@ -431,6 +441,14 @@ docker-compose.tunnel.yml             # 持久化开发容器
 - 查看状态：`rostopic echo /tunnel_nav/status` 中 `min_d` 值
 - 降低阈值：在 `tunnel_nav_param.yaml` 中调小 `safety_min_dist`（如 0.15）
 - 或启动时覆盖：`rosparam set /tunnel_navigator/safety_min_dist 0.15`
+- 设为 0 可完全禁用安全停止（仅保留碰撞检测）
+
+### Q: 碰撞（COLLISION）后无人机不动了
+
+这是预期行为。当 `min_dist < collision_dist`（默认 0.05m），系统判定为碰撞，永久停止。
+- 查看碰撞话题：`rostopic echo /tunnel_nav/collision`
+- 对比实验中，碰撞 = 试验失败，flight_recorder 会记录
+- 如需调整碰撞判定距离：修改 `collision_dist` 参数
 
 ### Q: 策略行为异常（乱飞、不避障）
 

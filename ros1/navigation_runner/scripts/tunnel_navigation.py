@@ -29,7 +29,6 @@ from geometry_msgs.msg import Point, PoseStamped, TwistStamped, Quaternion
 from sensor_msgs.msg import PointCloud2, PointField
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Bool, Empty, Float64, String
-import struct
 
 # Conditional PX4 imports
 try:
@@ -82,6 +81,7 @@ class TunnelConfig:
         # Safety
         self.use_safety_shield = rospy.get_param("~use_safety_shield", False)
         self.safety_min_dist = rospy.get_param("~safety_min_dist", 0.3)
+        self.collision_dist = rospy.get_param("~collision_dist", 0.05)
         self.takeoff_height = rospy.get_param("~takeoff_height", 1.0)
 
 
@@ -114,6 +114,7 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   control_freq   : {self.cfg.control_freq} Hz")
         rospy.loginfo(f"[TunnelNav]   action_limit   : {self.cfg.action_limit} m/s")
         rospy.loginfo(f"[TunnelNav]   safety_min_dist: {self.cfg.safety_min_dist} m")
+        rospy.loginfo(f"[TunnelNav]   collision_dist : {self.cfg.collision_dist} m")
         rospy.loginfo(f"[TunnelNav]   user_model     : {'simple' if self.cfg.user_model_simple else 'perlin'} @ {self.cfg.user_model_speed} m/s")
         rospy.loginfo(f"[TunnelNav]   lidar          : {self.cfg.lidar_hbeams}h x {self.cfg.lidar_vbeams}v, range={self.cfg.lidar_range}m")
         rospy.loginfo(f"[TunnelNav]   deterministic  : {self.cfg.deterministic}")
@@ -135,9 +136,11 @@ class TunnelNavigator:
         # ---- State ----
         self.odom = None
         self.odom_received = False
-        self.raypoints = []
+        self.raypoints_np = np.empty((0, 3), dtype=np.float32)  # numpy array for speed
         self.ready = False  # set True after takeoff + first odom + first raycast
         self.safety_stop = False
+        self.collision = False  # True = min_dist < collision_dist → task failed
+        self.min_dist = float("inf")  # current minimum obstacle distance
 
         # ---- ROS interfaces ----
         self._setup_ros()
@@ -217,6 +220,9 @@ class TunnelNavigator:
         self.status_pub = rospy.Publisher(
             "/tunnel_nav/status", String, queue_size=2
         )
+        self.collision_pub = rospy.Publisher(
+            "/tunnel_nav/collision", Bool, queue_size=2, latch=True
+        )
 
     # ==================================================================
     # Callbacks
@@ -235,7 +241,6 @@ class TunnelNavigator:
         if not self.odom_received:
             return
         pos = self.odom.pose.pose.position
-        # Compute start angle from current yaw
         q = self.odom.pose.pose.orientation
         _, _, yaw = tf.transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
 
@@ -244,27 +249,26 @@ class TunnelNavigator:
             pos_msg = Point(x=pos.x, y=pos.y, z=pos.z)
             resp = raycast(
                 pos_msg,
-                yaw,  # start_angle: drone heading
+                yaw,
                 self.cfg.lidar_range,
                 self.cfg.lidar_vfov[0],
                 self.cfg.lidar_vfov[1],
                 self.cfg.lidar_vbeams,
                 self.cfg.lidar_hres,
             )
-            n_pts = len(resp.points) // 3
-            pts = []
-            for i in range(n_pts):
-                pts.append([
-                    resp.points[3 * i],
-                    resp.points[3 * i + 1],
-                    resp.points[3 * i + 2],
-                ])
-            self.raypoints = pts
-            if not self.ready and len(pts) > 0:
+            # Parse into (N, 3) numpy array — avoid per-point Python loop
+            pts_flat = np.array(resp.points, dtype=np.float32)
+            n_pts = len(pts_flat) // 3
+            if n_pts > 0:
+                self.raypoints_np = pts_flat.reshape(n_pts, 3)
+            else:
+                self.raypoints_np = np.empty((0, 3), dtype=np.float32)
+
+            if not self.ready and n_pts > 0:
                 self.ready = True
 
             # Publish LiDAR points as PointCloud2 for RViz
-            self._publish_lidar_cloud(pts)
+            self._publish_lidar_cloud(self.raypoints_np)
         except rospy.ServiceException as e:
             rospy.logwarn_throttle(5.0, f"[TunnelNav] RayCast service error: {e}")
 
@@ -283,33 +287,26 @@ class TunnelNavigator:
 
         # --- Quaternion [w, x, y, z] ---
         q_ros = odom.pose.pose.orientation
-        quat = torch.tensor(
-            [[q_ros.w, q_ros.x, q_ros.y, q_ros.z]], device=dev, dtype=torch.float32
-        )
+        quat_np = np.array([[q_ros.w, q_ros.x, q_ros.y, q_ros.z]], dtype=np.float32)
+        quat = torch.from_numpy(quat_np).to(device=dev)
 
         # --- World-frame velocity ---
-        # Gazebo quadcopterPlugin publishes body-frame twist directly.
-        # For PX4/mavros, twist is in body frame too (local_position/odom).
-        # But the original NavRL code does rot @ vel_body → vel_world → then
-        # the training env does quat_rotate_inverse to get vel_b.
-        #
-        # Strategy: extract world-frame velocity, then rotate to body frame.
         rot = self._quat_to_rot(q_ros)
         vel_body_np = np.array([
             odom.twist.twist.linear.x,
             odom.twist.twist.linear.y,
             odom.twist.twist.linear.z,
-        ])
-        vel_world_np = rot @ vel_body_np
-        vel_w = torch.tensor([vel_world_np], device=dev, dtype=torch.float32)  # (1,3)
+        ], dtype=np.float64)
+        vel_world_np = (rot @ vel_body_np).astype(np.float32)
+        vel_w = torch.from_numpy(vel_world_np).unsqueeze(0).to(device=dev)  # (1,3)
 
         ang_vel_np = np.array([
             odom.twist.twist.angular.x,
             odom.twist.twist.angular.y,
             odom.twist.twist.angular.z,
-        ])
-        ang_vel_world_np = rot @ ang_vel_np
-        ang_vel_w = torch.tensor([ang_vel_world_np], device=dev, dtype=torch.float32)
+        ], dtype=np.float64)
+        ang_vel_world_np = (rot @ ang_vel_np).astype(np.float32)
+        ang_vel_w = torch.from_numpy(ang_vel_world_np).unsqueeze(0).to(device=dev)
 
         # Body-frame velocities
         vel_b = quat_rotate_inverse(quat, vel_w)        # (1, 3)
@@ -322,22 +319,19 @@ class TunnelNavigator:
         human_action = self.user_model.step()  # (1, 3) body-frame
 
         # --- LiDAR ---
-        pos = torch.tensor(
-            [[odom.pose.pose.position.x,
-              odom.pose.pose.position.y,
-              odom.pose.pose.position.z]],
-            device=dev, dtype=torch.float32,
-        )
+        pos_np = np.array([[odom.pose.pose.position.x,
+                            odom.pose.pose.position.y,
+                            odom.pose.pose.position.z]], dtype=np.float32)
 
-        if len(self.raypoints) == self.cfg.lidar_hbeams * self.cfg.lidar_vbeams:
-            ray_pts = torch.tensor(self.raypoints, device=dev, dtype=torch.float32)
-            distances = (ray_pts - pos).norm(dim=-1).clamp_max(self.cfg.lidar_range)
-            lidar_scan = (self.cfg.lidar_range - distances) / self.cfg.lidar_range
-            lidar_scan = lidar_scan.reshape(
+        expected = self.cfg.lidar_hbeams * self.cfg.lidar_vbeams
+        ray_np = self.raypoints_np
+        if ray_np.shape[0] == expected:
+            dists = np.linalg.norm(ray_np - pos_np, axis=-1).clip(max=self.cfg.lidar_range)
+            lidar_np = ((self.cfg.lidar_range - dists) / self.cfg.lidar_range).astype(np.float32)
+            lidar_scan = torch.from_numpy(lidar_np).reshape(
                 1, 1, self.cfg.lidar_hbeams, self.cfg.lidar_vbeams
-            )
+            ).to(device=dev)
         else:
-            # Fallback: empty scan (max range → all zeros after normalisation)
             lidar_scan = torch.zeros(
                 1, 1, self.cfg.lidar_hbeams, self.cfg.lidar_vbeams,
                 device=dev, dtype=torch.float32,
@@ -357,8 +351,21 @@ class TunnelNavigator:
             self.pose_pub.publish(self._make_takeoff_pose())
             return
 
-        if self.safety_stop:
+        if self.collision:
+            # Collision detected — stop permanently, publish status
             self._publish_stop()
+            return
+
+        if self.safety_stop:
+            # Too close but not collision — publish reduced/zero cmd, allow recovery
+            self._publish_stop()
+            # Still publish status so we can see what's happening
+            pos = self.odom.pose.pose.position
+            status_msg = (
+                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                f"cmd=[0,0,0] | min_d={self.min_dist:.2f} | SAFETY_STOP"
+            )
+            self.status_pub.publish(String(data=status_msg))
             return
 
         # 1. Build observation
@@ -379,14 +386,12 @@ class TunnelNavigator:
         # 4. Visualise
         self._publish_vis(cmd, human_action.squeeze(0).cpu().numpy())
 
-        # 5. Publish status
+        # 5. Publish status (use pre-computed min_dist from safety thread)
         pos = self.odom.pose.pose.position
-        min_d = min((np.linalg.norm(np.array(p) - np.array([pos.x, pos.y, pos.z]))
-                     for p in self.raypoints), default=float("inf"))
         status_msg = (
             f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
             f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] | "
-            f"min_d={min_d:.2f} | safe={'NO' if self.safety_stop else 'OK'}"
+            f"min_d={self.min_dist:.2f} | safe={'NO' if self.safety_stop else 'OK'}"
         )
         self.status_pub.publish(String(data=status_msg))
 
@@ -494,26 +499,45 @@ class TunnelNavigator:
     # Safety
     # ==================================================================
     def _safety_check(self):
-        """Background thread: emergency stop if too close to obstacles."""
+        """Background thread: monitor obstacle proximity, detect collisions."""
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            if self.odom_received and len(self.raypoints) > 0:
+            if self.collision:
+                rate.sleep()
+                continue
+
+            ray_np = self.raypoints_np
+            if self.odom_received and ray_np.shape[0] > 0:
                 pos = np.array([
                     self.odom.pose.pose.position.x,
                     self.odom.pose.pose.position.y,
                     self.odom.pose.pose.position.z,
-                ])
-                min_dist = float("inf")
-                for pt in self.raypoints:
-                    d = np.linalg.norm(np.array(pt) - pos)
-                    min_dist = min(min_dist, d)
-                if min_dist < self.cfg.safety_min_dist:
+                ], dtype=np.float32)
+                # Vectorised min distance
+                dists = np.linalg.norm(ray_np - pos, axis=-1)
+                min_dist = float(dists.min())
+                self.min_dist = min_dist
+
+                if min_dist < self.cfg.collision_dist:
+                    # Collision — task failure, permanent stop
+                    self.collision = True
+                    self.safety_stop = True
+                    self.collision_pub.publish(Bool(data=True))
+                    rospy.logerr(
+                        f"[TunnelNav] COLLISION! min_dist={min_dist:.3f} m "
+                        f"(threshold={self.cfg.collision_dist} m) — task failed"
+                    )
+                elif min_dist < self.cfg.safety_min_dist:
                     if not self.safety_stop:
                         rospy.logwarn(
                             f"[TunnelNav] SAFETY STOP! min_dist={min_dist:.2f} m"
                         )
                     self.safety_stop = True
                 else:
+                    if self.safety_stop:
+                        rospy.loginfo(
+                            f"[TunnelNav] Safety cleared, min_dist={min_dist:.2f} m"
+                        )
                     self.safety_stop = False
             rate.sleep()
 
@@ -535,15 +559,15 @@ class TunnelNavigator:
     # ==================================================================
     # LiDAR PointCloud2 Visualisation
     # ==================================================================
-    def _publish_lidar_cloud(self, pts):
+    def _publish_lidar_cloud(self, pts_np: np.ndarray):
         """Publish raycast hit-points as PointCloud2 for RViz."""
-        if not pts:
+        if pts_np.shape[0] == 0:
             return
         msg = PointCloud2()
         msg.header.stamp = rospy.Time.now()
         msg.header.frame_id = "map"
         msg.height = 1
-        msg.width = len(pts)
+        msg.width = pts_np.shape[0]
         msg.fields = [
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
             PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
@@ -551,12 +575,9 @@ class TunnelNavigator:
         ]
         msg.is_bigendian = False
         msg.point_step = 12
-        msg.row_step = 12 * len(pts)
+        msg.row_step = 12 * pts_np.shape[0]
         msg.is_dense = True
-        buf = bytearray()
-        for p in pts:
-            buf.extend(struct.pack("fff", p[0], p[1], p[2]))
-        msg.data = bytes(buf)
+        msg.data = pts_np.astype(np.float32).tobytes()
         self.lidar_cloud_pub.publish(msg)
 
     # ==================================================================

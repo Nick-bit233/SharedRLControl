@@ -31,3 +31,4 @@ user_model_freq_scale: 0.3    # Perlin noise frequency scale (online mode only)
 # --- Safety ---
 use_safety_shield: false      # Use ORCA safe_action_node
 safety_min_dist: 0.3          # Emergency stop distance (metres)
+collision_dist: 0.05          # Below this = collision = task failed (metres)
