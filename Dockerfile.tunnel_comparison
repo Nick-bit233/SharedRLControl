@@ -9,7 +9,7 @@ LABEL description="RL vs IPC tunnel comparison on CERLAB Gazebo"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ---------- Gazebo 11 + ROS packages ----------
+# ---------- Gazebo 11 + ROS packages + headless rendering ----------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gazebo11 \
     libgazebo11-dev \
@@ -23,6 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-noetic-pcl-ros \
     python3-pip \
     python3-setuptools \
+    xvfb \
+    mesa-utils \
+    libgl1-mesa-dri \
+    libgl1-mesa-glx \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- Python dependencies (Python 3.8 compatible) ----------
@@ -60,7 +64,16 @@ RUN echo 'source /opt/ros/noetic/setup.bash' >> /root/.bashrc && \
 ENV GAZEBO_MODEL_PATH=/usr/share/gazebo-11/models:${CATKIN_WS}/src/uav_simulator/models
 ENV GAZEBO_PLUGIN_PATH=${CATKIN_WS}/src/uav_simulator/plugins:${GAZEBO_PLUGIN_PATH}
 
+# ---------- Rendering fallback (Xvfb when no host DISPLAY) ----------
+# When host X11 is forwarded, entrypoint.sh skips Xvfb and uses GPU directly.
+# These are defaults for fully headless (CI/batch) mode only:
+ENV MESA_GL_VERSION_OVERRIDE=3.3
+
 # ---------- Default working directory ----------
 WORKDIR ${CATKIN_WS}
 
+# Start Xvfb on DISPLAY :99 before any command
+COPY ros1/uav_simulator/scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]
