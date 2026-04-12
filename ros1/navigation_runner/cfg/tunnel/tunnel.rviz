@@ -3,6 +3,7 @@ Panels:
     Name: Displays
   - Class: rviz/Views
     Name: Views
+
 Visualization Manager:
   Displays:
     - Class: rviz/Grid
@@ -13,24 +14,39 @@ Visualization Manager:
     - Class: rviz/TF
       Name: TF
       Show Arrows: true
-      Show Names: true
+      Show Names: false
+      Update Interval: 0.1
 
     - Class: rviz/MarkerArray
       Name: Occupancy Map
       Marker Topic: /occupancy_map/map_vis
+      Queue Size: 1
+
+    - Class: rviz/PointCloud2
+      Name: LiDAR Points
+      Topic: /tunnel_nav/lidar_cloud
+      Size (Pixels): 5
+      Style: Points
+      Color Transformer: FlatColor
+      Color: 255; 50; 50
+      Queue Size: 1
 
     - Class: rviz/MarkerArray
       Name: RL Command
       Marker Topic: /tunnel_nav/cmd_vel_vis
+      Queue Size: 1
 
     - Class: rviz/MarkerArray
       Name: Human Command
       Marker Topic: /tunnel_nav/human_cmd_vis
+      Queue Size: 1
 
     - Class: rviz/Odometry
       Name: Drone Odom
       Topic: /CERLAB/quadcopter/odom
-      Keep: 100
+      Keep: 200
+      Position Tolerance: 0.01
+      Angle Tolerance: 0.01
       Shape:
         Alpha: 1.0
         Axes Length: 0.3
@@ -53,14 +69,16 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 15
+      Distance: 20
+      Focal Shape Size: 0.05
       Focal Point:
         X: 0
         Y: 0
-        Z: 1
+        Z: 2
       Name: Current View
-      Pitch: 0.5
-      Yaw: 0
+      Pitch: 0.7
+      Yaw: -1.57
+
 Window Geometry:
-  Width: 1200
+  Width: 1400
   Height: 900

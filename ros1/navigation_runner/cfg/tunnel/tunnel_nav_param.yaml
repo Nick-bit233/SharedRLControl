@@ -1,28 +1,33 @@
+# ============================================================
 # Tunnel RL policy deployment parameters
-# --- Policy ---
-checkpoint_path: ""   # REQUIRED: path to checkpoint_best.pt
-action_limit: 2.0     # m/s, must match training config
-device: "cpu"          # "cpu" or "cuda:0"
-deterministic: true    # true = use mean action (no sampling noise)
+# Loaded by tunnel_comparison.launch into /tunnel_navigator/ namespace
+# Override from CLI: roslaunch ... checkpoint:=/path/to/model.pt
+# ============================================================
 
-# --- LiDAR sensor (must match training config) ---
-lidar_range: 4.0
-lidar_vfov: [-10.0, 20.0]
-lidar_vbeams: 4
-lidar_hres: 10.0
+# --- Policy (must match training) ---
+checkpoint_path: ""           # Overridden by launch file; set here only for manual rosrun
+action_limit: 2.0             # m/s, must match training config
+device: "cpu"                 # "cpu" or "cuda:0"
+deterministic: true           # true = use mean action (no sampling noise)
+
+# --- LiDAR sensor (must match training config exactly) ---
+lidar_range: 4.0              # metres
+lidar_vfov: [-10.0, 20.0]    # vertical FoV [min_deg, max_deg]
+lidar_vbeams: 4               # number of vertical beams
+lidar_hres: 10.0              # horizontal resolution in degrees → 36 beams
 
 # --- Control ---
-control_freq: 20.0    # Hz
-use_px4: false         # true for PX4/MAVROS, false for Gazebo sim
-height_control: true   # true = 3D velocity control, false = fix height at takeoff_height
-takeoff_height: 1.0    # meters
+control_freq: 20.0            # Hz (training ~60Hz; 20Hz is sufficient for deployment)
+use_px4: false                # true for PX4/MAVROS, false for CERLAB Gazebo
+height_control: true          # true = 3D velocity, false = hold takeoff_height
+takeoff_height: 4.0           # metres (CERLAB plugin default hover height)
 
 # --- User model (forward command generator) ---
-user_model_simple: true       # true = constant forward speed
-user_model_speed: 2.0         # m/s, max forward speed
-user_model_freq_base: 0.1     # Perlin noise base frequency (online mode)
-user_model_freq_scale: 0.3    # Perlin noise frequency scale (online mode)
+user_model_simple: true       # true = constant forward speed; false = Perlin noise
+user_model_speed: 2.0         # m/s forward speed
+user_model_freq_base: 0.1     # Perlin noise base frequency (online mode only)
+user_model_freq_scale: 0.3    # Perlin noise frequency scale (online mode only)
 
 # --- Safety ---
 use_safety_shield: false      # Use ORCA safe_action_node
-safety_min_dist: 0.3          # Emergency stop distance (meters)
+safety_min_dist: 0.3          # Emergency stop distance (metres)

@@ -26,8 +26,10 @@ import tf.transformations
 
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point, PoseStamped, TwistStamped, Quaternion
+from sensor_msgs.msg import PointCloud2, PointField
 from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import Bool, Empty, Float64
+from std_msgs.msg import Bool, Empty, Float64, String
+import struct
 
 # Conditional PX4 imports
 try:
@@ -105,6 +107,18 @@ class TunnelNavigator:
         )
         self.policy.eval()
         rospy.loginfo("[TunnelNav] Policy loaded successfully.")
+
+        # Log all configuration parameters
+        rospy.loginfo(f"[TunnelNav] === Configuration ===")
+        rospy.loginfo(f"[TunnelNav]   takeoff_height : {self.cfg.takeoff_height} m")
+        rospy.loginfo(f"[TunnelNav]   control_freq   : {self.cfg.control_freq} Hz")
+        rospy.loginfo(f"[TunnelNav]   action_limit   : {self.cfg.action_limit} m/s")
+        rospy.loginfo(f"[TunnelNav]   safety_min_dist: {self.cfg.safety_min_dist} m")
+        rospy.loginfo(f"[TunnelNav]   user_model     : {'simple' if self.cfg.user_model_simple else 'perlin'} @ {self.cfg.user_model_speed} m/s")
+        rospy.loginfo(f"[TunnelNav]   lidar          : {self.cfg.lidar_hbeams}h x {self.cfg.lidar_vbeams}v, range={self.cfg.lidar_range}m")
+        rospy.loginfo(f"[TunnelNav]   deterministic  : {self.cfg.deterministic}")
+        rospy.loginfo(f"[TunnelNav]   height_control : {self.cfg.height_control}")
+        rospy.loginfo(f"[TunnelNav] ===================")
 
         # ---- User model (human-action generator) ----
         self.user_model = UserModelTunnel(
@@ -191,11 +205,17 @@ class TunnelNavigator:
         self.raycast_vis_pub = rospy.Publisher(
             "/tunnel_nav/raycast_vis", MarkerArray, queue_size=2
         )
+        self.lidar_cloud_pub = rospy.Publisher(
+            "/tunnel_nav/lidar_cloud", PointCloud2, queue_size=2
+        )
         self.cmd_vis_pub = rospy.Publisher(
             "/tunnel_nav/cmd_vel_vis", MarkerArray, queue_size=2
         )
         self.human_cmd_vis_pub = rospy.Publisher(
             "/tunnel_nav/human_cmd_vis", MarkerArray, queue_size=2
+        )
+        self.status_pub = rospy.Publisher(
+            "/tunnel_nav/status", String, queue_size=2
         )
 
     # ==================================================================
@@ -242,6 +262,9 @@ class TunnelNavigator:
             self.raypoints = pts
             if not self.ready and len(pts) > 0:
                 self.ready = True
+
+            # Publish LiDAR points as PointCloud2 for RViz
+            self._publish_lidar_cloud(pts)
         except rospy.ServiceException as e:
             rospy.logwarn_throttle(5.0, f"[TunnelNav] RayCast service error: {e}")
 
@@ -355,6 +378,17 @@ class TunnelNavigator:
 
         # 4. Visualise
         self._publish_vis(cmd, human_action.squeeze(0).cpu().numpy())
+
+        # 5. Publish status
+        pos = self.odom.pose.pose.position
+        min_d = min((np.linalg.norm(np.array(p) - np.array([pos.x, pos.y, pos.z]))
+                     for p in self.raypoints), default=float("inf"))
+        status_msg = (
+            f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+            f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] | "
+            f"min_d={min_d:.2f} | safe={'NO' if self.safety_stop else 'OK'}"
+        )
+        self.status_pub.publish(String(data=status_msg))
 
     # ==================================================================
     # Command publishers
@@ -497,6 +531,33 @@ class TunnelNavigator:
         q = self.odom.pose.pose.orientation
         _, _, yaw = tf.transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
         return yaw
+
+    # ==================================================================
+    # LiDAR PointCloud2 Visualisation
+    # ==================================================================
+    def _publish_lidar_cloud(self, pts):
+        """Publish raycast hit-points as PointCloud2 for RViz."""
+        if not pts:
+            return
+        msg = PointCloud2()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = "map"
+        msg.height = 1
+        msg.width = len(pts)
+        msg.fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        ]
+        msg.is_bigendian = False
+        msg.point_step = 12
+        msg.row_step = 12 * len(pts)
+        msg.is_dense = True
+        buf = bytearray()
+        for p in pts:
+            buf.extend(struct.pack("fff", p[0], p[1], p[2]))
+        msg.data = bytes(buf)
+        self.lidar_cloud_pub.publish(msg)
 
     # ==================================================================
     # Visualisation

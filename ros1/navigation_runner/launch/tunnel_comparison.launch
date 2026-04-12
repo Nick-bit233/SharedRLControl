@@ -2,7 +2,7 @@
     <!-- ============================================================ -->
     <!-- Tunnel Comparison: unified launcher for RL vs IPC            -->
     <!-- Usage: roslaunch navigation_runner tunnel_comparison.launch   -->
-    <!--        method:=rl   (or method:=ipc)                        -->
+    <!--        method:=rl   (or method:=ipc)  gui:=true             -->
     <!-- ============================================================ -->
 
     <arg name="method" default="rl" doc="rl or ipc"/>
@@ -10,7 +10,7 @@
     <arg name="tunnel_map"
          default="$(find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd"/>
     <arg name="checkpoint"
-         default="$(find navigation_runner)/checkpoints/curriculum_stage5/2026-03-24_14-02-37/wandb/run-20260324_140244-w85uemxv/files/checkpoint_best.pt"/>
+         default="$(find navigation_runner)/cfg/tunnel/checkpoint_best.pt"/>
     <arg name="trial_id" default="0"/>
     <arg name="record" default="true"/>
     <arg name="rviz" default="true"/>
@@ -31,14 +31,13 @@
         <node pkg="map_manager" type="occupancy_map_node" name="occupancy_map_node"
               output="screen"/>
 
-        <!-- RL Navigation Node -->
+        <!-- RL Navigation Node: loads all params from tunnel_nav_param.yaml,
+             then overrides checkpoint_path and device from launch args -->
         <node pkg="navigation_runner" type="tunnel_navigation.py"
               name="tunnel_navigator" output="screen">
             <rosparam file="$(find navigation_runner)/cfg/tunnel/tunnel_nav_param.yaml"/>
             <param name="checkpoint_path" value="$(arg checkpoint)"/>
             <param name="device" value="$(arg device)"/>
-            <param name="use_px4" value="false"/>
-            <param name="user_model_simple" value="true"/>
         </node>
     </group>
 
