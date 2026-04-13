@@ -18,48 +18,101 @@ In Gazebo (ROS), the drone faces +X, so:
 
 The terrain has a clear spawn zone at the -X end:
     X ∈ [-12, -6] : cleared (no obstacles), drone spawns at X≈-8
-    X ∈ [-6, +12] : obstacle zone (18m of random cylinders)
+    X ∈ [-6, +12] : obstacle zone (18m of mixed cuboid/cylinder obstacles)
     Back wall at X ≈ -10 (behind drone)
     Side walls at Y = ±6
 
+Obstacle types (mixed, similar to slope_inspection/mockamap):
+    - Cylinders:  circular cross-section, random radius
+    - Cuboids:    rectangular cross-section, random side lengths
+
+A spawn protection zone (3m radius around spawn) is kept obstacle-free.
+
 Usage:
-    python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
+    python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42 -n 60
 """
 import argparse
 import numpy as np
-from typing import List, Tuple
+from typing import List, NamedTuple
+
+
+class Obstacle(NamedTuple):
+    """One obstacle in the tunnel."""
+    cx: float          # centre X
+    cy: float          # centre Y
+    shape: str         # 'cylinder' or 'cuboid'
+    # For cylinder: size_x = size_y = diameter; for cuboid: independent
+    size_x: float      # full extent along X
+    size_y: float      # full extent along Y
+    height: float      # Z extent (from ground)
+
+
+# ── Protection zone around spawn point ──────────────────────────────
+SPAWN_X = -8.0
+SPAWN_Y = 0.0
+SPAWN_PROTECT_RADIUS = 3.0  # no obstacles within this radius of spawn
+
+
+def _in_protection_zone(cx: float, cy: float, half_size: float) -> bool:
+    """True if an obstacle (approximated as circle with given half_size) overlaps
+    the spawn protection zone."""
+    dx = cx - SPAWN_X
+    dy = cy - SPAWN_Y
+    dist = np.sqrt(dx * dx + dy * dy)
+    return dist < (SPAWN_PROTECT_RADIUS + half_size)
 
 
 def generate_obstacle_params(
-    num_obstacles: int = 170,
+    num_obstacles: int = 60,
     x_half: float = 12.0,
     y_half: float = 6.0,
     z_max: float = 10.0,
     obstacle_width_range: tuple = (0.4, 1.1),
     obstacle_height_range: tuple = (4.0, 10.0),
     obstacle_zone_x_min: float = -6.0,
+    cuboid_ratio: float = 0.5,
     seed: int = 42,
-) -> List[Tuple[float, float, float, float]]:
+) -> List[Obstacle]:
     """
-    Generate obstacle parameters: list of (cx, cy, radius, height).
-    Obstacles are placed only in the obstacle zone (x >= obstacle_zone_x_min).
+    Generate a mixed list of cylinder and cuboid obstacle parameters.
+    Obstacles are placed only in the obstacle zone (x >= obstacle_zone_x_min)
+    and outside the spawn protection zone.
     Deterministic given the seed.
     """
     rng = np.random.RandomState(seed)
     margin = 1.0  # keep obstacles 1m from walls
 
-    obstacles = []
-    for _ in range(num_obstacles):
+    obstacles: List[Obstacle] = []
+    attempts = 0
+    max_attempts = num_obstacles * 10
+
+    while len(obstacles) < num_obstacles and attempts < max_attempts:
+        attempts += 1
         cx = rng.uniform(obstacle_zone_x_min + margin, x_half - margin)
         cy = rng.uniform(-y_half + margin, y_half - margin)
-        radius = rng.uniform(*obstacle_width_range) / 2.0
         height = min(rng.uniform(*obstacle_height_range), z_max)
-        obstacles.append((cx, cy, radius, height))
+
+        if rng.random() < cuboid_ratio:
+            # Cuboid: independent X/Y side lengths
+            sx = rng.uniform(*obstacle_width_range)
+            sy = rng.uniform(*obstacle_width_range)
+            half = max(sx, sy) / 2.0
+            if _in_protection_zone(cx, cy, half):
+                continue
+            obstacles.append(Obstacle(cx, cy, 'cuboid', sx, sy, height))
+        else:
+            # Cylinder
+            diameter = rng.uniform(*obstacle_width_range)
+            radius = diameter / 2.0
+            if _in_protection_zone(cx, cy, radius):
+                continue
+            obstacles.append(Obstacle(cx, cy, 'cylinder', diameter, diameter, height))
+
     return obstacles
 
 
 def generate_tunnel_map(
-    num_obstacles: int = 170,
+    num_obstacles: int = 60,
     x_half: float = 12.0,
     y_half: float = 6.0,
     z_half: float = 5.0,
@@ -67,6 +120,7 @@ def generate_tunnel_map(
     obstacle_width_range: tuple = (0.4, 1.1),
     obstacle_height_range: tuple = (4.0, 10.0),
     obstacle_zone_x_min: float = -6.0,
+    cuboid_ratio: float = 0.5,
     seed: int = 42,
 ) -> np.ndarray:
     """
@@ -110,30 +164,59 @@ def generate_tunnel_map(
     ])
     points.append(back_wall)
 
-    # Cylindrical obstacles (only in obstacle zone)
+    # Mixed obstacles (cylinders + cuboids)
     obstacles = generate_obstacle_params(
         num_obstacles, x_half, y_half, z_max,
         obstacle_width_range, obstacle_height_range,
-        obstacle_zone_x_min, seed)
+        obstacle_zone_x_min, cuboid_ratio, seed)
 
-    for cx, cy, radius, height in obstacles:
-        n_theta = max(8, int(2 * np.pi * radius / resolution))
-        n_z = max(2, int(height / resolution))
-        thetas = np.linspace(0, 2 * np.pi, n_theta, endpoint=False)
-        zs = np.linspace(0, height, n_z)
-        tt, zzc = np.meshgrid(thetas, zs)
-        cyl_x = cx + radius * np.cos(tt.ravel())
-        cyl_y = cy + radius * np.sin(tt.ravel())
-        cyl_z = zzc.ravel()
+    for obs in obstacles:
+        if obs.shape == 'cylinder':
+            radius = obs.size_x / 2.0
+            n_theta = max(8, int(2 * np.pi * radius / resolution))
+            n_z = max(2, int(obs.height / resolution))
+            thetas = np.linspace(0, 2 * np.pi, n_theta, endpoint=False)
+            zs = np.linspace(0, obs.height, n_z)
+            tt, zzc = np.meshgrid(thetas, zs)
+            ox = obs.cx + radius * np.cos(tt.ravel())
+            oy = obs.cy + radius * np.sin(tt.ravel())
+            oz = zzc.ravel()
+        else:
+            # Cuboid: hollow shell (surface points only, like mockamap)
+            hx, hy = obs.size_x / 2.0, obs.size_y / 2.0
+            n_z = max(2, int(obs.height / resolution))
+            n_x = max(2, int(obs.size_x / resolution))
+            n_y = max(2, int(obs.size_y / resolution))
+            zs = np.linspace(0, obs.height, n_z)
+
+            face_pts = []
+            # X-faces (front/back of cuboid)
+            for sign in [-1, 1]:
+                y_arr = np.linspace(-hy, hy, n_y)
+                yf, zf = np.meshgrid(y_arr, zs)
+                xf = np.full_like(yf, obs.cx + sign * hx)
+                face_pts.append(np.column_stack([xf.ravel(),
+                                                  (obs.cy + yf).ravel(),
+                                                  zf.ravel()]))
+            # Y-faces (left/right of cuboid)
+            for sign in [-1, 1]:
+                x_arr = np.linspace(-hx, hx, n_x)
+                xf, zf = np.meshgrid(x_arr, zs)
+                yf = np.full_like(xf, obs.cy + sign * hy)
+                face_pts.append(np.column_stack([(obs.cx + xf).ravel(),
+                                                  yf.ravel(),
+                                                  zf.ravel()]))
+            combined = np.vstack(face_pts)
+            ox, oy, oz = combined[:, 0], combined[:, 1], combined[:, 2]
 
         mask = (
-            (cyl_x >= -x_half) & (cyl_x <= x_half)
-            & (cyl_y >= -y_half) & (cyl_y <= y_half)
-            & (cyl_z >= 0) & (cyl_z <= z_max)
+            (ox >= -x_half) & (ox <= x_half)
+            & (oy >= -y_half) & (oy <= y_half)
+            & (oz >= 0) & (oz <= z_max)
         )
-        cyl = np.column_stack([cyl_x[mask], cyl_y[mask], cyl_z[mask]])
-        if cyl.shape[0] > 0:
-            points.append(cyl)
+        obs_pts = np.column_stack([ox[mask], oy[mask], oz[mask]])
+        if obs_pts.shape[0] > 0:
+            points.append(obs_pts)
 
     return np.vstack(points)
 
@@ -162,19 +245,19 @@ def write_pcd(filepath: str, points: np.ndarray):
 
 def write_gazebo_world(
     filepath: str,
-    obstacles: List[Tuple[float, float, float, float]],
+    obstacles: List[Obstacle],
     x_half: float = 12.0,
     y_half: float = 6.0,
     z_max: float = 10.0,
 ):
     """
-    Write a Gazebo SDF world file with obstacles matching the PCD.
+    Write a Gazebo SDF world file with mixed obstacles matching the PCD.
 
     Creates:
       - Ground plane
       - Side walls at Y = ±y_half
       - Back wall at X ≈ -x_half + 2
-      - Cylindrical obstacles at the same positions as the PCD
+      - Cylinder and cuboid obstacles at the same positions as the PCD
       - No ceiling (better Gazebo visibility; lidar_sim handles ceiling via PCD)
     """
     wall_thickness = 0.3
@@ -230,8 +313,8 @@ def write_gazebo_world(
     </model>
 """)
 
-    wall_len_x = x_half * 2  # length of side walls along X
-    wall_len_y = y_half * 2  # length of back wall along Y
+    wall_len_x = x_half * 2
+    wall_len_y = y_half * 2
     wall_h = z_max
 
     # Side walls (Y = ±y_half)
@@ -254,7 +337,7 @@ def write_gazebo_world(
     </model>
 """)
 
-    # Back wall at X ≈ -x_half + 2.0 (behind spawn zone)
+    # Back wall at X ≈ -x_half + 2.0
     back_wall_x = -x_half + 2.0
     lines.append(f"""
     <!-- back_wall at X={back_wall_x:.1f} -->
@@ -273,23 +356,45 @@ def write_gazebo_world(
     </model>
 """)
 
-    # Cylindrical obstacles
-    for i, (cx, cy, radius, height) in enumerate(obstacles):
-        lines.append(f"""
-    <model name='cyl_{i}'>
+    # Mixed obstacles
+    n_cyl = 0
+    n_box = 0
+    for obs in obstacles:
+        if obs.shape == 'cylinder':
+            radius = obs.size_x / 2.0
+            lines.append(f"""
+    <model name='cyl_{n_cyl}'>
       <static>1</static>
-      <pose>{cx:.6f} {cy:.6f} {height/2:.6f} 0 0 0</pose>
+      <pose>{obs.cx:.6f} {obs.cy:.6f} {obs.height/2:.6f} 0 0 0</pose>
       <link name='link'>
         <collision name='collision'>
-          <geometry><cylinder><radius>{radius:.6f}</radius><length>{height:.6f}</length></cylinder></geometry>
+          <geometry><cylinder><radius>{radius:.6f}</radius><length>{obs.height:.6f}</length></cylinder></geometry>
         </collision>
         <visual name='visual'>
-          <geometry><cylinder><radius>{radius:.6f}</radius><length>{height:.6f}</length></cylinder></geometry>
+          <geometry><cylinder><radius>{radius:.6f}</radius><length>{obs.height:.6f}</length></cylinder></geometry>
           <material><ambient>0.6 0.3 0.1 1</ambient></material>
         </visual>
       </link>
     </model>
 """)
+            n_cyl += 1
+        else:
+            lines.append(f"""
+    <model name='box_{n_box}'>
+      <static>1</static>
+      <pose>{obs.cx:.6f} {obs.cy:.6f} {obs.height/2:.6f} 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>{obs.size_x:.6f} {obs.size_y:.6f} {obs.height:.6f}</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>{obs.size_x:.6f} {obs.size_y:.6f} {obs.height:.6f}</size></box></geometry>
+          <material><ambient>0.3 0.3 0.6 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+""")
+            n_box += 1
 
     lines.append("""
   </world>
@@ -299,6 +404,8 @@ def write_gazebo_world(
     with open(filepath, "w") as f:
         f.write("".join(lines))
 
+    return n_cyl, n_box
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -307,8 +414,11 @@ def main():
                         help="Output PCD file path")
     parser.add_argument("--world-output", "-w", default=None,
                         help="Output Gazebo .world file (optional)")
-    parser.add_argument("--num-obstacles", "-n", type=int, default=170,
-                        help="Number of random cylindrical obstacles (stage5=170)")
+    parser.add_argument("--num-obstacles", "-n", type=int, default=60,
+                        help="Number of obstacles (default=60)")
+    parser.add_argument("--cuboid-ratio", type=float, default=0.5,
+                        help="Fraction of cuboid obstacles (0.0=all cylinders, "
+                             "1.0=all cuboids, default=0.5)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resolution", type=float, default=0.1,
                         help="Point spacing (metres)")
@@ -327,7 +437,10 @@ def main():
     print(f"Obstacle zone: X∈[{obstacle_zone_x_min},{x_half}] "
           f"({x_half - obstacle_zone_x_min:.0f}m × {y_half*2:.0f}m)")
     print(f"Spawn zone: X∈[-{x_half},{obstacle_zone_x_min}] (clear)")
-    print(f"Obstacles: {args.num_obstacles}, seed={args.seed}")
+    print(f"Spawn protection: {SPAWN_PROTECT_RADIUS}m radius around "
+          f"({SPAWN_X}, {SPAWN_Y})")
+    print(f"Obstacles: {args.num_obstacles} (cuboid ratio={args.cuboid_ratio}), "
+          f"seed={args.seed}")
 
     # Generate PCD
     pts = generate_tunnel_map(
@@ -335,6 +448,7 @@ def main():
         x_half=x_half, y_half=y_half, z_half=z_half,
         resolution=args.resolution,
         obstacle_zone_x_min=obstacle_zone_x_min,
+        cuboid_ratio=args.cuboid_ratio,
         seed=args.seed,
     )
     print(f"  Total points: {pts.shape[0]:,}")
@@ -347,12 +461,14 @@ def main():
             num_obstacles=args.num_obstacles,
             x_half=x_half, y_half=y_half, z_max=z_max,
             obstacle_zone_x_min=obstacle_zone_x_min,
+            cuboid_ratio=args.cuboid_ratio,
             seed=args.seed,
         )
-        write_gazebo_world(args.world_output, obstacles,
-                           x_half=x_half, y_half=y_half, z_max=z_max)
+        n_cyl, n_box = write_gazebo_world(
+            args.world_output, obstacles,
+            x_half=x_half, y_half=y_half, z_max=z_max)
         print(f"  World written to: {args.world_output} "
-              f"({len(obstacles)} cylinders + 3 walls)")
+              f"({n_cyl} cylinders + {n_box} cuboids + 3 walls)")
 
 
 if __name__ == "__main__":
