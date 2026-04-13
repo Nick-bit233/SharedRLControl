@@ -5,9 +5,10 @@
 
 ## 概览
 
-本部署包提供两个功能：
+本部署包提供三个功能：
 1. **RL 部署**：将 `ConstrainedResidualPPO` 策略网络部署到 ROS1/Gazebo 仿真环境
 2. **RL vs IPC 对比**：在相同 CERLAB Gazebo 仿真器和同一隧道地图中，对比 RL 策略和 slope_inspection IPC 算法
+3. **键盘控制模式**：用键盘提供人类输入指令，可实时切换 RL 辅助，用于交互式调试和演示
 
 **对比实验架构：**
 ```
@@ -85,9 +86,58 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 | `checkpoint` | `cfg/tunnel/checkpoint_best.pt` | RL 模型路径 |
 | `tunnel_map` | `cfg/tunnel/tunnel_map_default.pcd` | 隧道 PCD 地图 |
 | `device` | `cpu` | `cpu` 或 `cuda:0` |
+| `keyboard` | `false` | 键盘控制模式（仅 RL） |
 | `rviz` | `true` | 启动 RViz |
 | `record` | `true` | 记录飞行数据 |
 | `output_dir` | `/tmp/flight_data` | 数据输出目录 |
+
+### 1.5 键盘控制模式
+
+键盘模式用人类实时输入替代程序化的 UserModelTunnel，可随时开关 RL 辅助。
+
+```bash
+# 需要 xterm（容器内已安装）和 X11 显示
+roslaunch navigation_runner tunnel_comparison.launch method:=rl keyboard:=true gui:=true
+```
+
+启动后会自动打开一个 xterm 终端窗口用于键盘控制。操作流程：
+
+1. **等待 Gazebo 和各节点就绪**（控制台出现 `[TunnelNav] KEYBOARD MODE`）
+2. **聚焦 xterm 窗口**，按 `T` 键触发起飞
+3. 起飞完成后，使用 WASD/QE 手动控制无人机
+4. 按 `R` 键开启 RL 辅助 — 策略会修正你的键盘输入
+5. 再按 `R` 关闭 RL 辅助，回到纯键盘控制
+6. 按 `ESC` 退出
+
+**键位表：**
+
+| 按键 | 功能 |
+|------|------|
+| W/S | 前进/后退（body X） |
+| A/D | 左移/右移（body Y） |
+| Q/E | 上升/下降（body Z） |
+| T | 起飞 |
+| R | 切换 RL 辅助 |
+| ESC | 退出 |
+
+**不使用 launch（手动启动）：**
+
+```bash
+# 终端 A: 先启动 Gazebo + RL 节点
+roslaunch navigation_runner tunnel_comparison.launch method:=rl keyboard:=true gui:=true
+
+# 或者手动启动 teleop 节点（如果不使用 xterm launch-prefix）
+rosrun navigation_runner tunnel_keyboard_teleop.py
+```
+
+**相关话题：**
+
+| 话题 | 类型 | 说明 |
+|------|------|------|
+| `/tunnel_nav/user_cmd` | TwistStamped | 键盘→导航节点的速度指令 |
+| `/tunnel_nav/takeoff_cmd` | Empty | 起飞触发 |
+| `/tunnel_nav/assist_toggle` | Empty | RL 辅助开关 |
+| `/tunnel_nav/assist_active` | Bool | 当前 RL 辅助状态（latched） |
 
 ## 2. 分步调试
 

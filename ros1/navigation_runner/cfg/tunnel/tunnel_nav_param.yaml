@@ -22,7 +22,8 @@ use_px4: false                # true for PX4/MAVROS, false for CERLAB Gazebo
 height_control: true          # true = 3D velocity, false = hold takeoff_height
 takeoff_height: 4.0           # metres (CERLAB plugin default hover height)
 
-# --- User model (forward command generator) ---
+# --- User model / keyboard mode ---
+keyboard_mode: false              # true = keyboard teleop as human input; false = UserModelTunnel
 user_model_simple: true       # true = constant forward speed; false = Perlin noise
 user_model_speed: 2.0         # m/s forward speed
 user_model_freq_base: 0.1     # Perlin noise base frequency (online mode only)

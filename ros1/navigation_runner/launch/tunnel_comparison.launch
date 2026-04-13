@@ -7,6 +7,7 @@
 
     <arg name="method" default="rl" doc="rl or ipc"/>
     <arg name="gui" default="false" doc="Show Gazebo GUI (requires X11 display)"/>
+    <arg name="keyboard" default="false" doc="Keyboard teleop mode (RL only)"/>
     <arg name="tunnel_map"
          default="$(find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd"/>
     <arg name="checkpoint"
@@ -18,7 +19,7 @@
     <arg name="output_dir" default="/tmp/flight_data"/>
 
     <!-- Spawn position: in the clear zone (X∈[-12,-6]), matching IsaacSim X=-7 -->
-    <arg name="spawn_x" default="-8.0"/>
+    <arg name="spawn_x" default="-10.0"/>
     <arg name="spawn_y" default="0.0"/>
     <arg name="spawn_z" default="0.1"/>
 
@@ -58,6 +59,17 @@
             <rosparam file="$(find navigation_runner)/cfg/tunnel/tunnel_nav_param.yaml"/>
             <param name="checkpoint_path" value="$(arg checkpoint)"/>
             <param name="device" value="$(arg device)"/>
+            <param name="keyboard_mode" value="$(arg keyboard)"/>
+        </node>
+
+        <!-- Keyboard teleop node (only in keyboard mode) -->
+        <node if="$(arg keyboard)"
+              pkg="navigation_runner" type="tunnel_keyboard_teleop.py"
+              name="tunnel_keyboard_teleop" output="screen"
+              launch-prefix="xterm -e">
+            <param name="linear_speed" value="2.0"/>
+            <param name="vertical_speed" value="1.0"/>
+            <param name="rate" value="20"/>
         </node>
     </group>
 
