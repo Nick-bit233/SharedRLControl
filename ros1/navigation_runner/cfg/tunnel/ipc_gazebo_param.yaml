@@ -23,7 +23,7 @@ fsm:
   yaw_gain:      1.0
   init_goal_x:   0.0
   init_goal_y:   0.0
-  init_goal_z:   1.0       # relative: hover 1m above takeoff position
+  init_goal_z:   3.9       # relative: hover ~4m (matching RL takeoff_height=4.0)
   pilot_vw:      2.0
   pilot_vx:      2.0
   pilot_vy:      2.0

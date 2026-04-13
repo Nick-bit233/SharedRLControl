@@ -289,6 +289,32 @@ action = tanh(loc) × action_limit                   → 世界帧 m/s
 - **四元数**: 训练使用 [w,x,y,z]（scalar-first），ROS 使用 [x,y,z,w]，导航节点内部自动转换
 - **cmd_vel**: 策略输出世界帧速度 → 用 yaw 旋转矩阵转为 body 帧 → 发布给 CERLAB 插件
 
+### 6.3.1 隧道地图坐标系
+
+PCD 地图和 Gazebo 世界**必须**使用同一坐标系（世界帧 ENU）。
+
+**PCD 地图 (`tunnel_map_default.pcd`)**:
+- 由 `scripts/tunnel_deployment/generate_tunnel_map.py --seed 42` 生成
+- 半轴范围：X ∈ [-6, 6]，Y ∈ [-12, 12]，Z ∈ [0, 10]
+- 包含：地面、天花板、Y=±12 侧壁、170 个随机圆柱障碍物
+- 匹配 IsaacSim 训练环境 `map_range = [6.0, 12.0, 5.0]`
+
+**Gazebo 世界 (`tunnel_pcd_match_static.world`)**:
+- 由同一脚本 `--world-output` 生成（同 seed=42，障碍物位置完全一致）
+- 包含：地面、侧壁、170 个圆柱模型
+- 无天花板（Gazebo 中方便观察；lidar_sim 通过 PCD 处理天花板检测）
+
+**无人机出生位置**: (-5.0, 0.0, 0.1)，yaw=0（朝 +X 方向）
+
+**重新生成**:
+```bash
+cd ros1/navigation_runner/scripts/tunnel_deployment
+python3 generate_tunnel_map.py \
+  -o ../../cfg/tunnel/tunnel_map_default.pcd \
+  -w ../../../uav_simulator/worlds/generated_env/tunnel_pcd_match_static.world \
+  --seed 42
+```
+
 ### 6.4 控制流程（tunnel_navigation.py 主循环）
 
 ```
@@ -412,7 +438,9 @@ ros1/uav_simulator/
 ├── launch/
 │   ├── start.launch                  # Gazebo（带 GUI）
 │   └── start_headless.launch         # Gazebo（支持 headless 模式）
-├── worlds/tunnel/                    # 隧道 Gazebo 世界文件
+├── worlds/
+│   └── generated_env/
+│       └── tunnel_pcd_match_static.world  # 由 generate_tunnel_map.py 生成，与 PCD 匹配
 ├── plugins/libquadcopterPlugin.so    # CERLAB 四旋翼 Gazebo 插件
 └── scripts/entrypoint.sh             # Docker 智能入口（Xvfb/X11 检测）
 
@@ -499,6 +527,17 @@ docker-compose.tunnel.yml             # 持久化开发容器
 - 确认 `lidar_sim_node` 在运行：`rosnode info /lidar_sim`
 - 确认点云发布：`rostopic hz /pcl_render_node/cloud`（应 ~10Hz）
 - 确认 OccMap 使用 pointcloud 模式：`rosparam get /occupancy_map/sensor_input_mode`（应为 1）
+
+### Q: LiDAR 点云与 Gazebo 障碍物不一致
+
+**原因**：PCD 文件和 Gazebo 世界使用不同的障碍物布局。`lidar_sim_node` 从 PCD 生成点云，
+而 Gazebo 的深度相机 (`/camera/depth/points`) 渲染实际世界模型。
+
+**解决方案**：使用 `generate_tunnel_map.py --world-output` 同时生成 PCD 和匹配的 Gazebo 世界：
+```bash
+python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
+```
+确保 `tunnel_comparison.launch` 使用 `tunnel_pcd_match_static.world`（已默认配置）。
 
 ### Q: Docker 中 Gazebo 卡住
 

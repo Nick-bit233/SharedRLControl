@@ -17,9 +17,20 @@
     <arg name="device" default="cpu"/>
     <arg name="output_dir" default="/tmp/flight_data"/>
 
+    <!-- Spawn position: inside the tunnel near -X entrance -->
+    <arg name="spawn_x" default="-5.0"/>
+    <arg name="spawn_y" default="0.0"/>
+    <arg name="spawn_z" default="0.1"/>
+
     <!-- ===== Shared: Gazebo CERLAB Simulator ===== -->
+    <!-- Uses the auto-generated world that matches the PCD obstacle map -->
     <include file="$(find uav_simulator)/launch/start_headless.launch">
         <arg name="gui" value="$(arg gui)"/>
+        <arg name="world_name"
+             value="$(find uav_simulator)/worlds/generated_env/tunnel_pcd_match_static.world"/>
+        <arg name="spawn_x" value="$(arg spawn_x)"/>
+        <arg name="spawn_y" value="$(arg spawn_y)"/>
+        <arg name="spawn_z" value="$(arg spawn_z)"/>
     </include>
 
     <!-- ===== RL Mode ===== -->
@@ -69,7 +80,7 @@
             <param name="trial_id" value="$(arg trial_id)"/>
             <param name="output_dir" value="$(arg output_dir)"/>
             <param name="rate" value="50"/>
-            <param name="goal_x" value="15.0"/>
+            <param name="goal_x" value="5.0"/>
         </node>
     </group>
 
