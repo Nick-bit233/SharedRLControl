@@ -480,9 +480,14 @@ docker-compose.tunnel.yml             # 持久化开发容器
 **可能原因 1**: RC 消息时序问题 — `rc_sim_node` 在仿真时间 0 时发送消息导致 IPC 的 RCCallback 访问空向量。
 - 已修复：`rc_sim_node.py` 等待仿真时间 > 2s 后再发布
 
-**可能原因 2**: ROG Map 边界 — 无人机生成位置 (-15,0,0.1) 不在 ROG Map 范围内，导致 `boxSearch` 在空地图上崩溃。
-- 已修复：`ipc_gazebo_param.yaml` 中 `map_size` 从 [15,25,5] 增加到 [50,30,10]
-- 验证：日志中不应出现 `cur_pose out of map range`
+**可能原因 2**: `rog_map/map_size` 过大导致 A* 内存爆炸 — IPC 的 A* 路径规划器用 `rog_map` 的 `map_size_d` 和 `inflation_resolution` 来分配网格：
+  `GL_SIZE = (map_size / resolution + 1)^3`，每个 GridNode 约 64 字节 + malloc 开销。
+  - `[50,30,10]` @ 0.15 → 4,499,538 节点 ≈ 360MB — **导致崩溃**
+  - `[10,10,5]` @ 0.15 → 157,216 节点 ≈ 10MB — 安全
+  - 原版 slope_inspection 使用 `[8,8,4]` + `map_sliding: true`，地图自动跟随无人机
+- 已修复：`map_size` 从 [50,30,10] 回退到 [10,10,5]，配合 `map_sliding: true`
+- 首次 `updateMap` 时会打印 `cur_pose out of map range, reset the map` — 这是正常行为（地图滑动到无人机位置）
+- 验证：日志中 `GL_SIZE_` 应为约 `68 68 34`
 
 ### Q: RL 模式 OccMap 报错 "Please check body to camera matrix!"
 
