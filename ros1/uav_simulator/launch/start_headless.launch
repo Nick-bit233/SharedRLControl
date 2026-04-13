@@ -5,7 +5,7 @@
   <arg name="verbose" default="false"/>
   <arg name="use_sim_time" default="true"/>
   <arg name="debug" default="false"/>
-  <arg name="spawn_x" default="-15.0"/>
+  <arg name="spawn_x" default="-8.0"/>
   <arg name="spawn_y" default="0.0"/>
   <arg name="spawn_z" default="0.1"/>
   <arg name="spawn_Y" default="0.0"/>

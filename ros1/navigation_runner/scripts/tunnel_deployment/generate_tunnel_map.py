@@ -2,19 +2,28 @@
 """
 Generate a tunnel obstacle map as PCD + matching Gazebo world.
 
-Matches the IsaacSim training environment (EnvTunnelResidual):
-  - Half-extents: map_range = [6.0, 12.0, 5.0]  (x, y, z)
-  - Corridor: X ∈ [-6, 6], Y ∈ [-12, 12], Z ∈ [0, 10]
-  - Random cylindrical obstacles scattered inside
-  - Ground plane and ceiling
-  - Side walls
+Matches the IsaacSim training environment (EnvTunnelResidual).
 
-Outputs:
-  - ASCII PCD file for lidar_sim_node / map_manager
-  - Gazebo SDF .world file with matching obstacles (--world-output)
+In IsaacSim, the terrain is generated with:
+    TerrainGeneratorCfg(size=(24.0, 12.0), ...)
+    map_range = [6.0, 12.0, 5.0]  # config [x, y, z] half-extents
+    -> [y, x, z] in isaacsim coordinates (axes swapped)
+
+The FORWARD (travel) direction is 24m, LATERAL is 12m, HEIGHT is 10m.
+
+In Gazebo (ROS), the drone faces +X, so:
+    X = forward (24m) :  [-12, 12]
+    Y = lateral (12m) :  [-6, 6]
+    Z = vertical (10m):  [0, 10]
+
+The terrain has a clear spawn zone at the -X end:
+    X ∈ [-12, -6] : cleared (no obstacles), drone spawns at X≈-8
+    X ∈ [-6, +12] : obstacle zone (18m of random cylinders)
+    Back wall at X ≈ -10 (behind drone)
+    Side walls at Y = ±6
 
 Usage:
-    python3 generate_tunnel_map.py -o tunnel_map.pcd --world-output tunnel.world
+    python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
 """
 import argparse
 import numpy as np
@@ -23,23 +32,26 @@ from typing import List, Tuple
 
 def generate_obstacle_params(
     num_obstacles: int = 170,
-    map_range: tuple = (6.0, 12.0, 5.0),
+    x_half: float = 12.0,
+    y_half: float = 6.0,
+    z_max: float = 10.0,
     obstacle_width_range: tuple = (0.4, 1.1),
     obstacle_height_range: tuple = (4.0, 10.0),
+    obstacle_zone_x_min: float = -6.0,
     seed: int = 42,
 ) -> List[Tuple[float, float, float, float]]:
     """
     Generate obstacle parameters: list of (cx, cy, radius, height).
+    Obstacles are placed only in the obstacle zone (x >= obstacle_zone_x_min).
     Deterministic given the seed.
     """
     rng = np.random.RandomState(seed)
-    x_half, y_half, z_half = map_range
-    z_max = z_half * 2
+    margin = 1.0  # keep obstacles 1m from walls
 
     obstacles = []
     for _ in range(num_obstacles):
-        cx = rng.uniform(-x_half + 1.0, x_half - 1.0)
-        cy = rng.uniform(-y_half + 1.0, y_half - 1.0)
+        cx = rng.uniform(obstacle_zone_x_min + margin, x_half - margin)
+        cy = rng.uniform(-y_half + margin, y_half - margin)
         radius = rng.uniform(*obstacle_width_range) / 2.0
         height = min(rng.uniform(*obstacle_height_range), z_max)
         obstacles.append((cx, cy, radius, height))
@@ -48,23 +60,25 @@ def generate_obstacle_params(
 
 def generate_tunnel_map(
     num_obstacles: int = 170,
-    map_range: tuple = (6.0, 12.0, 5.0),
+    x_half: float = 12.0,
+    y_half: float = 6.0,
+    z_half: float = 5.0,
     resolution: float = 0.1,
     obstacle_width_range: tuple = (0.4, 1.1),
     obstacle_height_range: tuple = (4.0, 10.0),
+    obstacle_zone_x_min: float = -6.0,
     seed: int = 42,
 ) -> np.ndarray:
     """
     Generate obstacle points as (N, 3) array.
 
-    Coordinate convention (matching training):
-      X: forward direction (drone travels +X)
-      Y: lateral
-      Z: vertical (up)
+    Coordinate convention (Gazebo/ROS):
+      X: forward (drone travels +X),  range [-x_half, x_half]
+      Y: lateral,                     range [-y_half, y_half]
+      Z: vertical (up),               range [0, z_max]
     """
-    points = []
-    x_half, y_half, z_half = map_range
     z_max = z_half * 2
+    points = []
 
     # Ground plane
     xs = np.arange(-x_half, x_half, resolution)
@@ -86,10 +100,21 @@ def generate_tunnel_map(
     points.append(wall_left)
     points.append(wall_right)
 
-    # Random cylindrical obstacles (same seed-based generation)
+    # Back wall at X ≈ -x_half + 2 (behind spawn zone)
+    back_wall_x = -x_half + 2.0
+    ys_bw = np.arange(-y_half, y_half, resolution)
+    zs_bw = np.arange(0, z_max, resolution)
+    yw, zw2 = np.meshgrid(ys_bw, zs_bw)
+    back_wall = np.column_stack([
+        np.full(yw.size, back_wall_x), yw.ravel(), zw2.ravel()
+    ])
+    points.append(back_wall)
+
+    # Cylindrical obstacles (only in obstacle zone)
     obstacles = generate_obstacle_params(
-        num_obstacles, map_range, obstacle_width_range,
-        obstacle_height_range, seed)
+        num_obstacles, x_half, y_half, z_max,
+        obstacle_width_range, obstacle_height_range,
+        obstacle_zone_x_min, seed)
 
     for cx, cy, radius, height in obstacles:
         n_theta = max(8, int(2 * np.pi * radius / resolution))
@@ -138,20 +163,21 @@ def write_pcd(filepath: str, points: np.ndarray):
 def write_gazebo_world(
     filepath: str,
     obstacles: List[Tuple[float, float, float, float]],
-    map_range: tuple = (6.0, 12.0, 5.0),
+    x_half: float = 12.0,
+    y_half: float = 6.0,
+    z_max: float = 10.0,
 ):
     """
     Write a Gazebo SDF world file with obstacles matching the PCD.
 
     Creates:
       - Ground plane
-      - Two side walls at Y = ±y_half
+      - Side walls at Y = ±y_half
+      - Back wall at X ≈ -x_half + 2
       - Cylindrical obstacles at the same positions as the PCD
-      - No ceiling (better visibility in Gazebo; lidar_sim handles ceiling)
+      - No ceiling (better Gazebo visibility; lidar_sim handles ceiling via PCD)
     """
-    x_half, y_half, z_half = map_range
-    z_max = z_half * 2
-    wall_thickness = 0.1
+    wall_thickness = 0.3
 
     lines = []
     lines.append("""<?xml version="1.0" ?>
@@ -204,9 +230,11 @@ def write_gazebo_world(
     </model>
 """)
 
-    # Side walls (Y = ±y_half)
-    wall_len = x_half * 2
+    wall_len_x = x_half * 2  # length of side walls along X
+    wall_len_y = y_half * 2  # length of back wall along Y
     wall_h = z_max
+
+    # Side walls (Y = ±y_half)
     for sign, name in [(-1, 'wall_left'), (1, 'wall_right')]:
         y_pos = sign * y_half
         lines.append(f"""
@@ -216,10 +244,29 @@ def write_gazebo_world(
       <pose>0 {y_pos:.4f} {wall_h/2:.4f} 0 0 0</pose>
       <link name='link'>
         <collision name='collision'>
-          <geometry><box><size>{wall_len:.4f} {wall_thickness} {wall_h:.4f}</size></box></geometry>
+          <geometry><box><size>{wall_len_x:.4f} {wall_thickness} {wall_h:.4f}</size></box></geometry>
         </collision>
         <visual name='visual'>
-          <geometry><box><size>{wall_len:.4f} {wall_thickness} {wall_h:.4f}</size></box></geometry>
+          <geometry><box><size>{wall_len_x:.4f} {wall_thickness} {wall_h:.4f}</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 0.7</ambient></material>
+        </visual>
+      </link>
+    </model>
+""")
+
+    # Back wall at X ≈ -x_half + 2.0 (behind spawn zone)
+    back_wall_x = -x_half + 2.0
+    lines.append(f"""
+    <!-- back_wall at X={back_wall_x:.1f} -->
+    <model name='back_wall'>
+      <static>1</static>
+      <pose>{back_wall_x:.4f} 0 {wall_h/2:.4f} 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>{wall_thickness} {wall_len_y:.4f} {wall_h:.4f}</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>{wall_thickness} {wall_len_y:.4f} {wall_h:.4f}</size></box></geometry>
           <material><ambient>0.5 0.5 0.5 0.7</ambient></material>
         </visual>
       </link>
@@ -260,25 +307,34 @@ def main():
                         help="Output PCD file path")
     parser.add_argument("--world-output", "-w", default=None,
                         help="Output Gazebo .world file (optional)")
-    parser.add_argument("--num_obstacles", "-n", type=int, default=170,
-                        help="Number of random cylindrical obstacles")
+    parser.add_argument("--num-obstacles", "-n", type=int, default=170,
+                        help="Number of random cylindrical obstacles (stage5=170)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resolution", type=float, default=0.1,
                         help="Point spacing (metres)")
-    parser.add_argument("--map_range", nargs=3, type=float,
-                        default=[6.0, 12.0, 5.0],
-                        help="Half-extents [x, y, z]")
     args = parser.parse_args()
 
-    mr = tuple(args.map_range)
-    print(f"Generating tunnel map: {args.num_obstacles} obstacles, "
-          f"range={list(mr)}, res={args.resolution}m")
+    # Fixed dimensions matching IsaacSim training environment
+    # Gazebo: X=forward(24m), Y=lateral(12m), Z=vertical(10m)
+    x_half = 12.0
+    y_half = 6.0
+    z_half = 5.0
+    z_max = z_half * 2
+    obstacle_zone_x_min = -6.0  # obstacles only in X ∈ [-6, +12]
+
+    print(f"Tunnel: X∈[-{x_half},{x_half}] (24m fwd), "
+          f"Y∈[-{y_half},{y_half}] (12m lat), Z∈[0,{z_max}] (10m)")
+    print(f"Obstacle zone: X∈[{obstacle_zone_x_min},{x_half}] "
+          f"({x_half - obstacle_zone_x_min:.0f}m × {y_half*2:.0f}m)")
+    print(f"Spawn zone: X∈[-{x_half},{obstacle_zone_x_min}] (clear)")
+    print(f"Obstacles: {args.num_obstacles}, seed={args.seed}")
 
     # Generate PCD
     pts = generate_tunnel_map(
         num_obstacles=args.num_obstacles,
-        map_range=mr,
+        x_half=x_half, y_half=y_half, z_half=z_half,
         resolution=args.resolution,
+        obstacle_zone_x_min=obstacle_zone_x_min,
         seed=args.seed,
     )
     print(f"  Total points: {pts.shape[0]:,}")
@@ -289,12 +345,14 @@ def main():
     if args.world_output:
         obstacles = generate_obstacle_params(
             num_obstacles=args.num_obstacles,
-            map_range=mr,
+            x_half=x_half, y_half=y_half, z_max=z_max,
+            obstacle_zone_x_min=obstacle_zone_x_min,
             seed=args.seed,
         )
-        write_gazebo_world(args.world_output, obstacles, map_range=mr)
+        write_gazebo_world(args.world_output, obstacles,
+                           x_half=x_half, y_half=y_half, z_max=z_max)
         print(f"  World written to: {args.world_output} "
-              f"({len(obstacles)} cylinders + 2 walls)")
+              f"({len(obstacles)} cylinders + 3 walls)")
 
 
 if __name__ == "__main__":

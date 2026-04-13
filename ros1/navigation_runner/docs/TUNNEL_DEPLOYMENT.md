@@ -293,18 +293,28 @@ action = tanh(loc) × action_limit                   → 世界帧 m/s
 
 PCD 地图和 Gazebo 世界**必须**使用同一坐标系（世界帧 ENU）。
 
+IsaacSim 训练环境使用 `map_range = [6.0, 12.0, 5.0]`（config 坐标 `[x, y, z]`），
+但在 IsaacSim 内部轴映射为 `[y, x, z]`，即：
+- 前进方向（config y = 12.0 半轴）= 24m
+- 侧向（config x = 6.0 半轴）= 12m
+- 高度（config z = 5.0 半轴）= 10m
+
+在 Gazebo 中，无人机朝 +X 方向飞行，因此：
+
 **PCD 地图 (`tunnel_map_default.pcd`)**:
 - 由 `scripts/tunnel_deployment/generate_tunnel_map.py --seed 42` 生成
-- 半轴范围：X ∈ [-6, 6]，Y ∈ [-12, 12]，Z ∈ [0, 10]
-- 包含：地面、天花板、Y=±12 侧壁、170 个随机圆柱障碍物
-- 匹配 IsaacSim 训练环境 `map_range = [6.0, 12.0, 5.0]`
+- X ∈ [-12, 12]（24m，前进方向），Y ∈ [-6, 6]（12m，侧向），Z ∈ [0, 10]（10m，高度）
+- 出生区域：X ∈ [-12, -6]，无障碍物
+- 障碍区域：X ∈ [-6, +12]，170 个随机圆柱
+- 结构：地面、天花板、Y=±6 侧壁、X=-10 后墙
 
 **Gazebo 世界 (`tunnel_pcd_match_static.world`)**:
 - 由同一脚本 `--world-output` 生成（同 seed=42，障碍物位置完全一致）
-- 包含：地面、侧壁、170 个圆柱模型
+- 包含：地面、侧壁、后墙、170 个圆柱模型
 - 无天花板（Gazebo 中方便观察；lidar_sim 通过 PCD 处理天花板检测）
 
-**无人机出生位置**: (-5.0, 0.0, 0.1)，yaw=0（朝 +X 方向）
+**无人机出生位置**: (-8.0, 0.0, 0.1)，yaw=0（朝 +X 方向），位于出生区域内
+**目标**: X ≥ 10.0（穿过 18m 障碍区域）
 
 **重新生成**:
 ```bash
@@ -312,7 +322,8 @@ cd ros1/navigation_runner/scripts/tunnel_deployment
 python3 generate_tunnel_map.py \
   -o ../../cfg/tunnel/tunnel_map_default.pcd \
   -w ../../../uav_simulator/worlds/generated_env/tunnel_pcd_match_static.world \
-  --seed 42
+  --seed 42 -n 170
+# 调整障碍物数量: -n 80 (阶段3), -n 120 (阶段4), -n 170 (阶段5/默认)
 ```
 
 ### 6.4 控制流程（tunnel_navigation.py 主循环）

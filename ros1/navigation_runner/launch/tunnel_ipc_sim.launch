@@ -16,7 +16,7 @@
             <arg name="gui" value="false"/>
             <arg name="world_name"
                  value="$(find uav_simulator)/worlds/generated_env/tunnel_pcd_match_static.world"/>
-            <arg name="spawn_x" value="-5.0"/>
+            <arg name="spawn_x" value="-8.0"/>
             <arg name="spawn_y" value="0.0"/>
             <arg name="spawn_z" value="0.1"/>
         </include>
@@ -95,7 +95,7 @@
             <param name="trial_id" value="$(arg trial_id)"/>
             <param name="output_dir" value="$(arg output_dir)"/>
             <param name="rate" value="50"/>
-            <param name="goal_x" value="5.0"/>
+            <param name="goal_x" value="10.0"/>
         </node>
     </group>
 
