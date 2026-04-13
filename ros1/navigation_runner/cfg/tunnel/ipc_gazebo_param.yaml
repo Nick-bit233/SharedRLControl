@@ -31,9 +31,9 @@ fsm:
 
 astar:
   resolution:    0.15
-  map_size_x:    30.0
-  map_size_y:    15.0
-  map_size_z:    8.0
+  map_size_x:    50.0
+  map_size_y:    30.0
+  map_size_z:    10.0
   expand_dyn:    0.5
   expand_fix:    0.3
   update_dt:     5.0
@@ -44,7 +44,9 @@ rog_map:
   inflation_step: 5
   unk_inflation_en: true
   unk_inflation_step: 3
-  map_size: [15, 25, 5]
+  # Map must cover full tunnel: drone spawns at (-15,0,0.1), tunnel extends to ~(+15,0,~4)
+  # With origin (0,0,0) and size [50,30,10]: X∈[-25,25], Y∈[-15,15], Z∈[-5,5]
+  map_size: [50, 30, 10]
   virtual_ceil_height: 999
   virtual_ground_height: -999
   block_inf_pt: false
@@ -65,7 +67,7 @@ rog_map:
     enbale: true
     time_rate: 10
     frame_rate: 0
-    range: [8, 8, 3]
+    range: [15, 15, 5]
     frame_id: "world"
     pub_unknown_map_en: true
   intensity_thresh: -1
@@ -75,7 +77,7 @@ rog_map:
     blind_filter_en: false
     blind_filter_dis: 1.0
     batch_update_size: 1
-    local_update_box: [8, 8, 5]
+    local_update_box: [15, 15, 8]
     ray_range: [0.1, 50]
     p_min: 0.12
     p_miss: 0.3

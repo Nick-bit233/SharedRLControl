@@ -24,6 +24,15 @@
 
     <!-- ===== RL Mode ===== -->
     <group if="$(eval method == 'rl')">
+        <!-- LiDAR Simulator: PCD -> PointCloud2 (same as IPC mode) -->
+        <node pkg="navigation_runner" type="lidar_sim_node.py"
+              name="lidar_sim" output="screen">
+            <param name="pcd_file" value="$(arg tunnel_map)"/>
+            <param name="rate" value="10"/>
+            <param name="max_range" value="50.0"/>
+            <param name="noise_stddev" value="0.02"/>
+        </node>
+
         <!-- Map Manager for RL LiDAR (occupancy map with RayCast service) -->
         <rosparam file="$(find navigation_runner)/cfg/tunnel/occupancy_map_tunnel.yaml"
                   ns="/occupancy_map" />

@@ -1,17 +1,25 @@
 # Occupancy map parameters for tunnel deployment (prebuilt PCD map)
-sensor_input_mode: 0            # 0=camera, 1=lidar
+sensor_input_mode: 1            # 0=depth camera, 1=pointcloud
 localization_mode: 1            # 0=pose, 1=odom
 
-depth_image_topic: /no_topic    # Not used when prebuilt map is loaded
+point_cloud_topic: /pcl_render_node/cloud
 odom_topic: /CERLAB/quadcopter/odom
 pose_topic: /CERLAB/quadcopter/pose
 
 robot_size: [0.3, 0.3, 0.1]    # [x, y, z] in meters
 
+# Depth camera params (kept for reference, not used in pointcloud mode)
+depth_image_topic: /no_topic
 depth_intrinsics: [554.254691191187, 554.254691191187, 320.5, 240.5]
 depth_scale_factor: 10
 depth_min_value: 0.5
 depth_max_value: 5.0
+
+# Body-to-camera transform (4x4 row-major identity — lidar is at body frame)
+body_to_camera: [1, 0, 0, 0,
+                 0, 1, 0, 0,
+                 0, 0, 1, 0,
+                 0, 0, 0, 1]
 
 raycast_max_length: 5.0
 
