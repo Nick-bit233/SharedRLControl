@@ -12,6 +12,8 @@
 **对比实验架构：**
 ```
                ┌── RL 模式 ─────────────────────┐
+               │ lidar_sim_node (PCD→PointCloud2)│
+               │ map_manager (占用地图+RayCast)   │
                │ tunnel_navigation.py             │
                │   UserModel → Policy → cmd_vel   │
                │   LiDAR via map_manager/raycast  │
@@ -64,6 +66,10 @@ roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=true
 roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=false
 ```
 
+> **注意**: RL 模式现在同时启动 `lidar_sim_node`（PCD → PointCloud2）和
+> `map_manager`（占用地图 + RayCast 服务）。`lidar_sim_node` 提供实时点云数据，
+> `map_manager` 使用预构建 PCD 地图和实时点云来维护占用栅格。
+
 ### 1.3 运行 IPC 模式
 
 ```bash
@@ -85,29 +91,34 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 
 ## 2. 分步调试
 
-当需要逐步检查各个组件时，在 **3-4 个终端** 中分别启动：
+当需要逐步检查各个组件时，在 **4-5 个终端** 中分别启动：
 
 ```bash
 # 终端 1: Gazebo 仿真器
 roslaunch uav_simulator start_headless.launch gui:=true
 
-# 终端 2: 占用地图服务（RL 需要，IPC 不需要）
+# 终端 2: LiDAR 点云模拟（RL 和 IPC 都需要）
+rosrun navigation_runner lidar_sim_node.py \
+    _pcd_file:="$(rospack find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd" \
+    _rate:=10 _max_range:=50.0
+
+# 终端 3: 占用地图服务（RL 需要，IPC 不需要）
 rosparam load $(rospack find navigation_runner)/cfg/tunnel/occupancy_map_tunnel.yaml /occupancy_map
 rosparam set /occupancy_map/prebuilt_map_directory \
     "$(rospack find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd"
 rosrun map_manager occupancy_map_node
 
-# 终端 3: RL 导航节点
+# 终端 4: RL 导航节点
 rosparam load $(rospack find navigation_runner)/cfg/tunnel/tunnel_nav_param.yaml /tunnel_navigator
 rosparam set /tunnel_navigator/checkpoint_path \
     "$(rospack find navigation_runner)/cfg/tunnel/checkpoint_best.pt"
 rosrun navigation_runner tunnel_navigation.py __name:=tunnel_navigator
 
-# 终端 4: RViz
+# 终端 5: RViz
 rviz -d $(rospack find navigation_runner)/cfg/tunnel/tunnel.rviz
 ```
 
-**注意**：分步启动时，参数必须手动加载到 `/tunnel_navigator` 命名空间。使用 `roslaunch` 则自动完成。
+**注意**：分步启动时，参数必须手动加载到对应命名空间。使用 `roslaunch` 则自动完成。
 
 ## 3. Docker 开发环境
 
@@ -144,6 +155,7 @@ ros1/uav_simulator/worlds/                          → /root/catkin_ws/src/uav_
 | 话题 | 类型 | 频率 | 说明 |
 |------|------|------|------|
 | `/CERLAB/quadcopter/odom` | `nav_msgs/Odometry` | 30 Hz | 四旋翼里程计（body-frame twist） |
+| `/pcl_render_node/cloud` | `sensor_msgs/PointCloud2` | 10 Hz | lidar_sim_node 发布的环境点云 |
 
 **发布：**
 
@@ -462,6 +474,26 @@ docker-compose.tunnel.yml             # 持久化开发容器
 - 确认 Fixed Frame 为 `map`
 - 手动添加话题：Add → By Topic → 选择 `/tunnel_nav/lidar_cloud` 等
 - 检查话题是否发布：`rostopic hz /tunnel_nav/lidar_cloud`
+
+### Q: IPC 模式 ipc_node 启动后崩溃 (segfault)
+
+**可能原因 1**: RC 消息时序问题 — `rc_sim_node` 在仿真时间 0 时发送消息导致 IPC 的 RCCallback 访问空向量。
+- 已修复：`rc_sim_node.py` 等待仿真时间 > 2s 后再发布
+
+**可能原因 2**: ROG Map 边界 — 无人机生成位置 (-15,0,0.1) 不在 ROG Map 范围内，导致 `boxSearch` 在空地图上崩溃。
+- 已修复：`ipc_gazebo_param.yaml` 中 `map_size` 从 [15,25,5] 增加到 [50,30,10]
+- 验证：日志中不应出现 `cur_pose out of map range`
+
+### Q: RL 模式 OccMap 报错 "Please check body to camera matrix!"
+
+- 已修复：`occupancy_map_tunnel.yaml` 现在包含 `body_to_camera` 身份矩阵
+- 如仍出现，检查 YAML 是否正确加载：`rosparam get /occupancy_map/body_to_camera`
+
+### Q: RL 模式 RViz 看不到占用地图
+
+- 确认 `lidar_sim_node` 在运行：`rosnode info /lidar_sim`
+- 确认点云发布：`rostopic hz /pcl_render_node/cloud`（应 ~10Hz）
+- 确认 OccMap 使用 pointcloud 模式：`rosparam get /occupancy_map/sensor_input_mode`（应为 1）
 
 ### Q: Docker 中 Gazebo 卡住
 
