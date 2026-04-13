@@ -41,4 +41,4 @@ max_height_visualization: 8
 
 # Path to prebuilt tunnel map (PCD format)
 # REQUIRED: set this to your generated tunnel .pcd file
-prebuilt_map_directory: ""
+prebuilt_map_directory: "/root/catkin_ws/src/navigation_runner/cfg/tunnel/tunnel_map_default.pcd"
