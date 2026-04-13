@@ -84,6 +84,20 @@ class RCSimulator:
 
     def run(self):
         rate = rospy.Rate(self.rate)
+
+        # Wait for simulation time to advance past 2s.
+        # IPC's RCCallback has a bug: static msg_last starts with empty channels
+        # and stamp=0.  If the first RC message also has stamp≈0, it skips the
+        # safe early-return path and accesses msg_last.channels[9] → segfault.
+        # Delaying ensures (msg.stamp − 0) > 1.0 → early return → safe init.
+        rospy.loginfo("[RC Sim] Waiting for simulation time to advance...")
+        while not rospy.is_shutdown():
+            t = rospy.Time.now().to_sec()
+            if t > 2.0:
+                break
+            rospy.sleep(0.1)
+        rospy.loginfo("[RC Sim] Sim time=%.1f, starting RC publishing", rospy.Time.now().to_sec())
+
         self.mode_time = rospy.Time.now()
         while not rospy.is_shutdown():
             self.update_mode()
