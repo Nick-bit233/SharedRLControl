@@ -78,6 +78,12 @@ class TunnelConfig:
         self.user_model_speed = rospy.get_param("~user_model_speed", 2.0)
         self.user_model_freq_base = rospy.get_param("~user_model_freq_base", 0.1)
         self.user_model_freq_scale = rospy.get_param("~user_model_freq_scale", 0.3)
+        # Keyboard RL-assist scaling target (fraction of action_limit).
+        # Training always used ha_x = action_limit; below ~0.877 * limit the
+        # learned residual bias reverses the forward direction.  1.0 = full
+        # match (saturated, no safety modulation in X); 0.925 ≈ moderate
+        # forward speed with some safety braking capability.
+        self.kb_assist_scale = rospy.get_param("~kb_assist_scale", 1.0)
 
         # Safety
         self.use_safety_shield = rospy.get_param("~use_safety_shield", False)
@@ -115,6 +121,7 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   takeoff_height : {self.cfg.takeoff_height} m")
         rospy.loginfo(f"[TunnelNav]   control_freq   : {self.cfg.control_freq} Hz")
         rospy.loginfo(f"[TunnelNav]   action_limit   : {self.cfg.action_limit} m/s")
+        rospy.loginfo(f"[TunnelNav]   kb_assist_scale: {self.cfg.kb_assist_scale}")
         rospy.loginfo(f"[TunnelNav]   safety_min_dist: {self.cfg.safety_min_dist} m")
         rospy.loginfo(f"[TunnelNav]   collision_dist : {self.cfg.collision_dist} m")
         if not self.cfg.keyboard_mode:
@@ -367,6 +374,22 @@ class TunnelNavigator:
         if self.cfg.keyboard_mode:
             with self._kb_cmd_lock:
                 kb_np = self._kb_cmd.copy()
+            if self.rl_assist:
+                # Scale keyboard commands to match training distribution.
+                # The residual policy was trained with vx = action_limit (≈2.0 m/s).
+                # atanh(ha/limit) must be large enough to dominate the learned
+                # loc_delta bias (~-1.36); the crossover is at ~87.7% of limit.
+                # Keyboard typically produces ~0.8 m/s, far below this threshold,
+                # causing the residual to reverse the X direction.
+                # Fix: map any key-press to kb_assist_scale * action_limit.
+                target = self.cfg.action_limit * self.cfg.kb_assist_scale
+                if kb_np[0] > 0.01:
+                    kb_np[0] = target
+                elif kb_np[0] < -0.01:
+                    kb_np[0] = -target
+                for ax in (1, 2):
+                    if abs(kb_np[ax]) > 0.01:
+                        kb_np[ax] = np.sign(kb_np[ax]) * target
             human_action = torch.from_numpy(kb_np).unsqueeze(0).to(device=dev)
         else:
             human_action = self.user_model.step()  # (1, 3) body-frame
