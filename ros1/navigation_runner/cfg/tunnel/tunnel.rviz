@@ -95,7 +95,7 @@ Visualization Manager:
       Marker Topic: /tunnel_nav/cmd_vel_vis
       Name: RL Command
       Namespaces:
-        {}
+        rl_cmd: true
       Queue Size: 1
       Value: true
     - Class: rviz/MarkerArray
@@ -103,7 +103,7 @@ Visualization Manager:
       Marker Topic: /tunnel_nav/human_cmd_vis
       Name: Human Command
       Namespaces:
-        {}
+        human_cmd: true
       Queue Size: 1
       Value: true
     - Angle Tolerance: 0.009999999776482582
@@ -172,8 +172,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: false
       Autocompute Value Bounds:
-        Max Value: 10.063752174377441
-        Min Value: -0.08109451830387115
+        Max Value: 10.070106506347656
+        Min Value: -0.06502894312143326
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -223,17 +223,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 5.518971920013428
-        Y: -8.247431755065918
+        X: 1.368072509765625
+        Y: -7.417662143707275
         Z: 2.000002384185791
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.524796485900879
+      Pitch: 1.5697963237762451
       Target Frame: <Fixed Frame>
-      Yaw: 5.283177852630615
+      Yaw: 4.713165760040283
     Saved: ~
 Window Geometry:
   Displays:
