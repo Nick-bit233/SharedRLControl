@@ -277,13 +277,12 @@ class TunnelNavigator:
             self._kb_cmd[2] = msg.twist.linear.z
 
     def _takeoff_cmd_cb(self, msg):
-        """Keyboard mode: user triggers takeoff."""
+        """Keyboard mode: user triggers takeoff (runs in background thread)."""
         if self.has_taken_off:
             rospy.logwarn("[TunnelNav] Already took off, ignoring duplicate takeoff")
             return
-        rospy.loginfo("[TunnelNav] Takeoff command received from user")
-        self._takeoff()
-        self.has_taken_off = True
+        self.has_taken_off = True  # set immediately to block duplicates
+        threading.Thread(target=self._takeoff, daemon=True).start()
 
     def _assist_toggle_cb(self, msg):
         """Keyboard mode: toggle RL assist on/off."""

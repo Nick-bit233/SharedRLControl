@@ -52,8 +52,9 @@
     <arg name="pose_topic" value="/CERLAB/quadcopter/pose"/>
   </include>
 
-  <!-- Keyboard control only when GUI is enabled -->
-  <group if="$(arg gui)">
+  <!-- Keyboard control only when GUI is enabled and not suppressed -->
+  <arg name="no_keyboard" default="false"/>
+  <group if="$(eval arg('gui') and not arg('no_keyboard'))">
     <node name="keyboard_control" pkg="uav_simulator" type="keyboard_control"/>
   </group>
 </launch>

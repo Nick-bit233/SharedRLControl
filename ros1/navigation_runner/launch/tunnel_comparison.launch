@@ -25,8 +25,10 @@
 
     <!-- ===== Shared: Gazebo CERLAB Simulator ===== -->
     <!-- Uses the auto-generated world that matches the PCD obstacle map -->
+    <!-- Suppress CERLAB keyboard_control when our keyboard teleop is active -->
     <include file="$(find uav_simulator)/launch/start_headless.launch">
         <arg name="gui" value="$(arg gui)"/>
+        <arg name="no_keyboard" value="$(arg keyboard)"/>
         <arg name="world_name"
              value="$(find uav_simulator)/worlds/generated_env/tunnel_pcd_match_static.world"/>
         <arg name="spawn_x" value="$(arg spawn_x)"/>
