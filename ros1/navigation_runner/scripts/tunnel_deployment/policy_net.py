@@ -4,7 +4,7 @@ No TorchRL / TensorDict dependency — pure PyTorch.
 
 Architecture (training-identical, Beta distribution):
   LidarCNN: (N, 1, 36, 4) → 128
-  Concat:   [cnn_feat(128), state(10), human_action(3)] → 141
+  Concat:   [cnn_feat(128), human_action(3), state(10)] → 141
   LayerNorm(141)
   MLP:      141 → 256 → 256  (_feature)
   ActorMLP: 256 → 256 → 256 → 6  (mean_delta[3], raw_concentration[3])
@@ -108,7 +108,7 @@ class TunnelPolicyNet(nn.Module):
     ) -> torch.Tensor:
         # 1. Feature extraction
         cnn_feat = self.lidar_cnn(lidar)                     # (N, 128)
-        cat_feat = torch.cat([cnn_feat, state, human_action], dim=-1)  # (N, 141)
+        cat_feat = torch.cat([cnn_feat, human_action, state], dim=-1)  # (N, 141)
         normed = self.input_norm(cat_feat)
         feature = self.feature_mlp(normed)                   # (N, 256)
 
@@ -148,12 +148,12 @@ class TunnelPolicyNet(nn.Module):
             self._fwd_count = 0
         self._fwd_count += 1
         if self._fwd_count <= 15 or self._fwd_count % 200 == 0:
-            md = mean_delta.squeeze(0).detach().cpu().numpy()
-            m = mean.squeeze(0).detach().cpu().numpy()
-            ab = action_body.squeeze(0).detach().cpu().numpy()
-            aw = action_world.squeeze(0).detach().cpu().numpy()
+            md = mean_delta.detach().cpu().reshape(-1, 3)[0].numpy()
+            m = mean.detach().cpu().reshape(-1, 3)[0].numpy()
+            ab = action_body.detach().cpu().reshape(-1, 3)[0].numpy()
+            aw = action_world.detach().cpu().reshape(-1, 3)[0].numpy()
             # Lidar: forward bins (0,1,34,35), left bins (8,9,10), right (26,27,28)
-            L = lidar.squeeze().detach().cpu().numpy()  # (36, 4)
+            L = lidar.detach().cpu().reshape(-1, 36, 4)[0].numpy()
             fwd_mean = L[[0,1,34,35], :].mean()
             left_mean = L[[8,9,10], :].mean()
             right_mean = L[[26,27,28], :].mean()
@@ -204,6 +204,15 @@ class TunnelPolicyNet(nn.Module):
         net = cls(action_limit=action_limit,
                   min_concentration=min_concentration).to(device)
 
+        # Materialize lazy layers before loading checkpoint weights.
+        # Otherwise the subsequent dummy forward would overwrite them with
+        # freshly initialized parameters.
+        dummy_state = torch.zeros(1, 10, device=device)
+        dummy_ha = torch.zeros(1, 3, device=device)
+        dummy_lidar = torch.zeros(1, 1, 36, 4, device=device)
+        with torch.no_grad():
+            net(dummy_state, dummy_ha, dummy_lidar)
+
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         if isinstance(ckpt, dict) and "policy" in ckpt:
             src = ckpt["policy"]
@@ -219,13 +228,6 @@ class TunnelPolicyNet(nn.Module):
             print(f"[TunnelPolicyNet] Missing keys (expected for critic): {missing}")
         if unexpected:
             print(f"[TunnelPolicyNet] Unexpected keys: {unexpected}")
-
-        # Materialise any remaining lazy layers with a dummy forward
-        dummy_state = torch.zeros(1, 10, device=device)
-        dummy_ha = torch.zeros(1, 3, device=device)
-        dummy_lidar = torch.zeros(1, 1, 36, 4, device=device)
-        with torch.no_grad():
-            net(dummy_state, dummy_ha, dummy_lidar)
 
         net.eval()
         return net

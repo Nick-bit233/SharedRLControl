@@ -5,7 +5,6 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Occupancy Map1
-        - /PointCloud22/Status1
       Splitter Ratio: 0.5
     Tree Height: 614
   - Class: rviz/Views
@@ -96,7 +95,7 @@ Visualization Manager:
       Marker Topic: /tunnel_nav/cmd_vel_vis
       Name: RL Command
       Namespaces:
-        rl_cmd: true
+        {}
       Queue Size: 1
       Value: true
     - Class: rviz/MarkerArray
@@ -104,7 +103,7 @@ Visualization Manager:
       Marker Topic: /tunnel_nav/human_cmd_vis
       Name: Human Command
       Namespaces:
-        human_cmd: true
+        {}
       Queue Size: 1
       Value: true
     - Angle Tolerance: 0.009999999776482582
@@ -216,7 +215,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 9.123234748840332
+      Distance: 54.329856872558594
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -224,17 +223,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 1.0839375257492065
-        Y: -4.835934638977051
+        X: 5.518971920013428
+        Y: -8.247431755065918
         Z: 2.000002384185791
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.484796404838562
+      Pitch: 1.524796485900879
       Target Frame: <Fixed Frame>
-      Yaw: 3.9881839752197266
+      Yaw: 5.283177852630615
     Saved: ~
 Window Geometry:
   Displays:
@@ -247,4 +246,4 @@ Window Geometry:
     collapsed: false
   Width: 1400
   X: 309
-  Y: 30
+  Y: 27

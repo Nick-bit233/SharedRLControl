@@ -2,11 +2,15 @@
 
 > 将 Isaac Sim 训练的隧道避障 RL 策略部署到 ROS1 (Noetic) + Gazebo，
 > 并与 slope_inspection 的 IPC 算法在同一环境中进行公平对比
+>
+> 当前分支的诊断结论与推荐基线见 `TUNNEL_DIAGNOSIS.md`。本文旧版本里关于
+> Tanh residual、旧出生点和旧目标线的描述已经失效，请以当前 launch/config
+> 与诊断文档为准。
 
 ## 概览
 
 本部署包提供三个功能：
-1. **RL 部署**：将 `ConstrainedResidualPPO` 策略网络部署到 ROS1/Gazebo 仿真环境
+1. **RL 部署**：将 `ConstrainedResidualPPO_Beta` 策略网络部署到 ROS1/Gazebo 仿真环境
 2. **RL vs IPC 对比**：在相同 CERLAB Gazebo 仿真器和同一隧道地图中，对比 RL 策略和 slope_inspection IPC 算法
 3. **键盘控制模式**：用键盘提供人类输入指令，可实时切换 RL 辅助，用于交互式调试和演示
 
@@ -325,16 +329,17 @@ map_manager/raycast → hit points → distance to drone
 
 ### 6.2 残差动作（Residual Action）
 
-```
-human_action_norm = human_action / action_limit     ∈ (-1, 1)
-ha_pre_tanh = atanh(ha_norm)
+当前隧道策略使用的是 **`ConstrainedResidualPPO_Beta`**。  
+`human_action` 不是旧版文档里那种显式 `atanh -> tanh` 残差公式，而是直接作为观测输入拼接进特征提取器：
 
-network(state, lidar) → loc_delta, scale
-loc = loc_delta × residual_scale + ha_pre_tanh
-action = tanh(loc) × action_limit                   → 世界帧 m/s
+```
+feature = concat(lidar_cnn, human_action, state)
+actor(feature) → Beta distribution parameters
+deterministic deployment → distribution mean
+mean in (0,1) → linear map to [-action_limit, action_limit]
 ```
 
-策略以 human_action 为基线，学习残差修正来避障。
+它仍然是“以 human_action 为辅助输入的残差式策略”，但当前实现**不是**旧的 Tanh residual 公式。
 
 ### 6.3 坐标系
 
@@ -356,19 +361,18 @@ IsaacSim 训练环境使用 `map_range = [6.0, 12.0, 5.0]`（config 坐标 `[x, 
 在 Gazebo 中，无人机朝 +X 方向飞行，因此：
 
 **PCD 地图 (`tunnel_map_default.pcd`)**:
-- 由 `scripts/tunnel_deployment/generate_tunnel_map.py --seed 42` 生成
+- 当前默认实验使用固定的预生成 PCD / Gazebo world 配对
 - X ∈ [-12, 12]（24m，前进方向），Y ∈ [-6, 6]（12m，侧向），Z ∈ [0, 10]（10m，高度）
-- 出生区域：X ∈ [-12, -6]，无障碍物
-- 障碍区域：X ∈ [-6, +12]，170 个随机圆柱
-- 结构：地面、天花板、Y=±6 侧壁、X=-10 后墙
+- 出生区域：X ∈ [-12, -6]
+- 结构：地面、天花板、Y=±6 侧壁、X=-10 后墙，以及与 `tunnel_pcd_match_static.world` 对齐的一组固定障碍物
 
 **Gazebo 世界 (`tunnel_pcd_match_static.world`)**:
-- 由同一脚本 `--world-output` 生成（同 seed=42，障碍物位置完全一致）
-- 包含：地面、侧壁、后墙、170 个圆柱模型
+- 与默认 PCD 地图配对
+- 当前默认 world 中共有 15 个静态障碍模型，加上地面、侧壁和后墙
 - 无天花板（Gazebo 中方便观察；lidar_sim 通过 PCD 处理天花板检测）
 
-**无人机出生位置**: (-8.0, 0.0, 0.1)，yaw=0（朝 +X 方向），位于出生区域内
-**目标**: X ≥ 10.0（穿过 18m 障碍区域）
+**无人机出生位置**: `(-7.0, 0.0, 0.1)`，yaw=0（朝 +X 方向），随后起飞到 `z=5.0`  
+**目标**: `X ≥ 12.0`
 
 **重新生成**:
 ```bash
