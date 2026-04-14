@@ -2,25 +2,29 @@
 Standalone ConstrainedResidualPPO network for inference only.
 No TorchRL / TensorDict dependency — pure PyTorch.
 
-Architecture (training-identical, TanhNormal distribution):
+Architecture (training-identical, Beta distribution):
   LidarCNN: (N, 1, 36, 4) → 128
   Concat:   [cnn_feat(128), state(10), human_action(3)] → 141
   LayerNorm(141)
   MLP:      141 → 256 → 256  (_feature)
-  ActorMLP: 256 → 256 → 256 → 6  (loc_delta[3], scale_raw[3])
-  Residual: loc = loc_delta * residual_scale + atanh(ha / action_limit)
-  Deterministic: tanh(loc) → action_norm in [-1, 1]
-  Scale:    action = action_norm * action_limit             → m/s
+  ActorMLP: 256 → 256 → 256 → 6  (mean_delta[3], raw_concentration[3])
+  BetaResidual:
+    ha_01 = (ha / action_limit + 1) / 2              map to [0, 1]
+    mean  = clamp(ha_01 + mean_delta * residual_scale, 0.01, 0.99)
+    conc  = softplus(raw_concentration) + min_concentration
+    alpha = mean * conc + 1
+    beta  = (1 - mean) * conc + 1
+    mode  = mean  (since alpha, beta > 1)
+  Deterministic: action_norm = 2 * mode - 1           → [-1, 1]
+  Scale:    action = action_norm * action_limit        → m/s
   Transform: body-frame → world-frame (yaw-only rotation)
 
-NOTE: The training checkpoint (curriculum_stage5) was confirmed TanhNormal.
-The ppo.yaml now says distribution: beta, but that config was added AFTER
-the checkpoint was produced. Evidence: training output.log has no
-distribution key, and eval trajs contain _loc_delta (TanhNormal key).
+Checkpoint: curriculum_stage3/checkpoint_final.pt (Beta distribution)
+  Training config: distribution=beta, min_concentration=2.0, action_limit=2.0
 """
 import torch
 import torch.nn as nn
-import math
+import torch.nn.functional as F
 
 from .quat_utils import vec_to_world
 
@@ -58,7 +62,7 @@ def _make_mlp(dims: list) -> nn.Sequential:
 class TunnelPolicyNet(nn.Module):
     """
     Self-contained inference network that mirrors the training-time
-    ConstrainedResidualPPO architecture (TanhNormal distribution).
+    ConstrainedResidualPPO_Beta architecture (Beta distribution).
 
     Call signature:
         action_world = net(state, human_action, lidar, deterministic=True)
@@ -71,27 +75,29 @@ class TunnelPolicyNet(nn.Module):
         action_world: (N, 3)   world-frame velocity command  (m/s)
     """
 
-    def __init__(self, action_limit: float = 2.0):
+    MAX_CONCENTRATION = 100.0
+
+    def __init__(self, action_limit: float = 2.0, min_concentration: float = 2.0):
         super().__init__()
         self.action_limit = action_limit
+        self.min_concentration = min_concentration
 
-        # ---- Feature extractor ----
+        # ---- Feature extractor (identical to TanhNormal version) ----
         self.lidar_cnn = _LidarCNN()
-        # Input to layer_norm: cnn(128) + state(10) + human_action(3) = 141
         self.input_norm = nn.LayerNorm(141, eps=NORM_EPS)
         self.feature_mlp = _make_mlp([256, 256])
 
         # ---- Actor head ----
         self.actor_mlp = nn.Sequential(
             _make_mlp([256, 256]),
-            nn.Linear(256, 6),  # loc_delta(3) + scale_raw(3)
+            nn.Linear(256, 6),  # mean_delta(3) + raw_concentration(3)
         )
 
         # ---- Residual module ----
         self.residual_scale = nn.Parameter(torch.tensor(1.0), requires_grad=False)
 
     # ------------------------------------------------------------------
-    # Forward (inference) — TanhNormal distribution
+    # Forward (inference) — Beta distribution
     # ------------------------------------------------------------------
     def forward(
         self,
@@ -106,27 +112,30 @@ class TunnelPolicyNet(nn.Module):
         normed = self.input_norm(cat_feat)
         feature = self.feature_mlp(normed)                   # (N, 256)
 
-        # 2. Actor outputs loc_delta and scale_raw
+        # 2. Actor outputs mean_delta and raw_concentration
         logits = self.actor_mlp(feature)                     # (N, 6)
-        loc_delta, scale_raw = logits.split(3, dim=-1)
+        mean_delta, raw_concentration = logits.split(3, dim=-1)
 
-        # 3. TanhNormal residual: combine in pre-tanh space
-        #    Map human_action to pre-tanh space via atanh
-        eps = 1e-6
-        ha_norm = (human_action / self.action_limit).clamp(-1.0 + eps, 1.0 - eps)
-        ha_pre_tanh = torch.atanh(ha_norm)
+        # 3. Beta residual in [0, 1] space
+        #    (mirrors BetaResidualActionModule.forward from ppo_constrained_beta.py)
+        ha_norm = human_action / self.action_limit            # [-1, 1]
+        ha_01 = (ha_norm + 1.0) / 2.0                        # [0, 1]
+        ha_01 = ha_01.clamp(0.01, 0.99)
 
-        # Residual in pre-tanh space
-        loc = loc_delta * self.residual_scale + ha_pre_tanh
+        mean = ha_01 + mean_delta * self.residual_scale
+        mean = mean.clamp(0.01, 0.99)
+
+        concentration = F.softplus(raw_concentration).clamp(max=self.MAX_CONCENTRATION) + self.min_concentration
+        alpha = mean * concentration + 1.0
+        beta_ = (1.0 - mean) * concentration + 1.0
 
         if deterministic:
-            # Mode of TanhNormal = tanh(loc)
-            action_norm = torch.tanh(loc)                    # [-1, 1]
+            # Mode of Beta(alpha, beta) = (alpha-1)/(alpha+beta-2) = mean
+            action_norm = 2.0 * mean - 1.0                   # [-1, 1]
         else:
-            # Full TanhNormal sampling
-            scale = torch.nn.functional.softplus(scale_raw) + 1e-4
-            normal_sample = torch.distributions.Normal(loc, scale).rsample()
-            action_norm = torch.tanh(normal_sample)          # [-1, 1]
+            dist = torch.distributions.Beta(alpha, beta_)
+            sample_01 = dist.rsample()
+            action_norm = 2.0 * sample_01 - 1.0              # [-1, 1]
 
         # 4. Scale to physical units
         action_body = action_norm * self.action_limit         # (N, 3) body-frame m/s
@@ -140,22 +149,23 @@ class TunnelPolicyNet(nn.Module):
     # ------------------------------------------------------------------
     @classmethod
     def from_checkpoint(cls, ckpt_path: str, action_limit: float = 2.0,
+                        min_concentration: float = 2.0,
                         device: str = "cpu") -> "TunnelPolicyNet":
         """
         Load a training checkpoint and map weights into this standalone net.
 
         The training checkpoint uses TensorDict module paths like:
             feature_extractor.module.0.module.net.0.weight   (LidarCNN)
-            feature_extractor.module.1.module.weight         (CatTensors – no params)
-            feature_extractor.module.2.module.0.weight       (LayerNorm)
-            feature_extractor.module.3.module.0.weight       (feature MLP)
-            actor.module.module.0.module.0.weight            (actor MLP layer 1)
-            ...
+            feature_extractor.module.2.module.{weight|bias}  (LayerNorm)
+            feature_extractor.module.3.module.{idx}.*        (feature MLP)
+            actor_net.module.0.{idx}.*                       (actor MLP layers)
+            actor_net.module.1.*                              (final Linear 256→6)
+            residual_action_module.residual_scale             (scalar)
         """
-        net = cls(action_limit=action_limit).to(device)
+        net = cls(action_limit=action_limit,
+                  min_concentration=min_concentration).to(device)
 
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-        # ckpt can be a plain state_dict or a dict with 'policy' key
         if isinstance(ckpt, dict) and "policy" in ckpt:
             src = ckpt["policy"]
         elif isinstance(ckpt, dict) and any(k.startswith("feature_extractor") for k in ckpt):
@@ -163,10 +173,8 @@ class TunnelPolicyNet(nn.Module):
         else:
             src = ckpt
 
-        # Build mapping: training key prefix → standalone param name
         mapped = _map_checkpoint(src, net, device)
 
-        # Load
         missing, unexpected = net.load_state_dict(mapped, strict=False)
         if missing:
             print(f"[TunnelPolicyNet] Missing keys (expected for critic): {missing}")

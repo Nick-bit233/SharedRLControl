@@ -136,6 +136,7 @@ class TunnelNavigator:
         self.policy = TunnelPolicyNet.from_checkpoint(
             self.cfg.checkpoint_path,
             action_limit=self.cfg.action_limit,
+            min_concentration=2.0,
             device=self.cfg.device,
         )
         self.policy.eval()
@@ -147,7 +148,6 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   takeoff_height : {self.cfg.takeoff_height} m")
         rospy.loginfo(f"[TunnelNav]   control_freq   : {self.cfg.control_freq} Hz")
         rospy.loginfo(f"[TunnelNav]   action_limit   : {self.cfg.action_limit} m/s")
-        rospy.loginfo(f"[TunnelNav]   kb_assist_scale: {self.cfg.kb_assist_scale}")
         rospy.loginfo(f"[TunnelNav]   safety_min_dist: {self.cfg.safety_min_dist} m")
         rospy.loginfo(f"[TunnelNav]   collision_dist : {self.cfg.collision_dist} m")
         if not self.cfg.keyboard_mode:
@@ -406,21 +406,9 @@ class TunnelNavigator:
             with self._kb_cmd_lock:
                 kb_np = self._kb_cmd.copy()
             if self.rl_assist:
-                # Scale keyboard commands to match training distribution.
-                # The residual policy was trained with vx = action_limit (≈2.0 m/s).
-                # atanh(ha/limit) must be large enough to dominate the learned
-                # loc_delta bias (~-1.36); the crossover is at ~87.7% of limit.
-                # Keyboard typically produces ~0.8 m/s, far below this threshold,
-                # causing the residual to reverse the X direction.
-                # Fix: map any key-press to kb_assist_scale * action_limit.
-                target = self.cfg.action_limit * self.cfg.kb_assist_scale
-                if kb_np[0] > 0.01:
-                    kb_np[0] = target
-                elif kb_np[0] < -0.01:
-                    kb_np[0] = -target
-                for ax in (1, 2):
-                    if abs(kb_np[ax]) > 0.01:
-                        kb_np[ax] = np.sign(kb_np[ax]) * target
+                # With Beta distribution, the residual operates linearly in [0,1]
+                # space — no crossover/reversal issue. Pass keyboard input as-is.
+                pass
             human_action = torch.from_numpy(kb_np).unsqueeze(0).to(device=dev)
         else:
             human_action = self.user_model.step()  # (1, 3) body-frame

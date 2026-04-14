@@ -36,7 +36,7 @@ collision_dist: 0.05          # Below this = collision = task failed (metres)
 
 # --- Gazebo deployment ---
 # These only apply when use_px4=false (CERLAB Gazebo plugin).
-gazebo_max_hvel: 1.5          # m/s max horizontal cmd_vel (training uses 2.0; clamped for Gazebo stability)
+gazebo_max_hvel: 2.0          # m/s max horizontal cmd_vel (match training action_limit)
 alt_hold_kp: 1.5              # P-gain for altitude hold
 alt_hold_max_vz: 2.0          # max vertical velocity for altitude hold
 tumble_deg: 45.0              # roll/pitch threshold for tumble detection (degrees)
