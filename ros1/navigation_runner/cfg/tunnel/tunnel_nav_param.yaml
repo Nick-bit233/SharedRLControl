@@ -20,7 +20,7 @@ lidar_hres: 10.0              # horizontal resolution in degrees → 36 beams
 control_freq: 20.0            # Hz (training ~60Hz; 20Hz is sufficient for deployment)
 use_px4: false                # true for PX4/MAVROS, false for CERLAB Gazebo
 height_control: true          # true = 3D velocity, false = hold takeoff_height
-takeoff_height: 4.0           # metres (CERLAB plugin default hover height)
+takeoff_height: 5.0           # metres — must match training init height (env_tunnel.py: z=5.0)
 
 # --- User model / keyboard mode ---
 keyboard_mode: false              # true = keyboard teleop as human input; false = UserModelTunnel
@@ -33,3 +33,15 @@ user_model_freq_scale: 0.3    # Perlin noise frequency scale (online mode only)
 use_safety_shield: false      # Use ORCA safe_action_node
 safety_min_dist: 0.3          # Emergency stop distance (metres)
 collision_dist: 0.05          # Below this = collision = task failed (metres)
+
+# --- Gazebo deployment ---
+# These only apply when use_px4=false (CERLAB Gazebo plugin).
+gazebo_max_hvel: 1.5          # m/s max horizontal cmd_vel (training uses 2.0; clamped for Gazebo stability)
+alt_hold_kp: 1.5              # P-gain for altitude hold
+alt_hold_max_vz: 2.0          # max vertical velocity for altitude hold
+tumble_deg: 45.0              # roll/pitch threshold for tumble detection (degrees)
+tumble_recover_height: 1.0    # metres above takeoff_height during tumble recovery
+tumble_recover_timeout: 10.0  # seconds before declaring tumble recovery failed
+
+# --- Goal ---
+goal_x: 10.0                  # metres — declare success when drone x >= this

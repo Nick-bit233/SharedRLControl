@@ -90,6 +90,32 @@ class TunnelConfig:
         self.safety_min_dist = rospy.get_param("~safety_min_dist", 0.3)
         self.collision_dist = rospy.get_param("~collision_dist", 0.05)
         self.takeoff_height = rospy.get_param("~takeoff_height", 1.0)
+        # Gazebo altitude-hold P-gain. The CERLAB plugin has no built-in
+        # altitude hold when receiving cmd_vel; we overlay a P-controller
+        # so the drone tracks takeoff_height.
+        self.alt_hold_kp = rospy.get_param("~alt_hold_kp", 1.5)
+        self.alt_hold_max_vz = rospy.get_param("~alt_hold_max_vz", 2.0)
+        # Gazebo max horizontal velocity clamp. The CERLAB velocity PID can
+        # pitch excessively when the drone is physically blocked but still
+        # receiving high-speed commands ("PID windup"). Clamping prevents
+        # tumble from aggressive velocity targets.
+        self.gazebo_max_hvel = rospy.get_param("~gazebo_max_hvel", 1.0)
+        # Tumble detection: if |roll| or |pitch| exceeds this threshold,
+        # the drone is considered tumbled and RL control is paused.
+        self.tumble_deg = rospy.get_param("~tumble_deg", 45.0)
+        # Tumble recovery: when tumble is detected, switch to setpoint_pose
+        # (position hold at current XY, takeoff_height Z, level attitude) so
+        # the CERLAB position controller can self-right the drone.
+        # Recovery height adds extra clearance to pull the drone off obstacles.
+        self.tumble_recover_height = rospy.get_param(
+            "~tumble_recover_height", 1.0
+        )  # metres above takeoff_height during recovery
+        self.tumble_recover_timeout = rospy.get_param(
+            "~tumble_recover_timeout", 10.0
+        )  # seconds before declaring mission failure
+
+        # Goal detection
+        self.goal_x = rospy.get_param("~goal_x", 10.0)  # metres — success threshold
 
 
 class TunnelNavigator:
@@ -164,6 +190,11 @@ class TunnelNavigator:
         self.safety_stop = False
         self.collision = False  # True = min_dist < collision_dist → task failed
         self.min_dist = float("inf")  # current minimum obstacle distance
+        # Tumble recovery state
+        self.in_tumble_recovery = False
+        self.tumble_recovery_start = None  # rospy.Time when recovery started
+        # Goal
+        self.goal_reached = False
 
         # ---- ROS interfaces ----
         self._setup_ros()
@@ -446,11 +477,41 @@ class TunnelNavigator:
             self.pose_pub.publish(self._make_takeoff_pose())
             return
 
+        # --- Goal check (before collision — reaching goal takes priority) ---
+        if not self.goal_reached and self.odom is not None:
+            cur_x = self.odom.pose.pose.position.x
+            if cur_x >= self.cfg.goal_x:
+                self.goal_reached = True
+                rospy.loginfo(
+                    f"[TunnelNav] *** GOAL REACHED *** x={cur_x:.1f} >= "
+                    f"{self.cfg.goal_x:.1f}"
+                )
+
+        if self.goal_reached:
+            self._publish_stop()
+            pos = self.odom.pose.pose.position
+            status_msg = (
+                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                f"cmd=[0,0,0] | min_d={self.min_dist:.2f} | GOAL_REACHED"
+            )
+            self.status_pub.publish(String(data=status_msg))
+            return
+
         if self.collision:
             self._publish_stop()
+            pos = self.odom.pose.pose.position
+            status_msg = (
+                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                f"cmd=[0,0,0] | min_d={self.min_dist:.2f} | COLLISION"
+            )
+            self.status_pub.publish(String(data=status_msg))
             return
 
         if self.safety_stop:
+            # Reset tumble recovery — safety stop uses pose hold which
+            # actively stabilises attitude.
+            self.in_tumble_recovery = False
+            self.tumble_recovery_start = None
             self._publish_stop()
             pos = self.odom.pose.pose.position
             status_msg = (
@@ -470,6 +531,22 @@ class TunnelNavigator:
                 deterministic=self.cfg.deterministic,
             )  # (1, 3) world-frame m/s
         cmd = action_world.squeeze(0).cpu().numpy()
+
+        # Debug: log first 10 iterations + every 100th
+        if not hasattr(self, '_ctrl_iter'):
+            self._ctrl_iter = 0
+        self._ctrl_iter += 1
+        if self._ctrl_iter <= 10 or self._ctrl_iter % 100 == 0:
+            ha = human_action.squeeze(0).cpu().numpy()
+            s = state.squeeze(0).cpu().numpy()
+            lidar_stats = lidar.squeeze().cpu().numpy()
+            rospy.loginfo(
+                f"[TunnelNav] iter={self._ctrl_iter}: "
+                f"ha=[{ha[0]:.2f},{ha[1]:.2f},{ha[2]:.2f}] "
+                f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] "
+                f"vel_b=[{s[0]:.2f},{s[1]:.2f},{s[2]:.2f}] "
+                f"lidar_range=[{lidar_stats.min():.2f},{lidar_stats.max():.2f}]"
+            )
 
         # 3. Publish
         self._publish_cmd(cmd)
@@ -519,9 +596,72 @@ class TunnelNavigator:
                 )
             self.action_pub.publish(msg)
         else:
-            # Gazebo: velocity in body frame
+            # Gazebo: velocity in heading-aligned body frame
             q = self.odom.pose.pose.orientation
-            _, _, yaw = tf.transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+            roll, pitch, yaw = tf.transformations.euler_from_quaternion(
+                [q.x, q.y, q.z, q.w]
+            )
+
+            # Tumble detection & recovery: if roll or pitch exceed the
+            # threshold the drone has hit an obstacle. Switch to setpoint_pose
+            # (position-hold with level attitude) so the CERLAB position
+            # controller can self-right the drone.
+            tumble_rad = math.radians(self.cfg.tumble_deg)
+            is_tumbled = abs(roll) > tumble_rad or abs(pitch) > tumble_rad
+
+            if is_tumbled and not self.in_tumble_recovery:
+                # Just entered tumble — start recovery
+                self.in_tumble_recovery = True
+                self.tumble_recovery_start = rospy.Time.now()
+                rospy.logwarn(
+                    f"[TunnelNav] TUMBLE DETECTED roll={math.degrees(roll):.1f}° "
+                    f"pitch={math.degrees(pitch):.1f}° — starting pose recovery"
+                )
+
+            if self.in_tumble_recovery:
+                # Check recovery timeout
+                elapsed = (rospy.Time.now() - self.tumble_recovery_start).to_sec()
+                if elapsed > self.cfg.tumble_recover_timeout:
+                    rospy.logerr(
+                        f"[TunnelNav] Tumble recovery timeout ({elapsed:.1f}s) "
+                        "— declaring collision"
+                    )
+                    self.collision = True
+                    self._publish_stop()
+                    return
+
+                # Send setpoint_pose: current XY, elevated Z, level attitude
+                cur_pos = self.odom.pose.pose.position
+                recover_z = self.cfg.takeoff_height + self.cfg.tumble_recover_height
+                pose_msg = PoseStamped()
+                pose_msg.header.stamp = rospy.Time.now()
+                pose_msg.header.frame_id = "world"
+                pose_msg.pose.position.x = cur_pos.x
+                pose_msg.pose.position.y = cur_pos.y
+                pose_msg.pose.position.z = recover_z
+                pose_msg.pose.orientation.w = 1.0  # level attitude
+                self.pose_pub.publish(pose_msg)
+
+                # Check if recovered (pitch & roll back within half threshold)
+                recover_thresh = tumble_rad * 0.5
+                if abs(roll) < recover_thresh and abs(pitch) < recover_thresh:
+                    rospy.loginfo(
+                        f"[TunnelNav] Tumble RECOVERED in {elapsed:.1f}s "
+                        f"(roll={math.degrees(roll):.1f}°, "
+                        f"pitch={math.degrees(pitch):.1f}°)"
+                    )
+                    self.in_tumble_recovery = False
+                    self.tumble_recovery_start = None
+                else:
+                    rospy.logwarn_throttle(
+                        2.0,
+                        f"[TunnelNav] Recovering from tumble... "
+                        f"roll={math.degrees(roll):.1f}° "
+                        f"pitch={math.degrees(pitch):.1f}° "
+                        f"({elapsed:.1f}s elapsed)"
+                    )
+                return
+
             rot = np.array([
                 [math.cos(yaw), math.sin(yaw), 0],
                 [-math.sin(yaw), math.cos(yaw), 0],
@@ -529,20 +669,47 @@ class TunnelNavigator:
             ])
             cmd_local = rot @ cmd_vel_world
 
+            # Clamp horizontal velocity to prevent PID windup in Gazebo.
+            max_h = self.cfg.gazebo_max_hvel
+            hspeed = math.hypot(cmd_local[0], cmd_local[1])
+            if hspeed > max_h:
+                scale = max_h / hspeed
+                cmd_local[0] *= scale
+                cmd_local[1] *= scale
+
+            # Altitude hold: P-controller tracks takeoff_height.
+            cur_z = self.odom.pose.pose.position.z
+            alt_err = self.cfg.takeoff_height - cur_z
+            vz_hold = np.clip(
+                self.cfg.alt_hold_kp * alt_err,
+                -self.cfg.alt_hold_max_vz,
+                self.cfg.alt_hold_max_vz,
+            )
+
             msg = TwistStamped()
             msg.header.stamp = rospy.Time.now()
             msg.twist.linear.x = float(cmd_local[0])
             msg.twist.linear.y = float(cmd_local[1])
-            msg.twist.linear.z = float(cmd_vel_world[2]) if self.cfg.height_control else 0.0
+            msg.twist.linear.z = float(vz_hold)
             self.action_pub.publish(msg)
 
     def _publish_stop(self):
-        if self.cfg.use_px4:
-            self.pose_pub.publish(self._make_takeoff_pose())
-        else:
-            msg = TwistStamped()
-            msg.header.stamp = rospy.Time.now()
-            self.action_pub.publish(msg)
+        """Hover in place with level attitude.
+
+        For Gazebo (not PX4) we use setpoint_pose rather than cmd_vel
+        so the CERLAB position controller actively stabilises both
+        position and attitude — plain zero-velocity cmd_vel doesn't
+        fight attitude drift as effectively.
+        """
+        pose_msg = PoseStamped()
+        pose_msg.header.stamp = rospy.Time.now()
+        pose_msg.header.frame_id = "world"
+        if self.odom is not None:
+            pose_msg.pose.position.x = self.odom.pose.pose.position.x
+            pose_msg.pose.position.y = self.odom.pose.pose.position.y
+        pose_msg.pose.position.z = self.cfg.takeoff_height
+        pose_msg.pose.orientation.w = 1.0  # level attitude
+        self.pose_pub.publish(pose_msg)
 
     # ==================================================================
     # Takeoff

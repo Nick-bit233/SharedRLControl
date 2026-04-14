@@ -2,16 +2,21 @@
 Standalone ConstrainedResidualPPO network for inference only.
 No TorchRL / TensorDict dependency — pure PyTorch.
 
-Architecture (training-identical):
+Architecture (training-identical, TanhNormal distribution):
   LidarCNN: (N, 1, 36, 4) → 128
   Concat:   [cnn_feat(128), state(10), human_action(3)] → 141
   LayerNorm(141)
   MLP:      141 → 256 → 256  (_feature)
   ActorMLP: 256 → 256 → 256 → 6  (loc_delta[3], scale_raw[3])
-  Residual: loc = loc_delta * residual_scale + atanh(human_action / action_limit)
-  Sample:   TanhNormal(loc, softplus(scale_raw) + 1e-4)  → action_norm ∈ (-1, 1)
-  Scale:    action = action_norm * action_limit            → m/s
+  Residual: loc = loc_delta * residual_scale + atanh(ha / action_limit)
+  Deterministic: tanh(loc) → action_norm in [-1, 1]
+  Scale:    action = action_norm * action_limit             → m/s
   Transform: body-frame → world-frame (yaw-only rotation)
+
+NOTE: The training checkpoint (curriculum_stage5) was confirmed TanhNormal.
+The ppo.yaml now says distribution: beta, but that config was added AFTER
+the checkpoint was produced. Evidence: training output.log has no
+distribution key, and eval trajs contain _loc_delta (TanhNormal key).
 """
 import torch
 import torch.nn as nn
@@ -53,7 +58,7 @@ def _make_mlp(dims: list) -> nn.Sequential:
 class TunnelPolicyNet(nn.Module):
     """
     Self-contained inference network that mirrors the training-time
-    ConstrainedResidualPPO architecture.
+    ConstrainedResidualPPO architecture (TanhNormal distribution).
 
     Call signature:
         action_world = net(state, human_action, lidar, deterministic=True)
@@ -86,7 +91,7 @@ class TunnelPolicyNet(nn.Module):
         self.residual_scale = nn.Parameter(torch.tensor(1.0), requires_grad=False)
 
     # ------------------------------------------------------------------
-    # Forward (inference)
+    # Forward (inference) — TanhNormal distribution
     # ------------------------------------------------------------------
     def forward(
         self,
@@ -99,27 +104,29 @@ class TunnelPolicyNet(nn.Module):
         cnn_feat = self.lidar_cnn(lidar)                     # (N, 128)
         cat_feat = torch.cat([cnn_feat, state, human_action], dim=-1)  # (N, 141)
         normed = self.input_norm(cat_feat)
-
-        # Initialise lazy layers on first call
         feature = self.feature_mlp(normed)                   # (N, 256)
 
-        # 2. Actor
+        # 2. Actor outputs loc_delta and scale_raw
         logits = self.actor_mlp(feature)                     # (N, 6)
         loc_delta, scale_raw = logits.split(3, dim=-1)
 
-        # 3. Residual: combine with human action in pre-tanh space
+        # 3. TanhNormal residual: combine in pre-tanh space
+        #    Map human_action to pre-tanh space via atanh
         eps = 1e-6
         ha_norm = (human_action / self.action_limit).clamp(-1.0 + eps, 1.0 - eps)
         ha_pre_tanh = torch.atanh(ha_norm)
+
+        # Residual in pre-tanh space
         loc = loc_delta * self.residual_scale + ha_pre_tanh
 
         if deterministic:
-            action_norm = torch.tanh(loc)
+            # Mode of TanhNormal = tanh(loc)
+            action_norm = torch.tanh(loc)                    # [-1, 1]
         else:
+            # Full TanhNormal sampling
             scale = torch.nn.functional.softplus(scale_raw) + 1e-4
-            # Sample from TanhNormal: sample z ~ Normal(loc, scale), then tanh(z)
-            z = torch.distributions.Normal(loc, scale).rsample()
-            action_norm = torch.tanh(z)
+            normal_sample = torch.distributions.Normal(loc, scale).rsample()
+            action_norm = torch.tanh(normal_sample)          # [-1, 1]
 
         # 4. Scale to physical units
         action_body = action_norm * self.action_limit         # (N, 3) body-frame m/s
