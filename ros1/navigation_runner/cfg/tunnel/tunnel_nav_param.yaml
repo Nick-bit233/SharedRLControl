@@ -15,6 +15,9 @@ lidar_range: 4.0              # metres
 lidar_vfov: [-10.0, 20.0]    # vertical FoV [min_deg, max_deg]
 lidar_vbeams: 4               # number of vertical beams
 lidar_hres: 10.0              # horizontal resolution in degrees → 36 beams
+# PCD-based Python raycaster (bypasses C++ occupancy_map which corrupts prebuilt maps)
+use_pcd_raycast: true
+pcd_file: ""                  # set by launch file via tunnel_map arg
 
 # --- Control ---
 control_freq: 20.0            # Hz (training ~60Hz; 20Hz is sufficient for deployment)
@@ -24,14 +27,14 @@ takeoff_height: 5.0           # metres — must match training init height (env_
 
 # --- User model / keyboard mode ---
 keyboard_mode: false              # true = keyboard teleop as human input; false = UserModelTunnel
-user_model_simple: true       # true = constant forward speed; false = Perlin noise
+user_model_simple: false       # true = constant forward speed; false = Perlin noise
 user_model_speed: 2.0         # m/s forward speed
 user_model_freq_base: 0.1     # Perlin noise base frequency (online mode only)
 user_model_freq_scale: 0.3    # Perlin noise frequency scale (online mode only)
 
 # --- Safety ---
 use_safety_shield: false      # Use ORCA safe_action_node
-safety_min_dist: 0.3          # Emergency stop distance (metres)
+safety_min_dist: 0.2          # Emergency stop distance (metres) — training collision=0.3m
 collision_dist: 0.05          # Below this = collision = task failed (metres)
 
 # --- Gazebo deployment ---
@@ -44,4 +47,4 @@ tumble_recover_height: 1.0    # metres above takeoff_height during tumble recove
 tumble_recover_timeout: 10.0  # seconds before declaring tumble recovery failed
 
 # --- Goal ---
-goal_x: 10.0                  # metres — declare success when drone x >= this
+goal_x: 12.0                  # metres — declare success when drone x >= this

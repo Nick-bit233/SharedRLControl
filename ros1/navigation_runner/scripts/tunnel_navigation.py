@@ -38,8 +38,12 @@ try:
 except ImportError:
     HAS_MAVROS = False
 
-# map_manager RayCast service
-from map_manager.srv import RayCast
+# map_manager RayCast service (kept as fallback, prefer Python raycaster)
+try:
+    from map_manager.srv import RayCast
+    HAS_RAYCAST_SRV = True
+except ImportError:
+    HAS_RAYCAST_SRV = False
 
 # Add tunnel_deployment package to path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +52,7 @@ sys.path.insert(0, SCRIPT_DIR)
 from tunnel_deployment.policy_net import TunnelPolicyNet
 from tunnel_deployment.user_model import UserModelTunnel
 from tunnel_deployment.quat_utils import quat_rotate_inverse
+from tunnel_deployment.pcd_raycast import PcdRaycaster
 
 
 class TunnelConfig:
@@ -60,6 +65,9 @@ class TunnelConfig:
         self.lidar_vbeams = rospy.get_param("~lidar_vbeams", 4)
         self.lidar_hres = rospy.get_param("~lidar_hres", 10.0)
         self.lidar_hbeams = int(360.0 / self.lidar_hres)
+        # PCD-based Python raycaster (bypasses C++ occupancy_map service)
+        self.pcd_file = rospy.get_param("~pcd_file", "")
+        self.use_pcd_raycast = rospy.get_param("~use_pcd_raycast", True)
 
         # Policy
         self.action_limit = rospy.get_param("~action_limit", 2.0)
@@ -141,6 +149,22 @@ class TunnelNavigator:
         )
         self.policy.eval()
         rospy.loginfo("[TunnelNav] Policy loaded successfully.")
+
+        # ---- PCD Raycaster (bypasses C++ occupancy_map service) ----
+        self.pcd_raycaster = None
+        if self.cfg.use_pcd_raycast and self.cfg.pcd_file:
+            try:
+                self.pcd_raycaster = PcdRaycaster(
+                    self.cfg.pcd_file,
+                    resolution=0.1,
+                    inflate=(0.15, 0.15, 0.05),
+                )
+                rospy.loginfo("[TunnelNav] Using Python PCD raycaster")
+            except Exception as e:
+                rospy.logwarn(f"[TunnelNav] PCD raycaster failed: {e}, falling back to C++ service")
+                self.pcd_raycaster = None
+        if self.pcd_raycaster is None:
+            rospy.loginfo("[TunnelNav] Using C++ occupancy_map/raycast service")
 
         # Log all configuration parameters
         rospy.loginfo(f"[TunnelNav] === Configuration ===")
@@ -321,7 +345,7 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav] Mode → {mode_str}")
 
     # ==================================================================
-    # Raycast (LiDAR simulation via map_manager)
+    # Raycast (LiDAR simulation — Python PCD raycaster or C++ service)
     # ==================================================================
     def _raycast_callback(self, event):
         if not self.odom_received:
@@ -330,11 +354,10 @@ class TunnelNavigator:
         q = self.odom.pose.pose.orientation
         _, _, yaw = tf.transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
 
-        try:
-            raycast = rospy.ServiceProxy("occupancy_map/raycast", RayCast)
-            pos_msg = Point(x=pos.x, y=pos.y, z=pos.z)
-            resp = raycast(
-                pos_msg,
+        if self.pcd_raycaster is not None:
+            # Python PCD raycaster — deterministic, no sensor-update corruption
+            pts = self.pcd_raycaster.raycast(
+                [pos.x, pos.y, pos.z],
                 yaw,
                 self.cfg.lidar_range,
                 self.cfg.lidar_vfov[0],
@@ -342,21 +365,35 @@ class TunnelNavigator:
                 self.cfg.lidar_vbeams,
                 self.cfg.lidar_hres,
             )
-            # Parse into (N, 3) numpy array — avoid per-point Python loop
-            pts_flat = np.array(resp.points, dtype=np.float32)
-            n_pts = len(pts_flat) // 3
-            if n_pts > 0:
-                self.raypoints_np = pts_flat.reshape(n_pts, 3)
-            else:
-                self.raypoints_np = np.empty((0, 3), dtype=np.float32)
-
-            if not self.ready and n_pts > 0:
+            self.raypoints_np = pts
+            if not self.ready and pts.shape[0] > 0:
                 self.ready = True
-
-            # Publish LiDAR points as PointCloud2 for RViz
-            self._publish_lidar_cloud(self.raypoints_np)
-        except rospy.ServiceException as e:
-            rospy.logwarn_throttle(5.0, f"[TunnelNav] RayCast service error: {e}")
+            self._publish_lidar_cloud(pts)
+        elif HAS_RAYCAST_SRV:
+            # Fallback: C++ occupancy_map/raycast service
+            try:
+                raycast = rospy.ServiceProxy("occupancy_map/raycast", RayCast)
+                pos_msg = Point(x=pos.x, y=pos.y, z=pos.z)
+                resp = raycast(
+                    pos_msg,
+                    yaw,
+                    self.cfg.lidar_range,
+                    self.cfg.lidar_vfov[0],
+                    self.cfg.lidar_vfov[1],
+                    self.cfg.lidar_vbeams,
+                    self.cfg.lidar_hres,
+                )
+                pts_flat = np.array(resp.points, dtype=np.float32)
+                n_pts = len(pts_flat) // 3
+                if n_pts > 0:
+                    self.raypoints_np = pts_flat.reshape(n_pts, 3)
+                else:
+                    self.raypoints_np = np.empty((0, 3), dtype=np.float32)
+                if not self.ready and n_pts > 0:
+                    self.ready = True
+                self._publish_lidar_cloud(self.raypoints_np)
+            except rospy.ServiceException as e:
+                rospy.logwarn_throttle(5.0, f"[TunnelNav] RayCast service error: {e}")
 
     # ==================================================================
     # Build Observation  (mirrors _compute_state_and_obs in env_tunnel.py)
@@ -520,20 +557,26 @@ class TunnelNavigator:
             )  # (1, 3) world-frame m/s
         cmd = action_world.squeeze(0).cpu().numpy()
 
-        # Debug: log first 10 iterations + every 100th
+        # Debug: log first 15 iterations + every 200th
         if not hasattr(self, '_ctrl_iter'):
             self._ctrl_iter = 0
         self._ctrl_iter += 1
-        if self._ctrl_iter <= 10 or self._ctrl_iter % 100 == 0:
+        if self._ctrl_iter <= 15 or self._ctrl_iter % 200 == 0:
             ha = human_action.squeeze(0).cpu().numpy()
             s = state.squeeze(0).cpu().numpy()
-            lidar_stats = lidar.squeeze().cpu().numpy()
+            L = lidar.squeeze().cpu().numpy()  # (36, 4)
+            # Directional lidar averages: F=forward(bins 0,1,34,35), L=left(8,9,10), R=right(26,27,28), B=back(17,18,19)
+            fwd_m = L[[0,1,34,35], :].mean()
+            left_m = L[[8,9,10], :].mean()
+            right_m = L[[26,27,28], :].mean()
+            back_m = L[[17,18,19], :].mean()
             rospy.loginfo(
                 f"[TunnelNav] iter={self._ctrl_iter}: "
                 f"ha=[{ha[0]:.2f},{ha[1]:.2f},{ha[2]:.2f}] "
                 f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] "
                 f"vel_b=[{s[0]:.2f},{s[1]:.2f},{s[2]:.2f}] "
-                f"lidar_range=[{lidar_stats.min():.2f},{lidar_stats.max():.2f}]"
+                f"lidar F={fwd_m:.3f} L={left_m:.3f} R={right_m:.3f} B={back_m:.3f} "
+                f"[min={L.min():.3f} max={L.max():.3f}]"
             )
 
         # 3. Publish

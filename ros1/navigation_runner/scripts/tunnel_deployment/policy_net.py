@@ -142,6 +142,45 @@ class TunnelPolicyNet(nn.Module):
 
         # 5. Transform body → world (yaw-only)
         action_world = vec_to_world(action_body, state, yaw_only=True)
+
+        # Debug: log internals for first N calls
+        if not hasattr(self, '_fwd_count'):
+            self._fwd_count = 0
+        self._fwd_count += 1
+        if self._fwd_count <= 15 or self._fwd_count % 200 == 0:
+            md = mean_delta.squeeze(0).detach().cpu().numpy()
+            m = mean.squeeze(0).detach().cpu().numpy()
+            ab = action_body.squeeze(0).detach().cpu().numpy()
+            aw = action_world.squeeze(0).detach().cpu().numpy()
+            # Lidar: forward bins (0,1,34,35), left bins (8,9,10), right (26,27,28)
+            L = lidar.squeeze().detach().cpu().numpy()  # (36, 4)
+            fwd_mean = L[[0,1,34,35], :].mean()
+            left_mean = L[[8,9,10], :].mean()
+            right_mean = L[[26,27,28], :].mean()
+            back_mean = L[[17,18,19], :].mean()
+            print(f"[PolicyDbg] #{self._fwd_count} "
+                  f"md=[{md[0]:.3f},{md[1]:.3f},{md[2]:.3f}] "
+                  f"mean=[{m[0]:.3f},{m[1]:.3f},{m[2]:.3f}] "
+                  f"body=[{ab[0]:.2f},{ab[1]:.2f},{ab[2]:.2f}] "
+                  f"world=[{aw[0]:.2f},{aw[1]:.2f},{aw[2]:.2f}] "
+                  f"lidar F={fwd_mean:.2f} L={left_mean:.2f} R={right_mean:.2f} B={back_mean:.2f}")
+            # Dump exact tensors for offline replay
+            if self._fwd_count <= 5:
+                try:
+                    dump = {
+                        'state': state.detach().cpu(),
+                        'human_action': human_action.detach().cpu(),
+                        'lidar': lidar.detach().cpu(),
+                        'md': mean_delta.detach().cpu(),
+                        'mean': mean.detach().cpu(),
+                        'body': action_body.detach().cpu(),
+                        'world': action_world.detach().cpu(),
+                    }
+                    torch.save(dump, f'/tmp/policy_dump_{self._fwd_count}.pt')
+                    print(f"[PolicyDbg] Dumped tensors to /tmp/policy_dump_{self._fwd_count}.pt")
+                except Exception as e:
+                    print(f"[PolicyDbg] Dump error: {e}")
+
         return action_world
 
     # ------------------------------------------------------------------
