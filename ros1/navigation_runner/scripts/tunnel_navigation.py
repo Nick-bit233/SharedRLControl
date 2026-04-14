@@ -127,12 +127,15 @@ class TunnelNavigator:
         # ---- User model OR keyboard input ----
         if self.cfg.keyboard_mode:
             self.user_model = None
-            # Latest keyboard command (body frame, 3D velocity)
+            # Latest keyboard command: full TwistStamped for direct relay,
+            # and extracted (3,) velocity for RL human_action
+            self._kb_twist_msg = TwistStamped()
             self._kb_cmd = np.zeros(3, dtype=np.float32)
             self._kb_cmd_lock = threading.Lock()
-            # RL assist starts OFF in keyboard mode; user toggles it
+            # RL assist starts OFF in keyboard mode — user flies directly first
             self.rl_assist = False
-            rospy.loginfo("[TunnelNav] KEYBOARD MODE: waiting for user to takeoff and enable RL assist")
+            rospy.loginfo("[TunnelNav] KEYBOARD MODE (DIRECT): use CERLAB keyboard to fly")
+            rospy.loginfo("[TunnelNav]   Toggle RL assist: rostopic pub /tunnel_nav/assist_toggle std_msgs/Empty")
         else:
             self.user_model = UserModelTunnel(
                 max_speed=self.cfg.user_model_speed,
@@ -154,7 +157,6 @@ class TunnelNavigator:
         self.safety_stop = False
         self.collision = False  # True = min_dist < collision_dist → task failed
         self.min_dist = float("inf")  # current minimum obstacle distance
-        self.has_taken_off = False  # for keyboard mode manual takeoff
 
         # ---- ROS interfaces ----
         self._setup_ros()
@@ -165,9 +167,8 @@ class TunnelNavigator:
 
         # ---- Takeoff ----
         if self.cfg.keyboard_mode:
-            # In keyboard mode, wait for user to send takeoff command
-            rospy.loginfo("[TunnelNav] Publish Empty to /tunnel_nav/takeoff_cmd to take off")
-            rospy.loginfo("[TunnelNav] Publish Empty to /tunnel_nav/assist_toggle to toggle RL assist")
+            # CERLAB keyboard handles takeoff (Z key) → Gazebo plugin directly
+            rospy.loginfo("[TunnelNav] Takeoff: press Z in CERLAB keyboard window")
         else:
             self._takeoff()
 
@@ -243,13 +244,10 @@ class TunnelNavigator:
             "/tunnel_nav/collision", Bool, queue_size=2, latch=True
         )
 
-        # Keyboard mode: subscribe to user velocity commands and control topics
+        # Keyboard mode: subscribe to remapped CERLAB keyboard output + assist toggle
         if self.cfg.keyboard_mode:
-            self.user_cmd_sub = rospy.Subscriber(
-                "/tunnel_nav/user_cmd", TwistStamped, self._user_cmd_cb
-            )
-            self.takeoff_cmd_sub = rospy.Subscriber(
-                "/tunnel_nav/takeoff_cmd", Empty, self._takeoff_cmd_cb
+            self.kb_cmd_sub = rospy.Subscriber(
+                "/keyboard/cmd_vel", TwistStamped, self._kb_cmd_cb
             )
             self.assist_toggle_sub = rospy.Subscriber(
                 "/tunnel_nav/assist_toggle", Empty, self._assist_toggle_cb
@@ -269,27 +267,20 @@ class TunnelNavigator:
     def _mavros_state_cb(self, msg):
         self.mavros_state = msg
 
-    def _user_cmd_cb(self, msg: TwistStamped):
-        """Keyboard mode: receive body-frame velocity from teleop node."""
+    def _kb_cmd_cb(self, msg: TwistStamped):
+        """Keyboard mode: receive CERLAB keyboard cmd_vel (remapped topic)."""
         with self._kb_cmd_lock:
+            self._kb_twist_msg = msg
             self._kb_cmd[0] = msg.twist.linear.x
             self._kb_cmd[1] = msg.twist.linear.y
             self._kb_cmd[2] = msg.twist.linear.z
-
-    def _takeoff_cmd_cb(self, msg):
-        """Keyboard mode: user triggers takeoff (runs in background thread)."""
-        if self.has_taken_off:
-            rospy.logwarn("[TunnelNav] Already took off, ignoring duplicate takeoff")
-            return
-        self.has_taken_off = True  # set immediately to block duplicates
-        threading.Thread(target=self._takeoff, daemon=True).start()
 
     def _assist_toggle_cb(self, msg):
         """Keyboard mode: toggle RL assist on/off."""
         self.rl_assist = not self.rl_assist
         self.assist_pub.publish(Bool(data=self.rl_assist))
-        state_str = "ON" if self.rl_assist else "OFF"
-        rospy.loginfo(f"[TunnelNav] RL assist toggled → {state_str}")
+        mode_str = "RL ASSIST" if self.rl_assist else "DIRECT"
+        rospy.loginfo(f"[TunnelNav] Mode → {mode_str}")
 
     # ==================================================================
     # Raycast (LiDAR simulation via map_manager)
@@ -408,24 +399,36 @@ class TunnelNavigator:
         if not self.odom_received:
             return
 
-        # In keyboard mode, wait for user to trigger takeoff
-        if self.cfg.keyboard_mode and not self.has_taken_off:
+        # --- Keyboard DIRECT mode: relay CERLAB keyboard → drone, no RL ---
+        if self.cfg.keyboard_mode and not self.rl_assist:
+            with self._kb_cmd_lock:
+                relay_msg = TwistStamped()
+                relay_msg.header.stamp = rospy.Time.now()
+                relay_msg.twist = self._kb_twist_msg.twist
+            self.action_pub.publish(relay_msg)
+            # Publish status for monitoring
+            pos = self.odom.pose.pose.position
+            v = relay_msg.twist.linear
+            status_msg = (
+                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                f"cmd=[{v.x:.2f},{v.y:.2f},{v.z:.2f}] | "
+                f"min_d={self.min_dist:.2f} | DIRECT"
+            )
+            self.status_pub.publish(String(data=status_msg))
             return
 
+        # --- RL mode (auto or keyboard+RL assist) ---
         if not self.ready:
             # Keep publishing takeoff pose while waiting for first raycast
             self.pose_pub.publish(self._make_takeoff_pose())
             return
 
         if self.collision:
-            # Collision detected — stop permanently, publish status
             self._publish_stop()
             return
 
         if self.safety_stop:
-            # Too close but not collision — publish reduced/zero cmd, allow recovery
             self._publish_stop()
-            # Still publish status so we can see what's happening
             pos = self.odom.pose.pose.position
             status_msg = (
                 f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
@@ -437,17 +440,13 @@ class TunnelNavigator:
         # 1. Build observation
         state, human_action, lidar = self._build_obs()
 
-        # 2. Policy inference or direct keyboard pass-through
-        if self.rl_assist:
-            with torch.no_grad():
-                action_world = self.policy(
-                    state, human_action, lidar,
-                    deterministic=self.cfg.deterministic,
-                )  # (1, 3) world-frame m/s
-            cmd = action_world.squeeze(0).cpu().numpy()
-        else:
-            # No RL: pass keyboard/user_model velocity directly as world-frame command
-            cmd = human_action.squeeze(0).cpu().numpy()
+        # 2. Policy inference
+        with torch.no_grad():
+            action_world = self.policy(
+                state, human_action, lidar,
+                deterministic=self.cfg.deterministic,
+            )  # (1, 3) world-frame m/s
+        cmd = action_world.squeeze(0).cpu().numpy()
 
         # 3. Publish
         self._publish_cmd(cmd)
@@ -457,11 +456,11 @@ class TunnelNavigator:
 
         # 5. Publish status
         pos = self.odom.pose.pose.position
-        assist_str = "RL" if self.rl_assist else "MANUAL"
+        mode_str = "RL" if not self.cfg.keyboard_mode else "KB+RL"
         status_msg = (
             f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
             f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] | "
-            f"min_d={self.min_dist:.2f} | {assist_str} | "
+            f"min_d={self.min_dist:.2f} | {mode_str} | "
             f"safe={'NO' if self.safety_stop else 'OK'}"
         )
         self.status_pub.publish(String(data=status_msg))

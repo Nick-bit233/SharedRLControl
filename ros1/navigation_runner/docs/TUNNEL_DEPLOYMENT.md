@@ -100,43 +100,47 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 roslaunch navigation_runner tunnel_comparison.launch method:=rl keyboard:=true gui:=true
 ```
 
-启动后会自动打开一个 xterm 终端窗口用于键盘控制。操作流程：
+启动后 CERLAB 的 Qt 键盘控制窗口会自动弹出。操作流程：
 
-1. **等待 Gazebo 和各节点就绪**（控制台出现 `[TunnelNav] KEYBOARD MODE`）
-2. **聚焦 xterm 窗口**，按 `T` 键触发起飞
-3. 起飞完成后，使用 WASD/QE 手动控制无人机
-4. 按 `R` 键开启 RL 辅助 — 策略会修正你的键盘输入
-5. 再按 `R` 关闭 RL 辅助，回到纯键盘控制
-6. 按 `ESC` 退出
+1. **等待 Gazebo 和各节点就绪**（控制台出现 `[TunnelNav] KEYBOARD MODE (DIRECT)`）
+2. **聚焦 CERLAB 键盘窗口**，按 `Z` 键触发起飞
+3. 起飞完成后，使用 CERLAB 键盘控制飞行（见下方键位表）
+4. 此时是 **DIRECT 模式**：键盘输入直接传递给无人机
+5. 在另一终端发布 `rostopic pub /tunnel_nav/assist_toggle std_msgs/Empty` 开启 RL 辅助
+6. RL 辅助开启后，键盘输入作为"人类意图"经 RL 策略修正后再发给无人机
+7. 再次发布同一话题关闭 RL 辅助，回到 DIRECT 模式
 
-**键位表：**
+**CERLAB 键盘键位（由 uav_simulator 的 keyboard_control 节点提供）：**
 
 | 按键 | 功能 |
 |------|------|
-| W/S | 前进/后退（body X） |
-| A/D | 左移/右移（body Y） |
-| Q/E | 上升/下降（body Z） |
-| T | 起飞 |
-| R | 切换 RL 辅助 |
-| ESC | 退出 |
+| Z | 起飞 |
+| X | 降落 |
+| H | 悬停（零速度） |
+| I/K | 前进/后退（pitch → linear.x） |
+| J/L | 左移/右移（roll → linear.y） |
+| W/S | 上升/下降（linear.z） |
+| A/D | 左偏航/右偏航（angular.z） |
+| T | 切换位置控制模式 |
+| 松开所有键 | 自动悬停 |
 
-**不使用 launch（手动启动）：**
+**RL 辅助切换：**
 
 ```bash
-# 终端 A: 先启动 Gazebo + RL 节点
-roslaunch navigation_runner tunnel_comparison.launch method:=rl keyboard:=true gui:=true
+# 切换 DIRECT ↔ RL 辅助
+rostopic pub /tunnel_nav/assist_toggle std_msgs/Empty
 
-# 或者手动启动 teleop 节点（如果不使用 xterm launch-prefix）
-rosrun navigation_runner tunnel_keyboard_teleop.py
+# 查看当前模式
+rostopic echo /tunnel_nav/assist_active
 ```
 
 **相关话题：**
 
 | 话题 | 类型 | 说明 |
 |------|------|------|
-| `/tunnel_nav/user_cmd` | TwistStamped | 键盘→导航节点的速度指令 |
-| `/tunnel_nav/takeoff_cmd` | Empty | 起飞触发 |
-| `/tunnel_nav/assist_toggle` | Empty | RL 辅助开关 |
+| `/keyboard/cmd_vel` | TwistStamped | CERLAB 键盘输出（重映射） |
+| `/CERLAB/quadcopter/cmd_vel` | TwistStamped | 最终控制指令（Gazebo 插件接收） |
+| `/tunnel_nav/assist_toggle` | Empty | RL 辅助开关（发布一次切换一次） |
 | `/tunnel_nav/assist_active` | Bool | 当前 RL 辅助状态（latched） |
 
 ## 2. 分步调试
