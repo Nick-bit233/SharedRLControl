@@ -95,7 +95,7 @@ Visualization Manager:
       Marker Topic: /tunnel_nav/cmd_vel_vis
       Name: RL Command
       Namespaces:
-        rl_cmd: true
+        {}
       Queue Size: 1
       Value: true
     - Class: rviz/MarkerArray
@@ -103,7 +103,7 @@ Visualization Manager:
       Marker Topic: /tunnel_nav/human_cmd_vis
       Name: Human Command
       Namespaces:
-        human_cmd: true
+        {}
       Queue Size: 1
       Value: true
     - Angle Tolerance: 0.009999999776482582
@@ -215,7 +215,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 54.329856872558594
+      Distance: 74.14707946777344
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -223,17 +223,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 1.368072509765625
-        Y: -7.417662143707275
+        X: -0.12868785858154297
+        Y: -12.77696418762207
         Z: 2.000002384185791
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.5697963237762451
+      Pitch: 1.3197965621948242
       Target Frame: <Fixed Frame>
-      Yaw: 4.713165760040283
+      Yaw: 4.6681647300720215
     Saved: ~
 Window Geometry:
   Displays:

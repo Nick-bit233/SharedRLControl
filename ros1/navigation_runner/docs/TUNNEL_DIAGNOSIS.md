@@ -1,5 +1,10 @@
 # ROS1/Gazebo 隧道部署诊断结论
 
+> **仓库状态更新说明**  
+> 本文的根因归因仍然有效，但其中的定量轨迹与基线参数对应的是诊断时使用的那一版默认地图快照。  
+> 之后仓库已进一步更新：`ros1/README.md` 中的默认地图生成命令变为 `--seed 288 -n 30 --cuboid-ratio 0.`，`tunnel_comparison.launch` 的默认 `spawn_x` 也进一步调整为 `-8.5`，作为当前 Gazebo 侧的**安全起飞微调**。  
+> 因此，下面提到的旧 `spawn_x=-10` 仍然是已确认的历史错误基线，而中间诊断时采用的 `-7.0` 应理解为**历史审计参考值**，不是当前仓库的默认起点。
+
 ## 结论
 
 当前这条 `ROS1/Gazebo -> tunnel_navigation.py -> TunnelPolicyNet` 隧道部署链路里，**之前看到的“大幅偏离 Isaac Sim”主要不是模型本身的 sim-transfer 失效，而是实现与基线存在多处关键错误**。  
@@ -25,6 +30,8 @@
 - Gazebo world：`ros1/uav_simulator/worlds/generated_env/tunnel_pcd_match_static.world`
 - 算法：`ConstrainedResidualPPO_Beta`
 - 训练入口：`isaac-training/experiments/04_tunnel_task/train.py`
+
+诊断时的 airborne 对照主要围绕“旧错误基线 `spawn_x=-10`”与“中间审计参考值 `spawn_x=-7`”展开；**当前仓库默认起飞点已进一步调整为 `spawn_x=-8.5`**，用于避免当前 Gazebo PCD/world 资产组合下的起飞碰撞。
 
 已确认：
 
@@ -103,7 +110,8 @@
 - `tunnel_test/tunnel_terrain.py`
   - `INIT_POS` 改为 `[-7.0, 0.0, 5.0]`
 - `ros1/navigation_runner/launch/tunnel_comparison.launch`
-  - `spawn_x` 改为 `-7.0`
+  - 历史错误基线 `spawn_x=-10.0` 已被移除；诊断过程中先回到 `-7.0` 做对齐审计
+  - 当前仓库默认值已进一步调整为 `spawn_x=-8.5`，作为 Gazebo 侧安全起飞微调
   - `flight_recorder goal_x` 改为 `12.0`
 
 ## 最终归因
@@ -136,7 +144,8 @@
 
 1. 本次没有重新完整跑一遍修正后的 Isaac Sim `compare_ipc_rl.py` 与 Gazebo 做逐帧对齐；如果后续要做论文级别对比，建议补这一组。
 2. 本次 Gazebo 通过 `docker exec` 拉起 `roslaunch` 时，需要额外设置 `ROS_HOSTNAME=127.0.0.1 ROS_IP=127.0.0.1`，否则容器里的 `HOSTNAME` 不能自回连。这是 ROS 网络配置问题，不是隧道策略逻辑问题。
-3. 如果后续目标是提高这张固定地图上的通过率，优先应该检查：
+3. 当前默认起飞点 `spawn_x=-8.5` 是针对现有 Gazebo 资产的安全设计；后续如果要做 Isaac Sim / Gazebo 严格对比，应优先区分“起飞安全补偿”与“airborne 轨迹差异”这两个问题。
+4. 如果后续目标是提高这张固定地图上的通过率，优先应该检查：
    - 当前 checkpoint 是否就是期望的最佳隧道权重；
    - `UserModelTunnel` 的 Perlin 分布是否和训练期一致；
    - 是否需要针对固定地图做 deterministic/simpler human input 的对照（例如 `user_model_simple=true`）。

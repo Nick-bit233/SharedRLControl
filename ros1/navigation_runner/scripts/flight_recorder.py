@@ -32,6 +32,7 @@ class FlightRecorder:
         self.latest_odom = None
         self.latest_cmd = None
         self.reached_goal = False
+        self.data_saved = False
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -46,6 +47,7 @@ class FlightRecorder:
             '/flight_recorder/stop', Bool, self._stop_cb, queue_size=1)
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.rate), self._record_cb)
+        rospy.on_shutdown(self._shutdown_cb)
 
         if self.auto_start:
             rospy.Timer(rospy.Duration(2.0), self._auto_start_cb, oneshot=True)
@@ -84,6 +86,7 @@ class FlightRecorder:
         self.start_time = rospy.Time.now()
         self._init_buffers()
         self.reached_goal = False
+        self.data_saved = False
         rospy.loginfo("[Recorder] STARTED (%s trial %d)", self.method, self.trial_id)
 
     def _stop_recording(self):
@@ -123,6 +126,9 @@ class FlightRecorder:
             rospy.loginfo("[Recorder] Goal reached at t=%.1fs, x=%.1f", t, p.x)
 
     def _save_data(self):
+        if self.data_saved:
+            return
+
         ts = self.buffers['timestamps']
         filename = "{}_{}_trial{:03d}.npz".format(
             self.method, time.strftime("%Y%m%d_%H%M%S"), self.trial_id)
@@ -138,7 +144,14 @@ class FlightRecorder:
             save_dict[key] = np.array(val)
 
         np.savez_compressed(filepath, **save_dict)
+        self.data_saved = True
         rospy.loginfo("[Recorder] Saved: %s (%d samples)", filepath, len(ts))
+
+    def _shutdown_cb(self):
+        if self.recording:
+            rospy.loginfo("[Recorder] Shutdown while recording — saving buffered data")
+            self.recording = False
+            self._save_data()
 
 
 if __name__ == '__main__':

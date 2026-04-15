@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Command Bridge Node — converts IPC's PositionCommand to CERLAB cmd_vel.
 
-Subscribes to quadrotor_msgs/PositionCommand (world-frame velocity),
-rotates to body frame, and publishes as TwistStamped for CERLAB Gazebo.
+CERLAB's Gazebo plugin consumes horizontal velocity commands in a yaw-aligned
+local frame rather than the full pitched/rolled body frame. Mirror the RL
+deployment path: rotate XY by yaw only, and generate Z command from the IPC
+position/velocity setpoint so the bridge does not drive the drone downward
+while the planner is still trying to climb.
 """
 
 import math
-import numpy as np
 import rospy
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TwistStamped
@@ -16,15 +18,6 @@ try:
     HAS_QUADROTOR_MSGS = True
 except ImportError:
     HAS_QUADROTOR_MSGS = False
-
-
-def quat_to_rotmat(qx, qy, qz, qw):
-    """Quaternion [x,y,z,w] -> 3x3 rotation matrix (body-to-world)."""
-    return np.array([
-        [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
-        [2*(qx*qy + qw*qz), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qw*qx)],
-        [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx*qx + qy*qy)]
-    ])
 
 
 def yaw_from_quat(qx, qy, qz, qw):
@@ -40,9 +33,11 @@ class CmdBridge:
         self.max_vel = rospy.get_param('~max_vel', 3.0)
         self.yaw_gain = rospy.get_param('~yaw_gain', 1.0)
         self.cmd_timeout = rospy.get_param('~cmd_timeout', 0.5)
+        self.altitude_kp = rospy.get_param('~altitude_kp', 1.0)
+        self.max_vz = rospy.get_param('~max_vz', 1.0)
 
-        self.rot_matrix = None  # body-to-world
         self.current_yaw = 0.0
+        self.current_z = None
         self.last_cmd_time = None
 
         self.odom_sub = rospy.Subscriber(
@@ -64,23 +59,28 @@ class CmdBridge:
 
     def _odom_cb(self, msg):
         q = msg.pose.pose.orientation
-        self.rot_matrix = quat_to_rotmat(q.x, q.y, q.z, q.w)
         self.current_yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
+        self.current_z = msg.pose.pose.position.z
 
     def _cmd_cb(self, msg):
-        if self.rot_matrix is None:
+        if self.current_z is None:
             return
 
-        # World-frame velocity from IPC
-        vel_world = np.array([msg.velocity.x, msg.velocity.y, msg.velocity.z])
-
-        # Rotate to body frame: v_body = R^T @ v_world
-        vel_body = self.rot_matrix.T @ vel_world
+        # IPC publishes world-frame commands. The CERLAB velocity controller is
+        # effectively yaw-aligned local-frame, matching the RL Gazebo bridge.
+        cos_yaw = math.cos(self.current_yaw)
+        sin_yaw = math.sin(self.current_yaw)
+        vx_local = cos_yaw * msg.velocity.x + sin_yaw * msg.velocity.y
+        vy_local = -sin_yaw * msg.velocity.x + cos_yaw * msg.velocity.y
+        vz_local = msg.velocity.z + self.altitude_kp * (msg.position.z - self.current_z)
 
         # Clamp
-        speed = np.linalg.norm(vel_body)
-        if speed > self.max_vel:
-            vel_body *= self.max_vel / speed
+        hspeed = math.hypot(vx_local, vy_local)
+        if hspeed > self.max_vel:
+            scale = self.max_vel / hspeed
+            vx_local *= scale
+            vy_local *= scale
+        vz_local = max(-self.max_vz, min(self.max_vz, vz_local))
 
         # Yaw rate: use yaw_dot if available, else proportional
         yaw_rate = 0.0
@@ -94,9 +94,9 @@ class CmdBridge:
         twist = TwistStamped()
         twist.header.stamp = rospy.Time.now()
         twist.header.frame_id = 'base_link'
-        twist.twist.linear.x = float(vel_body[0])
-        twist.twist.linear.y = float(vel_body[1])
-        twist.twist.linear.z = float(vel_body[2])
+        twist.twist.linear.x = float(vx_local)
+        twist.twist.linear.y = float(vy_local)
+        twist.twist.linear.z = float(vz_local)
         twist.twist.angular.z = float(yaw_rate)
         self.vel_pub.publish(twist)
         self.last_cmd_time = rospy.Time.now()

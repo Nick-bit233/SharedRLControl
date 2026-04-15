@@ -8,6 +8,7 @@ forward joystick commands for autonomous tunnel traversal.
 
 import rospy
 from mavros_msgs.msg import RCIn
+from std_msgs.msg import Empty
 
 
 class RCSimulator:
@@ -21,8 +22,12 @@ class RCSimulator:
         self.lateral_stick = rospy.get_param('~lateral_stick', 0.0)
         self.vertical_stick = rospy.get_param('~vertical_stick', 0.0)
         self.yaw_stick = rospy.get_param('~yaw_stick', 0.0)
+        self.auto_takeoff = rospy.get_param('~auto_takeoff', True)
+        self.takeoff_wait = rospy.get_param('~takeoff_wait', 4.0)
+        self.takeoff_topic = rospy.get_param('~takeoff_topic', '/CERLAB/quadcopter/takeoff')
 
         self.rc_pub = rospy.Publisher('/mavros/rc/in', RCIn, queue_size=10)
+        self.takeoff_pub = rospy.Publisher(self.takeoff_topic, Empty, queue_size=1)
 
         # 18 channels, all centered at 1500 (neutral)
         self.channels = [1500] * 18
@@ -42,6 +47,25 @@ class RCSimulator:
         msg.header.stamp = rospy.Time.now()
         msg.channels = list(self.channels)
         self.rc_pub.publish(msg)
+
+    def send_takeoff(self):
+        if not self.auto_takeoff:
+            return
+
+        wait_start = rospy.Time.now()
+        while not rospy.is_shutdown():
+            if self.takeoff_pub.get_num_connections() > 0:
+                break
+            if (rospy.Time.now() - wait_start).to_sec() > 5.0:
+                break
+            rospy.sleep(0.1)
+
+        rospy.loginfo("[RC Sim] Publishing takeoff command on %s", self.takeoff_topic)
+        for _ in range(5):
+            self.takeoff_pub.publish(Empty())
+            rospy.sleep(0.1)
+        rospy.loginfo("[RC Sim] Waiting %.1fs for takeoff", self.takeoff_wait)
+        rospy.sleep(self.takeoff_wait)
 
     def update_mode(self):
         elapsed = (rospy.Time.now() - self.mode_time).to_sec()
@@ -77,10 +101,12 @@ class RCSimulator:
 
         # In AutoPilot, set joystick for forward flight
         if self.mode == 'autopilot':
-            self.channels[0] = self.stick_to_pwm(self.lateral_stick)
-            self.channels[1] = self.stick_to_pwm(self.forward_stick)
-            self.channels[2] = self.stick_to_pwm(self.vertical_stick)
-            self.channels[3] = self.stick_to_pwm(self.yaw_stick)
+            # IPC's RCCallback maps joystick as -(channel - 1500) / 450, so
+            # positive desired commands must be encoded as PWM values below 1500.
+            self.channels[0] = self.stick_to_pwm(-self.lateral_stick)
+            self.channels[1] = self.stick_to_pwm(-self.forward_stick)
+            self.channels[2] = self.stick_to_pwm(-self.vertical_stick)
+            self.channels[3] = self.stick_to_pwm(-self.yaw_stick)
 
     def run(self):
         rate = rospy.Rate(self.rate)
@@ -97,6 +123,8 @@ class RCSimulator:
                 break
             rospy.sleep(0.1)
         rospy.loginfo("[RC Sim] Sim time=%.1f, starting RC publishing", rospy.Time.now().to_sec())
+
+        self.send_takeoff()
 
         self.mode_time = rospy.Time.now()
         while not rospy.is_shutdown():

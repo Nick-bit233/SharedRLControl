@@ -5,7 +5,8 @@
 >
 > 当前分支的诊断结论与推荐基线见 `TUNNEL_DIAGNOSIS.md`。本文旧版本里关于
 > Tanh residual、旧出生点和旧目标线的描述已经失效，请以当前 launch/config
-> 与诊断文档为准。
+> 与诊断文档为准。当前默认 Gazebo 起飞点是 `spawn_x=-8.5`，这是针对现有
+> PCD/world 资产组合做过实测验证的安全微调，不代表 Isaac Sim 训练起点本身。
 
 ## 概览
 
@@ -78,8 +79,17 @@ roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=false
 ### 1.3 运行 IPC 模式
 
 ```bash
+export ROS_HOSTNAME=127.0.0.1 ROS_IP=127.0.0.1
+source /opt/ros/noetic/setup.bash
+source /root/slope_ws/devel/setup.bash
+source /root/catkin_ws/devel/setup.bash
+
 roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 ```
+
+> 如果是在容器里手动分步调试，`slope_ws` 必须先于 `catkin_ws` source；反过来会让
+> `navigation_runner` 从 `ROS_PACKAGE_PATH` 中消失。当前 IPC 启动链还会自动完成
+> `takeoff -> Manual -> Hover -> Pilot -> AutoPilot`，无需再手动给一次起飞命令。
 
 ### 1.4 关键 launch 参数
 
@@ -93,7 +103,7 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 | `keyboard` | `false` | 键盘控制模式（仅 RL） |
 | `rviz` | `true` | 启动 RViz |
 | `record` | `true` | 记录飞行数据 |
-| `output_dir` | `/tmp/flight_data` | 数据输出目录 |
+| `output_dir` | `/root/results` | 数据输出目录 |
 
 ### 1.5 键盘控制模式
 
@@ -173,7 +183,10 @@ rosparam set /tunnel_navigator/checkpoint_path \
 rosrun navigation_runner tunnel_navigation.py __name:=tunnel_navigator
 
 # 终端 5: RViz
+# RL:
 rviz -d $(rospack find navigation_runner)/cfg/tunnel/tunnel.rviz
+# IPC:
+rviz -d $(rospack find navigation_runner)/cfg/tunnel/ipc_tunnel.rviz
 ```
 
 **注意**：分步启动时，参数必须手动加载到对应命名空间。使用 `roslaunch` 则自动完成。
@@ -203,6 +216,12 @@ ros1/navigation_runner/cfg/                         → /root/catkin_ws/src/navi
 ros1/navigation_runner/launch/                      → /root/catkin_ws/src/navigation_runner/launch/
 ros1/uav_simulator/worlds/                          → /root/catkin_ws/src/uav_simulator/worlds/
 ```
+
+> 注意：当前 `docker-compose.tunnel.yml` **不会**把 `slope_inspection/IPC` 或
+> `slope_inspection/rog_map` 挂载进 `/root/slope_ws/src/`。因此这两处 C++ 源码的修改
+> 不会像 `navigation_runner` 脚本/配置那样自动热更新到容器；若要让源码修复生效，
+> 需要在容器内重编 `ipc`（或重建镜像）。本次 IPC segfault 的“现成容器修复”是
+> `cfg/tunnel/ipc_gazebo_param.yaml` 中启用 `rog_map.frontier_extraction_en`。
 
 ## 4. 话题与服务参考
 
@@ -362,16 +381,18 @@ IsaacSim 训练环境使用 `map_range = [6.0, 12.0, 5.0]`（config 坐标 `[x, 
 
 **PCD 地图 (`tunnel_map_default.pcd`)**:
 - 当前默认实验使用固定的预生成 PCD / Gazebo world 配对
+- 当前 `ros1/README.md` 中记录的生成命令为：`generate_tunnel_map.py --seed 288 -n 30 --cuboid-ratio 0.`
 - X ∈ [-12, 12]（24m，前进方向），Y ∈ [-6, 6]（12m，侧向），Z ∈ [0, 10]（10m，高度）
 - 出生区域：X ∈ [-12, -6]
 - 结构：地面、天花板、Y=±6 侧壁、X=-10 后墙，以及与 `tunnel_pcd_match_static.world` 对齐的一组固定障碍物
 
 **Gazebo 世界 (`tunnel_pcd_match_static.world`)**:
 - 与默认 PCD 地图配对
-- 当前默认 world 中共有 15 个静态障碍模型，加上地面、侧壁和后墙
+- 包含一组与默认 PCD 对齐的固定静态障碍物、地面、侧壁和后墙
 - 无天花板（Gazebo 中方便观察；lidar_sim 通过 PCD 处理天花板检测）
 
-**无人机出生位置**: `(-7.0, 0.0, 0.1)`，yaw=0（朝 +X 方向），随后起飞到 `z=5.0`  
+**无人机出生位置**: `(-8.5, 0.0, 0.1)`，yaw=0（朝 +X 方向），随后起飞到 `z=5.0`  
+> 这里的 `-8.5` 是当前 Gazebo 侧安全起飞补偿值；如果做和 Isaac Sim 的严格 airborne 对齐，应从起飞稳定后的空中段开始比较。  
 **目标**: `X ≥ 12.0`
 
 **重新生成**:
@@ -401,7 +422,12 @@ python3 generate_tunnel_map.py \
 
 ## 7. RViz 可视化
 
-RViz 配置文件：`cfg/tunnel/tunnel.rviz`
+当前有两套 RViz 配置，不要混用：
+
+### 7.1 RL 模式
+
+- 配置文件：`cfg/tunnel/tunnel.rviz`
+- Fixed Frame：`map`
 
 | 显示项 | 话题 | 颜色/样式 | 说明 |
 |--------|------|-----------|------|
@@ -412,6 +438,26 @@ RViz 配置文件：`cfg/tunnel/tunnel.rviz`
 | RL Command | `/tunnel_nav/cmd_vel_vis` | 绿色箭头 | RL 策略输出方向 |
 | Human Command | `/tunnel_nav/human_cmd_vis` | 蓝色箭头 | UserModel 前进方向 |
 | Drone Odom | `/CERLAB/quadcopter/odom` | 箭头轨迹 | 无人机位姿历史 |
+
+### 7.2 IPC 模式
+
+- 配置文件：`cfg/tunnel/ipc_tunnel.rviz`
+- Fixed Frame：`world`
+
+| 显示项 | 话题 | 说明 |
+|--------|------|------|
+| Raw Cloud | `/pcl_render_node/cloud` | PCD 重建后的激光点云 |
+| IPC Path | `/ipc/path` | IPC 当前规划路径 |
+| A* Path | `/astar/path` | A* 初始路径 |
+| SFC | `/ipc/sfc` | 灰色安全走廊，可视效果应接近 `slope_inspection/README.md` |
+| ROG Maps | `/rog_map/occ` `/rog_map/unk` `/rog_map/inf_occ` `/rog_map/inf_unk` | 占据/未知/膨胀地图 |
+| Goal / Goal Free | `/ipc/goal` `/ipc/goal_free` | 目标点可视化 |
+| Drone Odom | `/CERLAB/quadcopter/odom_raw` | 无人机位姿 |
+
+> IPC 原版可视化 publisher 把 marker 固定发在 `world`，但 Gazebo 里程计和点云链路是
+> `map -> base_link`。`tunnel_ipc_sim.launch` 现在会额外发布一个恒等静态 TF
+> `world -> map`，这样 `/pcl_render_node/cloud`、`/ipc/sfc`、`/astar/path` 和
+> `/rog_map/*` 才能在同一个 RViz 视图里同时显示。
 
 ## 8. 自动化对比实验
 
@@ -426,14 +472,14 @@ python3 $(rospack find navigation_runner)/scripts/run_comparison.py \
     --methods rl,ipc \
     --n-trials 5 \
     --timeout 60 \
-    --output-dir /tmp/flight_data
+    --output-dir /root/results
 ```
 
 ### 8.2 分析结果
 
 ```bash
 python3 $(rospack find navigation_runner)/scripts/analyze_results.py \
-    --data-dir /tmp/flight_data \
+    --data-dir /root/results \
     --pcd-file $(rospack find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd
 ```
 
@@ -453,17 +499,30 @@ python3 $(rospack find navigation_runner)/scripts/analyze_results.py \
 
 | 节点 | 功能 | 输入 | 输出 |
 |------|------|------|------|
-| `rc_sim_node.py` | 模拟遥控器模式切换 | 定时器 | `/mavros/rc/in` |
+| `rc_sim_node.py` | 自动起飞 + 模拟遥控器模式切换 | 定时器 | `/CERLAB/quadcopter/takeoff`, `/mavros/rc/in` |
 | `lidar_sim_node.py` | LiDAR 点云模拟 | PCD + odom | `/pcl_render_node/cloud` |
 | `imu_bridge_node.py` | IMU 桥接 | odom + acc | `/mavros/imu/data` |
-| `cmd_bridge_node.py` | 指令转换 | `PositionCommand` | `/CERLAB/.../cmd_vel` |
+| `cmd_bridge_node.py` | 指令转换（yaw-only XY + 高度保持） | `PositionCommand` | `/CERLAB/.../cmd_vel` |
 | `mavros_fake_node.py` | MAVROS 服务模拟 | 服务请求 | 返回 success=true |
 
 **RC 模拟模式切换流程：**
 ```
-启动 → 2s 静默 → Manual(ch4高) → 3s → Hover(ch5高) → 3s →
-Pilot(ch5高) → 3s → AutoPilot(ch10高) → 持续前进摇杆
+启动 → 等待 Gazebo/takeoff subscriber → 发送一次 /CERLAB/quadcopter/takeoff →
+等待 4s 起飞 → Manual(ch4高) → Hover(ch5高) → Pilot(ch5高) →
+AutoPilot(ch10高) → 持续前进摇杆
 ```
+
+**当前已确认的 IPC 迁移关键修复：**
+1. `rc_sim_node.py` 现在会先自动发布一次起飞命令，否则 CERLAB 插件停留在
+   `LANDED_MODEL`，`cmd_vel` 再正确也不会起飞。
+2. RC 摇杆 PWM 映射已按 `slope_inspection/IPC/include/callback.cpp` 的符号约定修正；
+   若不取反，IPC 会把“前进”解释成负向摇杆。
+3. `cmd_bridge_node.py` 不再把世界速度旋转到完整机体系，而是与 RL 路径一致，只按
+   yaw 旋转 XY，并用 `PositionCommand.position.z + velocity.z` 做高度控制。
+   这修复了“`/planning/pos_cmd.velocity.x` 为正，但 `/CERLAB/quadcopter/cmd_vel.linear.x`
+   变成负值”的桥接错误。
+4. IPC 模式默认使用 `ipc_tunnel.rviz`，并在 launch 里补上 `world -> map` 静态 TF；
+   这修复了“话题其实在发，但 RViz 看不到点云/安全走廊”的可视化问题。
 
 IPC 参数文件：`cfg/tunnel/ipc_gazebo_param.yaml`
 
@@ -496,6 +555,7 @@ ros1/navigation_runner/
 │   ├── tunnel_nav_param.yaml         # RL 导航参数
 │   ├── occupancy_map_tunnel.yaml     # 占用地图参数
 │   ├── ipc_gazebo_param.yaml         # IPC Gazebo 参数
+│   ├── ipc_tunnel.rviz               # IPC 专用 RViz 配置（Fixed Frame=world）
 │   ├── checkpoint_best.pt            # 训练好的 RL 模型权重（1.6MB）
 │   ├── tunnel_map_default.pcd        # 默认隧道障碍物地图
 │   └── tunnel.rviz                   # RViz 显示配置
@@ -568,23 +628,66 @@ docker-compose.tunnel.yml             # 持久化开发容器
 
 ### Q: RViz 看不到内容
 
-- 确认 Fixed Frame 为 `map`
-- 手动添加话题：Add → By Topic → 选择 `/tunnel_nav/lidar_cloud` 等
-- 检查话题是否发布：`rostopic hz /tunnel_nav/lidar_cloud`
+- 先确认没有把 RL / IPC 的 RViz 配置混用：
+  - RL：`cfg/tunnel/tunnel.rviz`，Fixed Frame=`map`
+  - IPC：`cfg/tunnel/ipc_tunnel.rviz`，Fixed Frame=`world`
+- IPC 模式下应同时能看到 `/pcl_render_node/cloud`、`/ipc/sfc`、`/astar/path`、
+  `/rog_map/*`；若你是手动分步启动而不是用 launch，请补上：
+  `rosrun tf2_ros static_transform_publisher 0 0 0 0 0 0 world map`
+- 检查话题是否发布：
+  - RL：`rostopic hz /tunnel_nav/lidar_cloud`
+  - IPC：`rostopic hz /pcl_render_node/cloud && rostopic hz /ipc/sfc`
 
 ### Q: IPC 模式 ipc_node 启动后崩溃 (segfault)
 
-**可能原因 1**: RC 消息时序问题 — `rc_sim_node` 在仿真时间 0 时发送消息导致 IPC 的 RCCallback 访问空向量。
-- 已修复：`rc_sim_node.py` 等待仿真时间 > 2s 后再发布
+**当前已确认根因（2026-04-14）**：`slope_inspection/IPC/src/ipc_fsm.h` 的
+`LocalPcCallback()` 会无条件执行
+`boxSearch(..., FRONTIER, pc_unk_)`。但 Gazebo 隧道参数里曾把
+`rog_map/frontier_extraction_en` 设为 `false`。
 
-**可能原因 2**: `rog_map/map_size` 过大导致 A* 内存爆炸 — IPC 的 A* 路径规划器用 `rog_map` 的 `map_size_d` 和 `inflation_resolution` 来分配网格：
-  `GL_SIZE = (map_size / resolution + 1)^3`，每个 GridNode 约 64 字节 + malloc 开销。
-  - `[50,30,10]` @ 0.15 → 4,499,538 节点 ≈ 360MB — **导致崩溃**
-  - `[10,10,5]` @ 0.15 → 157,216 节点 ≈ 10MB — 安全
-  - 原版 slope_inspection 使用 `[8,8,4]` + `map_sliding: true`，地图自动跟随无人机
-- 已修复：`map_size` 从 [50,30,10] 回退到 [10,10,5]，配合 `map_sliding: true`
-- 首次 `updateMap` 时会打印 `cur_pose out of map range, reset the map` — 这是正常行为（地图滑动到无人机位置）
-- 验证：日志中 `GL_SIZE_` 应为约 `68 68 34`
+`ProbMap` 只有在 `frontier_extraction_en=true` 时才会分配 `FreeCntMap`，因此首帧点云一到就会走到：
+
+`ProbMap::boxSearch(FRONTIER)` → `ProbMap::isFrontier()` → `FreeCntMap::getFreeCnt(this=0x0)` → `SIGSEGV`
+
+gdb 回溯关键词：
+- `rog_map::ProbMap::boxSearch`
+- `rog_map::FreeCntMap::getFreeCnt (this=0x0)`
+- `ipc::IPCFSMClass::LocalPcCallback`
+
+**修复**
+1. 源码侧：`LocalPcCallback()` 在 frontier 提取关闭时回退到 `UNKNOWN` 搜索；
+   修复位于 `slope_inspection/IPC/src/ipc_fsm.h`。
+2. 运行侧：`cfg/tunnel/ipc_gazebo_param.yaml` 现在显式启用
+   `rog_map.frontier_extraction_en: true`，与当前 Docker 里的预编译 `ipc_node`
+   保持一致，因此不重编镜像也能直接跑通。
+3. 仍保留 `map_size: [10,10,5] + map_sliding: true`；这解决的是另一个历史上会
+   导致 IPC 启动即崩的 A* 内存问题，不能删。
+
+**验证结果**
+- `roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=false rviz:=false`
+  下，`ipc_node` 不再在首帧 `/pcl_render_node/cloud` 后退出
+- `/planning/pos_cmd` 与 `/CERLAB/quadcopter/cmd_vel` 已恢复发布
+- 历史验证文件：`/root/results/ipc_20260414_155721_trial002.npz`
+  （证明 segfault 与落盘链路已修复，但当时仍未完成前进）
+- 在后续修复自动起飞、RC 极性、`cmd_bridge_node.py` 速度坐标系和 IPC RViz/TF
+  之后，已完成新的基线验证：
+  - 录制文件：`/root/results/ipc_20260415_045621_trial003.npz`
+  - `goal_reached=True`
+  - `samples=3288`
+  - `total_time=65.759s`
+  - `max_x≈67.48`
+
+**结论**
+- “ipc-node 被杀死、无法拿到数据”以及“起飞后停在原地、RViz 没有点云/安全走廊”
+  这两类问题都已确认属于**迁移实现 bug / 桥接错误**，而不是 IPC 基线本身无法在
+  当前 Gazebo 隧道环境工作。
+- 当前默认 tunnel map / spawn 组合下，IPC 基线已经可以自动起飞、显示原版风格
+  可视化，并完整记录一轮成功穿隧数据。
+
+**历史问题（仍值得保留）**
+- RC 消息时序问题：`rc_sim_node.py` 现在会等待仿真时间 > 2s 再发送模式切换。
+- `rog_map/map_size` 过大：A* 的 `GL_SIZE` 会爆炸式增长；日志中 `GL_SIZE_`
+  应保持在约 `68 68 34`。
 
 ### Q: RL 模式 OccMap 报错 "Please check body to camera matrix!"
 
@@ -614,12 +717,38 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
 - 无 GPU 时应看到 `:99`（Xvfb）；有 X11 应看到宿主机的 `:1` 等
 - 检查 Gazebo 是否能找到插件：`echo $GAZEBO_PLUGIN_PATH`
 
-### Q: IPC 启动后不动
+### Q: IPC 起飞后不动 / 看不到点云或灰色安全走廊
 
-1. IPC 可执行：`rosrun ipc ipc_node` 是否能运行
-2. MAVROS 模拟：`rosservice list | grep mavros`
-3. RC 模式切换：`rostopic echo /mavros/rc/in -n 1`（应看到 channel 数据）
-4. LiDAR 数据：`rostopic hz /pcl_render_node/cloud`
+按下面顺序检查，基本对应这次迁移里已经踩到的 4 个坑：
+
+1. **确认自动起飞是否发生**
+   - Gazebo 日志应出现 `Quadrotor takes off!!` 和 `Entering flying model!`
+   - 若没有，说明 `/CERLAB/quadcopter/takeoff` 没发出去；CERLAB 插件在 landed
+     状态下不会响应 `cmd_vel`
+2. **确认 RC 摇杆极性没有反**
+   - `rostopic echo /mavros/rc/in -n 1`
+   - 当前 `rc_sim_node.py` 已按原版 IPC 的 `RCCallback` 取反编码 PWM；如果你手动改过，
+     正向前进必须仍然对应 IPC 里的正向 joystick x
+3. **确认桥接后的命令方向正确**
+   - `rostopic echo /planning/pos_cmd -n 3`
+   - `rostopic echo /CERLAB/quadcopter/cmd_vel -n 3`
+   - 正常情况下，`velocity.x > 0` 时桥接后的 `cmd_vel.linear.x` 也应为正，
+     且 `linear.z` 不应无故持续大幅为负
+4. **确认 IPC 可视化链路**
+   - `rostopic hz /pcl_render_node/cloud`
+   - `rostopic hz /ipc/sfc`
+   - `rostopic hz /rog_map/occ`
+   - RViz 必须使用 `ipc_tunnel.rviz`，Fixed Frame=`world`
+
+### Q: 手动跑完一次后没有看到 `.npz` 结果文件
+
+- `tunnel_comparison.launch` 与 `tunnel_ipc_sim.launch` 现在默认把结果写到
+  `/root/results`（Docker volume 持久化）
+- 若是更早的旧运行，文件可能在 `/tmp/flight_data`
+- `flight_recorder.py` 现在会在收到 `/flight_recorder/stop` **或节点 shutdown**
+  时保存缓冲数据
+- 如需在手动单轮测试中立即落盘，可执行：
+  `rostopic pub -1 /flight_recorder/stop std_msgs/Bool "data: true"`
 
 ## 附录：Git 分支
 

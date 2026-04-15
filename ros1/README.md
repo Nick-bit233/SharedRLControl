@@ -9,7 +9,7 @@
 python3 generate_tunnel_map.py \
 -o ../../cfg/tunnel/tunnel_map_default.pcd \
 -w ../../../uav_simulator/worlds/generated_env/tunnel_pcd_match_static.world \
---seed 288 -n 30 --cuboid-ratio 0.
+--seed <多次实验随机生成> -n 15 --cuboid-ratio 0.5
 
 方式一：手动单独测试
 
