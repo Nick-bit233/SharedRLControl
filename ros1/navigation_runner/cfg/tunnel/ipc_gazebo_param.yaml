@@ -61,14 +61,14 @@ rog_map:
     enable: true
     threshold: 0.1
   fix_map_origin: [0, 0, 0]
-  frontier_extraction_en: false   # restored original Gazebo config; LocalPcCallback now falls back to UNKNOWN safely
+  frontier_extraction_en: true    # keep enabled for the current prebuilt ipc_node in Docker; host-side source fallback is not hot-mounted
   ros_callback:
     enable: false
     cloud_topic: "/pcl_render_node/cloud"
     odom_topic: "/CERLAB/quadcopter/odom_raw"
     odom_timeout: 2.0
   visulization:
-    enbale: true
+    enable: true
     time_rate: 2           # reduced from 10Hz to minimize race conditions
     frame_rate: 0
     range: [8, 8, 4]       # must be ≤ map_size (original: [6,6,2])

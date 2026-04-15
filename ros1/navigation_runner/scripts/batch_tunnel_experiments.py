@@ -28,15 +28,15 @@ def parse_args():
                         help="Master RNG seed for map/user-model seeds")
     parser.add_argument("--output-dir", default=None,
                         help="Output root (default: auto timestamp under ./batch_results)")
-    parser.add_argument("--launch-timeout", type=float, default=60.0,
+    parser.add_argument("--launch-timeout", type=float, default=80.0,
                         help="External watchdog timeout per run in seconds")
-    parser.add_argument("--recorder-timeout", type=float, default=0.0,
+    parser.add_argument("--recorder-timeout", type=float, default=60.0,
                         help="Optional recorder-side timeout (0 disables)")
     parser.add_argument("--completion-grace-period", type=float, default=0.5,
                         help="Grace period between stop signal and roslaunch shutdown")
     parser.add_argument("--inter-run-delay", type=float, default=2.0,
                         help="Delay between sequential runs")
-    parser.add_argument("--goal-x", type=float, default=11.9)
+    parser.add_argument("--goal-x", type=float, default=10.0)
     parser.add_argument("--collision-dist", type=float, default=0.05)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--gui", action="store_true",

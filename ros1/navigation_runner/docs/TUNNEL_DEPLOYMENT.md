@@ -555,19 +555,22 @@ AutoPilot(ch10高) → 共享 `UserModelTunnel` 摇杆输入
    - 旧时序：第一次 AutoPilot RC 前，`x` 约前移 `0.81m`
    - 新时序：第一次 AutoPilot RC 前，`x` 约前移 `0.21m`
    - AutoPilot 首次触发时间也从约 `5.15s` 提前到约 `3.73s`
-7. `slope_inspection/IPC/include/callback.cpp` 里的 AutoPilot 进入条件已从“只接受一次
-   Channel 10 上升沿”改成“在 `UAV_Pilot` 中，若 Channel 10 持续保持高电平，也允许补锁存
-   AutoPilot”。同时 `rc_sim_node.py` 会先发一小段中性的 `AUTOPILOT EDGE`，再进入
-   `AUTOPILOT ACTIVE`。这修复了“`[RC Sim] -> AUTOPILOT` 已打印，但 IPC FSM 仍停在
-   `Pilot`、`/ipc/sfc` 始终不发”的问题。
+7. 当前主机侧 `slope_inspection/IPC/include/callback.cpp` 已支持“在 `UAV_Pilot` 中，若
+   Channel 10 持续保持高电平，也允许补锁存 AutoPilot”；但**当前 Docker 容器里的预编译
+   `ipc_node` 不一定带着这版补丁**。因此 `rc_sim_node.py` 现在会发一组对旧/新二进制都兼容
+   的握手：`AUTOPILOT EDGE1` → `AUTOPILOT REARM` → `AUTOPILOT EDGE2` → `AUTOPILOT ACTIVE`。
+   这样即使容器里的 `ipc_node` 仍只认严格的 Channel 10 上升沿，也能稳定看到
+   `[IPC FSM]: Pilot --> Auto_pilot.`，避免“RC 已打印 AutoPilot，但 IPC FSM 仍停在
+   `Pilot`、`/ipc/sfc` 始终不发”的回归。
 8. IPC launch 下的 `lidar_sim_node.py` 现在显式发布 `frame_id=world` 的世界坐标点云。
    之前它一直输出 `base_link` 机体系点云；RViz 因为有 TF，看起来仍然“显示正确”，但
    `ROGMap::updateMap()` 会把点坐标直接当成世界坐标用，结果 IPC 内部建图完全错位，
    继而引发 `No sfc!`、`Can not find a grid free near odom!`、CIRI `nan planes` 乃至
    后续 `rog error! new goal is free and unk in inf map!`。
-9. `ipc_gazebo_param.yaml` 现在把 `frontier_extraction_en` 恢复为原版 Gazebo 配置的
-   `false`；由于当前 `ipc_fsm.h` 已带有 UNKNOWN/FRONTIER 兼容分支，不再需要继续依赖
-   旧的运行时 workaround。
+9. `ipc_gazebo_param.yaml` 当前继续保持 `frontier_extraction_en: true`。虽然主机侧
+   `ipc_fsm.h` 已有 UNKNOWN/FRONTIER 兼容分支，但 `docker-compose.tunnel.yml`
+   **不会热挂载** `slope_inspection/IPC` 到容器里的 `/root/slope_ws/src/`，因此当前容器
+   实际运行的预编译 `ipc_node` 仍需要这个运行时 workaround 才能避免首帧点云 segfault。
 10. AutoPilot 模式下若当前没有有效 SFC，`TimerCallback()` 现在会让 MPC **保持当前位置**
     而不是继续沿 ref-path 无约束前冲；同时 `GenerateAPolytope()` 在 seed line 退化成单点时
     会退回局部 box corridor，避免 CIRI 在切入 AutoPilot 的前几帧直接生成 NaN 平面。
@@ -821,11 +824,13 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
   `UAV_Pilot -> UAV_AutoPilot`。如果那个边沿在 Gazebo/桥接时序中被错过一次，
   IPC 就会永久卡在 `Pilot`，于是 `/ipc/sfc` 也不会再发布。
 - 当前修复分成两层：
-  1. `rc_sim_node.py` 先发中性的 `AUTOPILOT EDGE`，再延迟 `0.3s` 进入
-     `AUTOPILOT ACTIVE`
+  1. `rc_sim_node.py` 现在会发一组兼容旧/新 `ipc_node` 的握手：
+     `AUTOPILOT EDGE1` → `AUTOPILOT REARM` → `AUTOPILOT EDGE2` → `AUTOPILOT ACTIVE`
   2. `callback.cpp` 在 `UAV_Pilot` 中对“持续高电平的 Channel 10”补做锁存
 - 修复后的关键验证信号：
-  - `rosout` 出现
+  - 即使当前容器里的 `ipc_node` 仍是旧二进制，也应能在 `rosout` 看到
+    `[IPC FSM]: Pilot --> Auto_pilot.`
+  - 若容器里的 `ipc_node` 已重编进“持续高电平补锁存”补丁，则会看到
     `[IPC FSM]: Pilot --> Auto_pilot (latched high Channel 10).`
   - `rostopic info /ipc/sfc` 能看到 `/ipc_node` 作为 publisher
 - **注意**：仅修改宿主机里的 `slope_inspection/IPC` 源码并不会自动影响当前 Docker 容器。
@@ -842,10 +847,11 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
   - 切到 AutoPilot 后就会出现 `No sfc!`、CIRI NaN、`find free near odom` 失败甚至
     后面的 `rog error`
 - 当前修复包含 4 层：
-  1. IPC launch 下的 `lidar_sim_node.py` 改为发布 `frame_id=world` 的世界坐标点云
-  2. `ipc_gazebo_param.yaml` 恢复 `frontier_extraction_en: false`
-  3. `TimerCallback()` 在没有有效 SFC 时强制 hold current position
-  4. `GenerateAPolytope()` 在 seed line 退化成单点时，退回局部 box corridor
+   1. IPC launch 下的 `lidar_sim_node.py` 改为发布 `frame_id=world` 的世界坐标点云
+   2. `ipc_gazebo_param.yaml` 保持 `frontier_extraction_en: true`，与当前容器里的
+      预编译 `ipc_node` 保持兼容
+   3. `TimerCallback()` 在没有有效 SFC 时强制 hold current position
+   4. `GenerateAPolytope()` 在 seed line 退化成单点时，退回局部 box corridor
 - 修复后的验证信号：
   - `/ipc/sfc` 恢复稳定发布（约 `10Hz`）
   - 可直接 `rostopic echo -n 1 /ipc/sfc` 抓到 world-frame Marker
@@ -879,9 +885,9 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
   2. 保存 `.npz` 与 `run_summary.json`
   3. 若 launch 中 `shutdown_on_complete=true`，则以 `required` 节点身份退出，触发整个
      `roslaunch` 自动 shutdown，确保本轮 Gazebo / bridge / controller 全部清干净
-- recorder 的 `auto_start` 现在不会再在仿真一启动就立刻开始，而是要等无人机相对初始
-  高度至少离地 `0.5m` 后才进入正式录制/碰撞检测。这是为了避免把 PCD 里的地面点云
-  误判成“起点即 collision”。
+- recorder 现在会在**收到 odom 后立即开始录制**，但碰撞判定仍要等无人机相对初始高度
+  至少离地 `0.5m` 后才启用。这样既能避免把 PCD 里的地面点云误判成“起点即 collision”，
+  也不会在 IPC AutoPilot 没切成功时整轮实验都没有 recorder、导致自动终止完全失效。
 - RL / IPC 两条链都已接入同一个 stop hook：
   - `tunnel_navigation.py` 收到 stop 后改为 pose hold
   - `cmd_bridge_node.py` 收到 stop 后忽略新的 `PositionCommand` 并发布 hold pose

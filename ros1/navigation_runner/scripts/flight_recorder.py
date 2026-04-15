@@ -164,22 +164,7 @@ class FlightRecorder:
 
     def _auto_start_cb(self, event):
         if not self.recording and self.latest_odom is not None:
-            current_z = float(self.latest_odom.pose.pose.position.z)
-            if self.initial_z is None:
-                self.initial_z = current_z
-
-            if current_z >= self.initial_z + self.auto_start_takeoff_delta:
-                self._start_recording()
-            else:
-                rospy.loginfo_throttle(
-                    2.0,
-                    "[Recorder] Waiting for takeoff before auto-start: z=%.2f "
-                    "(baseline=%.2f, need >= %.2f)",
-                    current_z,
-                    self.initial_z,
-                    self.initial_z + self.auto_start_takeoff_delta,
-                )
-                rospy.Timer(rospy.Duration(0.5), self._auto_start_cb, oneshot=True)
+            self._start_recording()
         elif not self.recording:
             rospy.Timer(rospy.Duration(0.5), self._auto_start_cb, oneshot=True)
 

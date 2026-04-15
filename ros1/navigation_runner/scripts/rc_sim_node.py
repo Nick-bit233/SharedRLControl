@@ -30,6 +30,8 @@ class RCSimulator:
         self.rate = rospy.get_param('~rate', 50)  # Hz
         self.init_delay = rospy.get_param('~init_delay', 0.2)
         self.switch_delay = rospy.get_param('~switch_delay', 3.0)
+        self.autopilot_edge_delay = rospy.get_param('~autopilot_edge_delay', 0.1)
+        self.autopilot_rearm_delay = rospy.get_param('~autopilot_rearm_delay', 0.1)
         self.autopilot_latch_delay = rospy.get_param('~autopilot_latch_delay', 0.3)
         self.forward_stick = rospy.get_param('~forward_stick', 0.8)  # [-1, 1]
         self.lateral_stick = rospy.get_param('~lateral_stick', 0.0)
@@ -75,9 +77,13 @@ class RCSimulator:
 
         input_mode = 'usermodel' if self.user_model is not None else 'fixed-stick'
         rospy.loginfo(
-            "[RC Sim] Initialized. init_delay=%.2fs, switch_delay=%.2fs, autopilot_latch=%.2fs, input=%s, seed=%d",
+            "[RC Sim] Initialized. init_delay=%.2fs, switch_delay=%.2fs, "
+            "autopilot_edge=%.2fs, autopilot_rearm=%.2fs, autopilot_latch=%.2fs, "
+            "input=%s, seed=%d",
             self.init_delay,
             self.switch_delay,
+            self.autopilot_edge_delay,
+            self.autopilot_rearm_delay,
             self.autopilot_latch_delay,
             input_mode,
             self.user_model_seed,
@@ -250,9 +256,23 @@ class RCSimulator:
             # Pilot -> AutoPilot: ch[10]>1500
             self._set_neutral_motion_sticks()
             self.channels[10] = 1600
+            self.mode = 'autopilot_edge'
+            self.mode_time = rospy.Time.now()
+            rospy.loginfo("[RC Sim] -> AUTOPILOT EDGE1 (ch10=1600, neutral sticks)")
+
+        elif self.mode == 'autopilot_edge' and elapsed > self.autopilot_edge_delay:
+            self._set_neutral_motion_sticks()
+            self.channels[10] = 1100
+            self.mode = 'autopilot_rearm'
+            self.mode_time = rospy.Time.now()
+            rospy.loginfo("[RC Sim] -> AUTOPILOT REARM (ch10=1100, neutral sticks)")
+
+        elif self.mode == 'autopilot_rearm' and elapsed > self.autopilot_rearm_delay:
+            self._set_neutral_motion_sticks()
+            self.channels[10] = 1600
             self.mode = 'autopilot_latch'
             self.mode_time = rospy.Time.now()
-            rospy.loginfo("[RC Sim] -> AUTOPILOT EDGE (ch10=1600, neutral sticks)")
+            rospy.loginfo("[RC Sim] -> AUTOPILOT EDGE2 (ch10=1600, neutral sticks)")
 
         elif self.mode == 'autopilot_latch' and elapsed > self.autopilot_latch_delay:
             self.mode = 'autopilot'
