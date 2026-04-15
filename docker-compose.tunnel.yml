@@ -38,14 +38,13 @@ services:
       # Gazebo world files (edit tunnel layout without rebuild)
       - ./ros1/uav_simulator/worlds:/root/catkin_ws/src/uav_simulator/worlds:rw
 
-      # Persistent workspace for results/logs (survives container restart)
-      - tunnel_results:/root/results
+      # Persistent experiment outputs: host ros1/results/ <-> container results dirs
+      # Keep both paths mounted for compatibility with older scripts that still use
+      # /root/catkin_ws/results while the newer launch files default to /root/results.
+      - ./ros1/results:/root/results:rw
+      - ./ros1/results:/root/catkin_ws/results:rw
 
     working_dir: /root/catkin_ws
 
     # Keep container running (entrypoint sources ROS + starts Xvfb if needed)
     command: ["bash"]
-
-volumes:
-  tunnel_results:
-    name: tunnel_results

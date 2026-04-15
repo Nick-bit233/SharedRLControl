@@ -10,6 +10,8 @@
     <arg name="keyboard" default="false" doc="Keyboard teleop mode (RL only)"/>
     <arg name="tunnel_map"
          default="$(find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd"/>
+    <arg name="tunnel_world"
+         default="$(find uav_simulator)/worlds/generated_env/tunnel_pcd_match_static.world"/>
     <arg name="checkpoint"
          default="$(find navigation_runner)/cfg/tunnel/checkpoint_best.pt"/>
     <arg name="trial_id" default="0"/>
@@ -23,6 +25,16 @@
     <arg name="user_model_seed" default="42"/>
     <arg name="user_model_rate" default="20.0"/>
     <arg name="output_dir" default="/root/results"/>
+    <arg name="goal_x" default="12.0"/>
+    <arg name="collision_dist" default="0.05"/>
+    <arg name="auto_terminate" default="true"/>
+    <arg name="shutdown_on_complete" default="true"/>
+    <arg name="timeout_sec" default="0.0"/>
+    <arg name="completion_grace_period" default="0.5"/>
+    <arg name="batch_idx" default="-1"/>
+    <arg name="run_idx" default="-1"/>
+    <arg name="run_id" default=""/>
+    <arg name="map_seed" default="-1"/>
 
     <!-- Spawn position: in the clear zone (X∈[-12,-6]).
          Current default is intentionally shifted from the IsaacSim x=-7
@@ -39,8 +51,7 @@
          then optionally start gzclient ourselves. -->
     <include file="$(find uav_simulator)/launch/start_headless.launch">
         <arg name="gui" value="$(eval not arg('keyboard') and arg('gui'))"/>
-        <arg name="world_name"
-             value="$(find uav_simulator)/worlds/generated_env/tunnel_pcd_match_static.world"/>
+        <arg name="world_name" value="$(arg tunnel_world)"/>
         <arg name="spawn_x" value="$(arg spawn_x)"/>
         <arg name="spawn_y" value="$(arg spawn_y)"/>
         <arg name="spawn_z" value="$(arg spawn_z)"/>
@@ -92,6 +103,8 @@
             <param name="user_model_freq_base" value="$(arg user_model_freq_base)"/>
             <param name="user_model_freq_scale" value="$(arg user_model_freq_scale)"/>
             <param name="user_model_seed" value="$(arg user_model_seed)"/>
+            <param name="goal_x" value="$(arg goal_x)"/>
+            <param name="collision_dist" value="$(arg collision_dist)"/>
         </node>
     </group>
 
@@ -100,6 +113,7 @@
         <include file="$(find navigation_runner)/launch/tunnel_ipc_sim.launch">
             <arg name="start_gazebo" value="false"/>
             <arg name="tunnel_map" value="$(arg tunnel_map)"/>
+            <arg name="tunnel_world" value="$(arg tunnel_world)"/>
             <arg name="trial_id" value="$(arg trial_id)"/>
             <arg name="record" value="false"/>
             <arg name="rviz" value="false"/>
@@ -116,12 +130,25 @@
     <!-- ===== Shared: Flight Recorder ===== -->
     <group if="$(arg record)">
         <node pkg="navigation_runner" type="flight_recorder.py"
-              name="flight_recorder" output="screen">
+              name="flight_recorder" output="screen"
+              required="$(arg shutdown_on_complete)">
             <param name="method" value="$(arg method)"/>
             <param name="trial_id" value="$(arg trial_id)"/>
             <param name="output_dir" value="$(arg output_dir)"/>
             <param name="rate" value="50"/>
-            <param name="goal_x" value="12.0"/>
+            <param name="goal_x" value="$(arg goal_x)"/>
+            <param name="collision_dist" value="$(arg collision_dist)"/>
+            <param name="pcd_file" value="$(arg tunnel_map)"/>
+            <param name="auto_terminate" value="$(arg auto_terminate)"/>
+            <param name="shutdown_on_complete" value="$(arg shutdown_on_complete)"/>
+            <param name="timeout_sec" value="$(arg timeout_sec)"/>
+            <param name="completion_grace_period" value="$(arg completion_grace_period)"/>
+            <param name="batch_idx" value="$(arg batch_idx)"/>
+            <param name="run_idx" value="$(arg run_idx)"/>
+            <param name="run_id" value="$(arg run_id)"/>
+            <param name="map_seed" value="$(arg map_seed)"/>
+            <param name="user_model_seed" value="$(arg user_model_seed)"/>
+            <param name="tunnel_world" value="$(arg tunnel_world)"/>
         </node>
     </group>
 

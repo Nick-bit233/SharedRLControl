@@ -32,6 +32,7 @@ Usage:
     python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42 -n 60
 """
 import argparse
+import json
 import numpy as np
 from typing import List, NamedTuple
 
@@ -407,6 +408,46 @@ def write_gazebo_world(
     return n_cyl, n_box
 
 
+def write_metadata(
+    filepath: str,
+    obstacles: List[Obstacle],
+    seed: int,
+    num_obstacles: int,
+    cuboid_ratio: float,
+    resolution: float,
+    x_half: float,
+    y_half: float,
+    z_max: float,
+    obstacle_zone_x_min: float,
+):
+    payload = {
+        "seed": int(seed),
+        "num_obstacles": int(num_obstacles),
+        "cuboid_ratio": float(cuboid_ratio),
+        "resolution": float(resolution),
+        "terrain_size": [float(x_half * 2.0), float(y_half * 2.0)],
+        "z_max": float(z_max),
+        "spawn": {
+            "x": float(SPAWN_X),
+            "y": float(SPAWN_Y),
+            "protect_radius": float(SPAWN_PROTECT_RADIUS),
+        },
+        "obstacle_zone_x_min": float(obstacle_zone_x_min),
+        "obstacles": [
+            {
+                "center": [float(obs.cx), float(obs.cy)],
+                "radius": float(max(obs.size_x, obs.size_y) / 2.0),
+                "shape": obs.shape,
+                "size": [float(obs.size_x), float(obs.size_y), float(obs.height)],
+                "height": float(obs.height),
+            }
+            for obs in obstacles
+        ],
+    }
+    with open(filepath, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate tunnel obstacle map (PCD + optional Gazebo world)")
@@ -414,6 +455,8 @@ def main():
                         help="Output PCD file path")
     parser.add_argument("--world-output", "-w", default=None,
                         help="Output Gazebo .world file (optional)")
+    parser.add_argument("--metadata-output", default=None,
+                        help="Output obstacle metadata JSON (optional)")
     parser.add_argument("--num-obstacles", "-n", type=int, default=60,
                         help="Number of obstacles (default=60)")
     parser.add_argument("--cuboid-ratio", type=float, default=0.5,
@@ -469,6 +512,28 @@ def main():
             x_half=x_half, y_half=y_half, z_max=z_max)
         print(f"  World written to: {args.world_output} "
               f"({n_cyl} cylinders + {n_box} cuboids + 3 walls)")
+
+    if args.metadata_output:
+        obstacles = generate_obstacle_params(
+            num_obstacles=args.num_obstacles,
+            x_half=x_half, y_half=y_half, z_max=z_max,
+            obstacle_zone_x_min=obstacle_zone_x_min,
+            cuboid_ratio=args.cuboid_ratio,
+            seed=args.seed,
+        )
+        write_metadata(
+            args.metadata_output,
+            obstacles,
+            seed=args.seed,
+            num_obstacles=args.num_obstacles,
+            cuboid_ratio=args.cuboid_ratio,
+            resolution=args.resolution,
+            x_half=x_half,
+            y_half=y_half,
+            z_max=z_max,
+            obstacle_zone_x_min=obstacle_zone_x_min,
+        )
+        print(f"  Metadata written to: {args.metadata_output}")
 
 
 if __name__ == "__main__":

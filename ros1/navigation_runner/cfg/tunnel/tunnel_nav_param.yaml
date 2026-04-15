@@ -7,7 +7,7 @@
 # --- Policy (must match training) ---
 checkpoint_path: "/root/catkin_ws/src/navigation_runner/cfg/tunnel/checkpoint_best.pt"           # Overridden by launch file; set here only for manual rosrun
 action_limit: 2.0             # m/s, must match training config
-device: "cuda:0"                 # "cpu" or "cuda:0"
+device: "cpu"                 # "cpu" or "cuda:0"
 deterministic: true           # true = use mean action (no sampling noise)
 
 # --- LiDAR sensor (must match training config exactly) ---

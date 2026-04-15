@@ -177,6 +177,7 @@ catkin_install_python(PROGRAMS
   scripts/mavros_fake_node.py
   scripts/flight_recorder.py
   scripts/run_comparison.py
+  scripts/batch_tunnel_experiments.py
   scripts/analyze_results.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

@@ -75,6 +75,9 @@ roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=false
 > **注意**: RL 模式现在同时启动 `lidar_sim_node`（PCD → PointCloud2）和
 > `map_manager`（占用地图 + RayCast 服务）。`lidar_sim_node` 提供实时点云数据，
 > `map_manager` 使用预构建 PCD 地图和实时点云来维护占用栅格。
+> 当前 `tunnel_comparison:latest` 镜像内的 PyTorch 是 CPU-only，因此推荐明确使用
+> `device:=cpu`。如果误传 `device:=cuda:0`，当前的 batch 脚本和 `tunnel_navigation.py`
+> 都会自动回退到 `cpu`，避免 RL 节点因 CUDA 不可用而退出。
 
 ### 1.3 运行 IPC 模式
 
@@ -206,7 +209,7 @@ rviz -d $(rospack find navigation_runner)/cfg/tunnel/ipc_tunnel.rviz
 | X11 转发 | 挂载 `/tmp/.X11-unix`，Gazebo/RViz 显示在宿主机 |
 | 代码热编辑 | Python 脚本、配置、launch 文件以 volume 挂载，宿主机编辑即时生效 |
 | Checkpoint 挂载 | `isaac-training/outputs/` → `/root/catkin_ws/src/navigation_runner/checkpoints/`（只读） |
-| 持久化结果 | Docker named volume `tunnel_results` → `/root/results` |
+| 持久化结果 | 宿主机 `ros1/results/` bind mount → `/root/results` 与 `/root/catkin_ws/results` |
 | 智能显示 | `entrypoint.sh` 自动检测：有 X11 → 用 GPU；无 X11 → Xvfb + 软件渲染 |
 
 ### 3.2 宿主机编辑 → 容器热更新
@@ -854,12 +857,92 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
 ### Q: 手动跑完一次后没有看到 `.npz` 结果文件
 
 - `tunnel_comparison.launch` 与 `tunnel_ipc_sim.launch` 现在默认把结果写到
-  `/root/results`（Docker volume 持久化）
+  `/root/results`
+- 在 Docker compose 环境下，宿主机 `SharedRLControl/ros1/results/` 会同时挂载到
+  容器内的 `/root/results` 与 `/root/catkin_ws/results`，因此两条路径看到的是同一份结果
 - 若是更早的旧运行，文件可能在 `/tmp/flight_data`
 - `flight_recorder.py` 现在会在收到 `/flight_recorder/stop` **或节点 shutdown**
   时保存缓冲数据
 - 如需在手动单轮测试中立即落盘，可执行：
   `rostopic pub -1 /flight_recorder/stop std_msgs/Bool "data: true"`
+
+## 自动批量实验与分析（2026-04-15）
+
+### 统一终止与单轮自动清场
+
+- `flight_recorder.py` 现在不再只是被动录制器，而是单轮实验的**统一终止器**：
+  - 到达 `goal_x` → 记为 `goal_reached`
+  - 最近障碍距离 `< collision_dist` → 记为 `collision`
+  - 可选 `timeout_sec > 0` → 记为 `timeout`
+- 终止时会执行以下动作：
+  1. 发布 latched `/experiment_control/stop`
+  2. 保存 `.npz` 与 `run_summary.json`
+  3. 若 launch 中 `shutdown_on_complete=true`，则以 `required` 节点身份退出，触发整个
+     `roslaunch` 自动 shutdown，确保本轮 Gazebo / bridge / controller 全部清干净
+- recorder 的 `auto_start` 现在不会再在仿真一启动就立刻开始，而是要等无人机相对初始
+  高度至少离地 `0.5m` 后才进入正式录制/碰撞检测。这是为了避免把 PCD 里的地面点云
+  误判成“起点即 collision”。
+- RL / IPC 两条链都已接入同一个 stop hook：
+  - `tunnel_navigation.py` 收到 stop 后改为 pose hold
+  - `cmd_bridge_node.py` 收到 stop 后忽略新的 `PositionCommand` 并发布 hold pose
+  - `rc_sim_node.py` 收到 stop 后把 RC motion sticks 拉回中性
+
+### 新的批量实验脚本
+
+- 新增脚本：`scripts/batch_tunnel_experiments.py`
+- 每个 batch 的流程：
+  1. 调用 `tunnel_deployment/generate_tunnel_map.py` 生成新的 `.pcd + .world + obstacles.json`
+  2. 对该 batch 生成一组 `user_model_seed`
+  3. 对每个 `run_idx`，用**同一个** `user_model_seed` 依次运行 RL 和 IPC，保证输入公平
+  4. 每轮 run 使用全新的 `roslaunch navigation_runner tunnel_comparison.launch ...`，
+     单轮结束后由 recorder 自动关掉整套 launch
+- 推荐用法：
+  ```bash
+  python3 scripts/batch_tunnel_experiments.py \
+      --num-batches 5 \
+      --runs-per-batch 10 \
+      --device cpu \
+      --output-dir /root/results/tunnel_batch_001
+  ```
+- 常用参数：
+  - `--device`：当前 `tunnel_comparison:latest` 镜像内的 PyTorch 是 CPU-only；若未重建
+    CUDA 版镜像，请保持 `--device cpu`。脚本现在会把无效的 `cuda:*` 请求自动回退到 `cpu`
+  - `--launch-timeout`：批处理外层 watchdog
+  - `--goal-x` / `--collision-dist`：统一终止阈值
+  - `--user-model-speed` / `--user-model-freq-*`：共享 RL / IPC 输入配置
+  - `--num-obstacles` / `--cuboid-ratio`：每批次地图生成参数
+
+### 地图生成元数据
+
+- `generate_tunnel_map.py` 现在新增 `--metadata-output`，可同时导出障碍物 JSON 元数据。
+- batch runner 会把每个 batch 的地图元数据额外复制成根目录下的
+  `b000_obstacles.json`、`b001_obstacles.json` ……
+  这是为了兼容 `SharedRLControl/tunnel_test/render_viz.py` 的 batch obstacle 查找逻辑。
+
+### 批量分析与可视化回放
+
+- `scripts/analyze_results.py` 现在同时支持：
+  - **旧模式**：直接分析一个平铺的 `.npz` 目录
+  - **batch 模式**：递归读取 `batch_manifest.json` / `run_summary.json`
+- 默认输出：
+  - `analysis/metrics.csv`
+  - `analysis/summary.json`
+  - `analysis/comparison_plots.png`
+  - `analysis/compare_results_ros1.json`
+  - `analysis/render_data/`（给 `render_viz.py` 用的 portable bundle）
+- `compare_results_ros1.json + analysis/render_data/` 已验证可直接被
+  `SharedRLControl/tunnel_test/render_viz.py` 使用，例如：
+  ```bash
+  python3 SharedRLControl/tunnel_test/render_viz.py \
+      /root/results/tunnel_batch_001/analysis/compare_results_ros1.json \
+      --trial 0 --static
+  ```
+  或输出视频：
+  ```bash
+  python3 SharedRLControl/tunnel_test/render_viz.py \
+      /root/results/tunnel_batch_001/analysis/compare_results_ros1.json \
+      --trial 0 --fps 20
+  ```
 
 ## 附录：Git 分支
 

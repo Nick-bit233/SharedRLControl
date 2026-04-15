@@ -10,8 +10,9 @@ while the planner is still trying to climb.
 
 import math
 import rospy
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TwistStamped
+from std_msgs.msg import Bool
 
 try:
     from quadrotor_msgs.msg import PositionCommand
@@ -37,11 +38,15 @@ class CmdBridge:
         self.max_vz = rospy.get_param('~max_vz', 1.0)
 
         self.current_yaw = 0.0
+        self.current_position = None
         self.current_z = None
         self.last_cmd_time = None
+        self.stop_requested = False
 
         self.odom_sub = rospy.Subscriber(
             '/CERLAB/quadcopter/odom_raw', Odometry, self._odom_cb, queue_size=1)
+        self.stop_sub = rospy.Subscriber(
+            '/experiment_control/stop', Bool, self._stop_cb, queue_size=1)
 
         if HAS_QUADROTOR_MSGS:
             self.cmd_sub = rospy.Subscriber(
@@ -53,6 +58,8 @@ class CmdBridge:
 
         self.vel_pub = rospy.Publisher(
             '/CERLAB/quadcopter/cmd_vel', TwistStamped, queue_size=10)
+        self.pose_pub = rospy.Publisher(
+            '/CERLAB/quadcopter/setpoint_pose', PoseStamped, queue_size=10)
 
         self.safety_timer = rospy.Timer(rospy.Duration(0.05), self._safety_cb)
         rospy.loginfo("[Cmd Bridge] Ready. max_vel=%.1f", self.max_vel)
@@ -60,10 +67,20 @@ class CmdBridge:
     def _odom_cb(self, msg):
         q = msg.pose.pose.orientation
         self.current_yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
+        p = msg.pose.pose.position
+        self.current_position = (p.x, p.y, p.z)
         self.current_z = msg.pose.pose.position.z
+
+    def _stop_cb(self, msg):
+        self.stop_requested = bool(msg.data)
+        if self.stop_requested:
+            self._publish_hold()
 
     def _cmd_cb(self, msg):
         if self.current_z is None:
+            return
+        if self.stop_requested:
+            self._publish_hold()
             return
 
         # IPC publishes world-frame commands. The CERLAB velocity controller is
@@ -101,7 +118,27 @@ class CmdBridge:
         self.vel_pub.publish(twist)
         self.last_cmd_time = rospy.Time.now()
 
+    def _publish_hold(self):
+        if self.current_position is None:
+            twist = TwistStamped()
+            twist.header.stamp = rospy.Time.now()
+            twist.header.frame_id = 'base_link'
+            self.vel_pub.publish(twist)
+            return
+
+        pose = PoseStamped()
+        pose.header.stamp = rospy.Time.now()
+        pose.header.frame_id = 'world'
+        pose.pose.position.x = float(self.current_position[0])
+        pose.pose.position.y = float(self.current_position[1])
+        pose.pose.position.z = float(self.current_position[2])
+        pose.pose.orientation.w = 1.0
+        self.pose_pub.publish(pose)
+
     def _safety_cb(self, event):
+        if self.stop_requested:
+            self._publish_hold()
+            return
         if self.last_cmd_time is None:
             return
         if (rospy.Time.now() - self.last_cmd_time).to_sec() > self.cmd_timeout:

@@ -12,8 +12,9 @@ import sys
 
 import numpy as np
 import rospy
+from geometry_msgs.msg import TwistStamped
 from mavros_msgs.msg import RCIn
-from std_msgs.msg import Empty
+from std_msgs.msg import Bool, Empty
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
@@ -45,9 +46,16 @@ class RCSimulator:
         self.auto_takeoff = rospy.get_param('~auto_takeoff', True)
         self.takeoff_wait = rospy.get_param('~takeoff_wait', 4.0)
         self.takeoff_topic = rospy.get_param('~takeoff_topic', '/CERLAB/quadcopter/takeoff')
+        self.stop_requested = False
 
         self.rc_pub = rospy.Publisher('/mavros/rc/in', RCIn, queue_size=10)
         self.takeoff_pub = rospy.Publisher(self.takeoff_topic, Empty, queue_size=1)
+        self.human_cmd_pub = rospy.Publisher(
+            '/experiment_control/human_cmd', TwistStamped, queue_size=10
+        )
+        self.stop_sub = rospy.Subscriber(
+            '/experiment_control/stop', Bool, self._stop_cb, queue_size=1
+        )
 
         # 18 channels, all centered at 1500 (neutral)
         self.channels = [1500] * 18
@@ -122,7 +130,12 @@ class RCSimulator:
 
     def _refresh_user_command(self, force=False):
         if self.user_model is None:
-            self.current_body_cmd[:] = 0.0
+            scale = max(float(self.user_model_speed), 1.0)
+            self.current_body_cmd[:] = (
+                self.forward_stick * scale,
+                self.lateral_stick * scale,
+                self.vertical_stick * scale,
+            )
             self.current_sticks[:] = (
                 self.lateral_stick,
                 self.forward_stick,
@@ -153,6 +166,22 @@ class RCSimulator:
             self.current_sticks[0],
             self.current_sticks[2],
         )
+
+    def _publish_human_cmd(self):
+        msg = TwistStamped()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = 'base_link'
+        msg.twist.linear.x = float(self.current_body_cmd[0])
+        msg.twist.linear.y = float(self.current_body_cmd[1])
+        msg.twist.linear.z = float(self.current_body_cmd[2])
+        self.human_cmd_pub.publish(msg)
+
+    def _stop_cb(self, msg):
+        self.stop_requested = bool(msg.data)
+        if self.stop_requested:
+            self._set_neutral_motion_sticks()
+            self.current_body_cmd[:] = 0.0
+            self.current_sticks[:] = 0.0
 
     def publish_rc(self):
         msg = RCIn()
@@ -186,6 +215,13 @@ class RCSimulator:
         rospy.sleep(self.takeoff_wait)
 
     def update_mode(self):
+        if self.stop_requested:
+            self._set_neutral_motion_sticks()
+            self.current_body_cmd[:] = 0.0
+            self.current_sticks[:] = 0.0
+            self._publish_human_cmd()
+            return
+
         elapsed = (rospy.Time.now() - self.mode_time).to_sec()
 
         if self.mode == 'init' and elapsed > self.init_delay:
@@ -235,6 +271,7 @@ class RCSimulator:
             self.channels[1] = self.stick_to_pwm(-forward_stick)
             self.channels[2] = self.stick_to_pwm(-vertical_stick)
             self.channels[3] = self.stick_to_pwm(-yaw_stick)
+        self._publish_human_cmd()
 
     def run(self):
         rate = rospy.Rate(self.rate)

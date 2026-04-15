@@ -72,7 +72,7 @@ class TunnelConfig:
         # Policy
         self.action_limit = rospy.get_param("~action_limit", 2.0)
         self.checkpoint_path = rospy.get_param("~checkpoint_path", "")
-        self.device = rospy.get_param("~device", "cpu")
+        self.device = self._resolve_device(rospy.get_param("~device", "cpu"))
 
         # Control
         self.control_freq = rospy.get_param("~control_freq", 20.0)
@@ -125,6 +125,22 @@ class TunnelConfig:
 
         # Goal detection
         self.goal_x = rospy.get_param("~goal_x", 10.0)  # metres — success threshold
+
+    @staticmethod
+    def _resolve_device(requested_device):
+        device = str(requested_device).strip()
+        if not device.lower().startswith("cuda"):
+            return device
+
+        if not torch.cuda.is_available():
+            rospy.logwarn(
+                "[TunnelNav] Requested device %s, but CUDA is unavailable in this "
+                "runtime. Falling back to cpu.",
+                device,
+            )
+            return "cpu"
+
+        return device
 
 
 class TunnelNavigator:
@@ -224,6 +240,7 @@ class TunnelNavigator:
         self.tumble_recovery_start = None  # rospy.Time when recovery started
         # Goal
         self.goal_reached = False
+        self.external_stop = False
 
         # ---- ROS interfaces ----
         self._setup_ros()
@@ -310,6 +327,12 @@ class TunnelNavigator:
         self.collision_pub = rospy.Publisher(
             "/tunnel_nav/collision", Bool, queue_size=2, latch=True
         )
+        self.human_cmd_pub = rospy.Publisher(
+            "/experiment_control/human_cmd", TwistStamped, queue_size=2
+        )
+        self.external_stop_sub = rospy.Subscriber(
+            "/experiment_control/stop", Bool, self._external_stop_cb, queue_size=1
+        )
 
         # Keyboard mode: subscribe to remapped CERLAB keyboard output + assist toggle
         if self.cfg.keyboard_mode:
@@ -348,6 +371,9 @@ class TunnelNavigator:
         self.assist_pub.publish(Bool(data=self.rl_assist))
         mode_str = "RL ASSIST" if self.rl_assist else "DIRECT"
         rospy.loginfo(f"[TunnelNav] Mode → {mode_str}")
+
+    def _external_stop_cb(self, msg):
+        self.external_stop = bool(msg.data)
 
     # ==================================================================
     # Raycast (LiDAR simulation — Python PCD raycaster or C++ service)
@@ -489,7 +515,9 @@ class TunnelNavigator:
                 relay_msg = TwistStamped()
                 relay_msg.header.stamp = rospy.Time.now()
                 relay_msg.twist = self._kb_twist_msg.twist
+                kb_cmd = self._kb_cmd.copy()
             self.action_pub.publish(relay_msg)
+            self._publish_human_cmd(kb_cmd)
             # Publish status for monitoring
             pos = self.odom.pose.pose.position
             v = relay_msg.twist.linear
@@ -505,6 +533,16 @@ class TunnelNavigator:
         if not self.ready:
             # Keep publishing takeoff pose while waiting for first raycast
             self.pose_pub.publish(self._make_takeoff_pose())
+            return
+
+        if self.external_stop:
+            self._publish_stop()
+            pos = self.odom.pose.pose.position
+            status_msg = (
+                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                f"cmd=[0,0,0] | min_d={self.min_dist:.2f} | EXTERNAL_STOP"
+            )
+            self.status_pub.publish(String(data=status_msg))
             return
 
         # --- Goal check (before collision — reaching goal takes priority) ---
@@ -553,6 +591,8 @@ class TunnelNavigator:
 
         # 1. Build observation
         state, human_action, lidar = self._build_obs()
+        human_action_np = human_action.squeeze(0).detach().cpu().numpy()
+        self._publish_human_cmd(human_action_np)
 
         # 2. Policy inference
         with torch.no_grad():
@@ -567,7 +607,7 @@ class TunnelNavigator:
             self._ctrl_iter = 0
         self._ctrl_iter += 1
         if self._ctrl_iter <= 15 or self._ctrl_iter % 200 == 0:
-            ha = human_action.squeeze(0).cpu().numpy()
+            ha = human_action_np
             s = state.squeeze(0).cpu().numpy()
             L = lidar.squeeze().cpu().numpy()  # (36, 4)
             # Directional lidar averages: F=forward(bins 0,1,34,35), L=left(8,9,10), R=right(26,27,28), B=back(17,18,19)
@@ -588,7 +628,7 @@ class TunnelNavigator:
         self._publish_cmd(cmd)
 
         # 4. Visualise
-        self._publish_vis(cmd, human_action.squeeze(0).cpu().numpy())
+        self._publish_vis(cmd, human_action_np)
 
         # 5. Publish status
         pos = self.odom.pose.pose.position
@@ -746,6 +786,15 @@ class TunnelNavigator:
         pose_msg.pose.position.z = self.cfg.takeoff_height
         pose_msg.pose.orientation.w = 1.0  # level attitude
         self.pose_pub.publish(pose_msg)
+
+    def _publish_human_cmd(self, cmd_body: np.ndarray):
+        msg = TwistStamped()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = "base_link"
+        msg.twist.linear.x = float(cmd_body[0])
+        msg.twist.linear.y = float(cmd_body[1])
+        msg.twist.linear.z = float(cmd_body[2])
+        self.human_cmd_pub.publish(msg)
 
     # ==================================================================
     # Takeoff
