@@ -163,6 +163,12 @@ class LiDARSimulator:
         if self.noise_stddev > 0:
             result = result + np.random.normal(0, self.noise_stddev, result.shape).astype(np.float32)
 
+        # IPC's ROGMap::updateMap() expects point coordinates in the published frame.
+        # For IPC we publish world-frame points directly; for RL/RViz we can still keep
+        # the original body-frame cloud by leaving frame_id as base_link.
+        if self.frame_id in ('world', 'map'):
+            result = result @ self.rot_matrix.T + self.position
+
         self._publish_cloud(result)
 
     def _publish_cloud(self, points):

@@ -54,6 +54,7 @@
         <param name="rate" value="10"/>
         <param name="max_range" value="50.0"/>
         <param name="noise_stddev" value="0.02"/>
+        <param name="frame_id" value="world"/>
     </node>
 
     <!-- RC Simulator: automated mode switching + shared RL usermodel commands -->

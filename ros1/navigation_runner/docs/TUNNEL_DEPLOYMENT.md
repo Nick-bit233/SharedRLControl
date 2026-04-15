@@ -557,6 +557,17 @@ AutoPilot(ch10高) → 共享 `UserModelTunnel` 摇杆输入
    AutoPilot”。同时 `rc_sim_node.py` 会先发一小段中性的 `AUTOPILOT EDGE`，再进入
    `AUTOPILOT ACTIVE`。这修复了“`[RC Sim] -> AUTOPILOT` 已打印，但 IPC FSM 仍停在
    `Pilot`、`/ipc/sfc` 始终不发”的问题。
+8. IPC launch 下的 `lidar_sim_node.py` 现在显式发布 `frame_id=world` 的世界坐标点云。
+   之前它一直输出 `base_link` 机体系点云；RViz 因为有 TF，看起来仍然“显示正确”，但
+   `ROGMap::updateMap()` 会把点坐标直接当成世界坐标用，结果 IPC 内部建图完全错位，
+   继而引发 `No sfc!`、`Can not find a grid free near odom!`、CIRI `nan planes` 乃至
+   后续 `rog error! new goal is free and unk in inf map!`。
+9. `ipc_gazebo_param.yaml` 现在把 `frontier_extraction_en` 恢复为原版 Gazebo 配置的
+   `false`；由于当前 `ipc_fsm.h` 已带有 UNKNOWN/FRONTIER 兼容分支，不再需要继续依赖
+   旧的运行时 workaround。
+10. AutoPilot 模式下若当前没有有效 SFC，`TimerCallback()` 现在会让 MPC **保持当前位置**
+    而不是继续沿 ref-path 无约束前冲；同时 `GenerateAPolytope()` 在 seed line 退化成单点时
+    会退回局部 box corridor，避免 CIRI 在切入 AutoPilot 的前几帧直接生成 NaN 平面。
 
 IPC 参数文件：`cfg/tunnel/ipc_gazebo_param.yaml`
 
@@ -720,11 +731,16 @@ gdb 回溯关键词：
 - 在补上 AutoPilot 锁存修复并重编容器内 `ipc_node` 之后，`rosout` 已可稳定看到
   `[IPC FSM]: Pilot --> Auto_pilot (latched high Channel 10).`，说明“RC 已切到
   AUTOPILOT，但 IPC 仍卡在 Pilot”这一问题已经被单独修复。
-- 但 2026-04-15 的干净重跑 `ipc_20260415_092809_trial000.npz` 也暴露出一个**新的、
-  发生在 AutoPilot 之后**的规划问题：日志会反复出现
-  `rog error! new goal is free and unk in inf map!`，对应录制结果为
-  `goal_reached=False`、`total_time=121.281s`。这说明当前“进不了 AutoPilot / 没有 SFC”
-  的根因已经不是 RC/FSM，而是后续 `rog_map` / 目标生成链路还存在独立问题，需要继续分开调试。
+- 之后新增的后继问题也已继续定位并修复：根因不是 RC mode 本身，而是 IPC 桥接层把
+  `lidar_sim_node.py` 的**机体系点云**直接喂给了 `ROGMap::updateMap()`，而后者内部假定输入
+  已经是**世界坐标**。这会让 RViz“看着对”，但 IPC 内部 occupancy / unknown / SFC 全部错位。
+- 修复后，干净重跑中已经不再出现
+  `Can not find a grid free near odom!`、CIRI `nan in generated planes`、
+  `rog error! new goal is free and unk in inf map!` 或 MPC `Primal Infeasible` 这些故障签名；
+  `/ipc/sfc` 重新稳定发布在约 `10Hz`，且 world-frame Marker 已可直接抓到。
+- 当前切入 AutoPilot 时仍可能先出现**一次**
+  `[fsm]: No sfc! Hold current position.`，这是正常的 warm-up 保护：表示第一帧有效 corridor
+  还没准备好，FSM 会先悬停等待，而不是像之前那样继续无约束冲向障碍物。
 
 **历史问题（仍值得保留）**
 - RC 消息时序问题：`rc_sim_node.py` 现在会等待仿真时间 > 2s 再发送模式切换。
@@ -813,18 +829,27 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
   若容器里还是旧的 `ipc_node` 二进制，这个问题会原样复现；请按上文“Docker 开发环境”
   中的 whitelist `catkin_make` 命令重编。
 
-### Q: 进入 AutoPilot 之后又反复出现 `rog error! new goal is free and unk in inf map!`
+### Q: 进入 AutoPilot 后出现 `No sfc!` / CIRI `nan in generated planes` / `Can not find a grid free near odom!`
 
-- 这是在修复 AutoPilot 锁存问题后，新暴露出来的**后继问题**，不应再归因到 RC/FSM：
-  此时 IPC 已经进入 `Auto_pilot`，也已经开始接管控制，但后续 `rog_map` / 目标生成链路
-  仍可能为 inflation map 选到“free 且 unknown”的新目标点。
-- 当前已记录到的干净复现：
-  - 录制文件：`/root/results/ipc_20260415_092809_trial000.npz`
-  - `goal_reached=False`
-  - `total_time=121.281s`
-  - `rosout` 中重复报错位置：`ipc_fsm.cpp:313 (IPCFSMClass::AutoPilotHandle)`
-- 含义是：**“进不了 AutoPilot / 看不到 SFC” 已经修好，但 IPC 的后段规划还没有完全恢复。**
-  后续应继续单独调试 `rog_map` 与新目标采样逻辑，而不是回头重查 RC mode 切换。
+- 这一串报错现在已经确认根因并修复。真正的问题不是 RC 没切成功，而是 IPC 桥接层之前把
+  `lidar_sim_node.py` 生成的 **body-frame 点云**直接发布给了 `ipc_node`；而
+  `ROGMap::updateMap()` 会把点坐标当作 **world-frame** 使用。结果是：
+  - RViz 因为 TF 存在，点云看起来仍然“贴着无人机”
+  - 但 IPC 内部的 occupancy / unknown map 实际上已经错位
+  - 切到 AutoPilot 后就会出现 `No sfc!`、CIRI NaN、`find free near odom` 失败甚至
+    后面的 `rog error`
+- 当前修复包含 4 层：
+  1. IPC launch 下的 `lidar_sim_node.py` 改为发布 `frame_id=world` 的世界坐标点云
+  2. `ipc_gazebo_param.yaml` 恢复 `frontier_extraction_en: false`
+  3. `TimerCallback()` 在没有有效 SFC 时强制 hold current position
+  4. `GenerateAPolytope()` 在 seed line 退化成单点时，退回局部 box corridor
+- 修复后的验证信号：
+  - `/ipc/sfc` 恢复稳定发布（约 `10Hz`）
+  - 可直接 `rostopic echo -n 1 /ipc/sfc` 抓到 world-frame Marker
+  - 干净重跑里不再出现 CIRI NaN、`Can not find a grid free near odom!`、
+    `rog error! new goal is free and unk in inf map!` 或 MPC `Primal Infeasible`
+- 仍可能看到一次 `[fsm]: No sfc! Hold current position.`；这是切入 AutoPilot 的
+  第一拍保护，不是失败。只要随后 `/ipc/sfc` 开始发布，说明 corridor 已经恢复正常。
 
 ### Q: 手动跑完一次后没有看到 `.npz` 结果文件
 
