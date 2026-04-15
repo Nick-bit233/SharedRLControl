@@ -31,6 +31,7 @@ user_model_simple: false       # true = constant forward speed; false = Perlin n
 user_model_speed: 2.0         # m/s forward speed
 user_model_freq_base: 0.1     # Perlin noise base frequency (online mode only)
 user_model_freq_scale: 0.3    # Perlin noise frequency scale (online mode only)
+user_model_seed: 288           # deterministic seed shared with IPC comparison input
 
 # --- Safety ---
 use_safety_shield: false      # Use ORCA safe_action_node

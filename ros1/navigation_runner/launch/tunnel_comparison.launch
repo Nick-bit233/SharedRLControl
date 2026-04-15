@@ -16,6 +16,12 @@
     <arg name="record" default="true"/>
     <arg name="rviz" default="true"/>
     <arg name="device" default="cpu"/>
+    <arg name="user_model_simple" default="false"/>
+    <arg name="user_model_speed" default="2.0"/>
+    <arg name="user_model_freq_base" default="0.1"/>
+    <arg name="user_model_freq_scale" default="0.3"/>
+    <arg name="user_model_seed" default="42"/>
+    <arg name="user_model_rate" default="20.0"/>
     <arg name="output_dir" default="/root/results"/>
 
     <!-- Spawn position: in the clear zone (X∈[-12,-6]).
@@ -81,6 +87,11 @@
             <param name="device" value="$(arg device)"/>
             <param name="keyboard_mode" value="$(arg keyboard)"/>
             <param name="pcd_file" value="$(arg tunnel_map)"/>
+            <param name="user_model_simple" value="$(arg user_model_simple)"/>
+            <param name="user_model_speed" value="$(arg user_model_speed)"/>
+            <param name="user_model_freq_base" value="$(arg user_model_freq_base)"/>
+            <param name="user_model_freq_scale" value="$(arg user_model_freq_scale)"/>
+            <param name="user_model_seed" value="$(arg user_model_seed)"/>
         </node>
     </group>
 
@@ -92,6 +103,13 @@
             <arg name="trial_id" value="$(arg trial_id)"/>
             <arg name="record" value="false"/>
             <arg name="rviz" value="false"/>
+            <arg name="device" value="$(arg device)"/>
+            <arg name="user_model_simple" value="$(arg user_model_simple)"/>
+            <arg name="user_model_speed" value="$(arg user_model_speed)"/>
+            <arg name="user_model_freq_base" value="$(arg user_model_freq_base)"/>
+            <arg name="user_model_freq_scale" value="$(arg user_model_freq_scale)"/>
+            <arg name="user_model_seed" value="$(arg user_model_seed)"/>
+            <arg name="user_model_rate" value="$(arg user_model_rate)"/>
         </include>
     </group>
 

@@ -8,6 +8,13 @@
     <arg name="trial_id" default="0"/>
     <arg name="record" default="true"/>
     <arg name="rviz" default="true"/>
+    <arg name="device" default="cpu"/>
+    <arg name="user_model_simple" default="false"/>
+    <arg name="user_model_speed" default="2.0"/>
+    <arg name="user_model_freq_base" default="0.1"/>
+    <arg name="user_model_freq_scale" default="0.3"/>
+    <arg name="user_model_seed" default="42"/>
+    <arg name="user_model_rate" default="20.0"/>
     <arg name="output_dir" default="/root/results"/>
 
     <!-- ===== Gazebo CERLAB Simulator ===== -->
@@ -49,13 +56,25 @@
         <param name="noise_stddev" value="0.02"/>
     </node>
 
-    <!-- RC Simulator: automated mode switching + forward command -->
+    <!-- RC Simulator: automated mode switching + shared RL usermodel commands -->
     <node pkg="navigation_runner" type="rc_sim_node.py"
           name="rc_sim" output="screen">
-        <param name="switch_delay" value="3.0"/>
+        <!-- Keep the RC edge pulses short so the drone does not spend seconds
+             moving in Hover/Pilot before the actual AutoPilot run begins. -->
+        <param name="init_delay" value="0.1"/>
+        <param name="switch_delay" value="0.15"/>
+        <param name="autopilot_latch_delay" value="0.3"/>
+        <param name="use_user_model" value="true"/>
+        <param name="device" value="$(arg device)"/>
+        <param name="user_model_simple" value="$(arg user_model_simple)"/>
+        <param name="user_model_speed" value="$(arg user_model_speed)"/>
+        <param name="user_model_freq_base" value="$(arg user_model_freq_base)"/>
+        <param name="user_model_freq_scale" value="$(arg user_model_freq_scale)"/>
+        <param name="user_model_seed" value="$(arg user_model_seed)"/>
+        <param name="user_model_rate" value="$(arg user_model_rate)"/>
         <param name="forward_stick" value="0.8"/>
         <param name="auto_takeoff" value="true"/>
-        <param name="takeoff_wait" value="4.0"/>
+        <param name="takeoff_wait" value="0.6"/>
     </node>
 
     <!-- Command Bridge: PositionCommand -> cmd_vel -->

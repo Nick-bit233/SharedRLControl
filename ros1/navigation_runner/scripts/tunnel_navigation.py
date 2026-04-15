@@ -86,6 +86,7 @@ class TunnelConfig:
         self.user_model_speed = rospy.get_param("~user_model_speed", 2.0)
         self.user_model_freq_base = rospy.get_param("~user_model_freq_base", 0.1)
         self.user_model_freq_scale = rospy.get_param("~user_model_freq_scale", 0.3)
+        self.user_model_seed = int(rospy.get_param("~user_model_seed", 42))
         # Keyboard RL-assist scaling target (fraction of action_limit).
         # Training always used ha_x = action_limit; below ~0.877 * limit the
         # learned residual bias reverses the forward direction.  1.0 = full
@@ -175,7 +176,11 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   safety_min_dist: {self.cfg.safety_min_dist} m")
         rospy.loginfo(f"[TunnelNav]   collision_dist : {self.cfg.collision_dist} m")
         if not self.cfg.keyboard_mode:
-            rospy.loginfo(f"[TunnelNav]   user_model     : {'simple' if self.cfg.user_model_simple else 'perlin'} @ {self.cfg.user_model_speed} m/s")
+            rospy.loginfo(
+                f"[TunnelNav]   user_model     : "
+                f"{'simple' if self.cfg.user_model_simple else 'perlin'} "
+                f"@ {self.cfg.user_model_speed} m/s (seed={self.cfg.user_model_seed})"
+            )
         rospy.loginfo(f"[TunnelNav]   lidar          : {self.cfg.lidar_hbeams}h x {self.cfg.lidar_vbeams}v, range={self.cfg.lidar_range}m")
         rospy.loginfo(f"[TunnelNav]   deterministic  : {self.cfg.deterministic}")
         rospy.loginfo(f"[TunnelNav]   height_control : {self.cfg.height_control}")
@@ -203,7 +208,7 @@ class TunnelNavigator:
                 freq_scale=self.cfg.user_model_freq_scale,
                 device=self.cfg.device,
             )
-            self.user_model.reset(seed=42)
+            self.user_model.reset(seed=self.cfg.user_model_seed)
             self.rl_assist = True
 
         # ---- State ----

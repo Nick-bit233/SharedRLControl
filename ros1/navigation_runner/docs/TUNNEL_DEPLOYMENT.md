@@ -89,7 +89,10 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 
 > 如果是在容器里手动分步调试，`slope_ws` 必须先于 `catkin_ws` source；反过来会让
 > `navigation_runner` 从 `ROS_PACKAGE_PATH` 中消失。当前 IPC 启动链还会自动完成
-> `takeoff -> Manual -> Hover -> Pilot -> AutoPilot`，无需再手动给一次起飞命令。
+> `takeoff -> Manual -> Hover -> Pilot -> AutoPilot`，并在 AutoPilot 后复用与 RL
+> 模式相同的 `UserModelTunnel` 输入流，无需再手动给一次起飞命令或额外发送固定前进摇杆。
+> 当前默认 startup timing 也已经压缩为：`takeoff_wait=0.6s`、`init_delay=0.1s`、
+> `switch_delay=0.15s`，用于减少 AutoPilot 之前的意外位移。
 
 ### 1.4 关键 launch 参数
 
@@ -222,6 +225,13 @@ ros1/uav_simulator/worlds/                          → /root/catkin_ws/src/uav_
 > 不会像 `navigation_runner` 脚本/配置那样自动热更新到容器；若要让源码修复生效，
 > 需要在容器内重编 `ipc`（或重建镜像）。本次 IPC segfault 的“现成容器修复”是
 > `cfg/tunnel/ipc_gazebo_param.yaml` 中启用 `rog_map.frontier_extraction_en`。
+>
+> 若要让 `slope_inspection/IPC/include/callback.cpp` 之类的源码修复真正进入当前容器里的
+> `ipc_node`，需要先把完整 `slope_inspection` 源码同步到 `/root/slope_ws/src/slope_inspection`，
+> 再在容器内执行：
+> `catkin_make -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCATKIN_WHITELIST_PACKAGES="cmake_utils;quadrotor_msgs;mars_planning_utils;mars_base;rog_map;ipc" -j2`
+>。另外，`slope_inspection/mars_base/CMakeLists.txt` 现在补了
+> `add_dependencies(mars_base ...)`，否则新容器里可能再次遇到 `BuckParam.h` 等消息头生成顺序问题。
 
 ## 4. 话题与服务参考
 
@@ -308,10 +318,13 @@ lidar_hres: 10.0         # 度 → 36 水平波束
 
 # 部署参数 — 可调
 control_freq: 20.0       # Hz
-takeoff_height: 4.0      # 米（CERLAB 插件默认悬停高度）
+takeoff_height: 5.0      # 米（与当前隧道训练初始化高度一致）
 deterministic: true      # 确定性输出
-user_model_simple: true  # 恒速前进
+user_model_simple: false # 默认使用在线 Perlin usermodel
 user_model_speed: 2.0    # m/s
+user_model_freq_base: 0.1
+user_model_freq_scale: 0.3
+user_model_seed: 42      # RL / IPC 共用，确保输入序列可复现
 safety_min_dist: 0.3     # 米，安全停止距离（0 = 禁用）
 collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失败）
 ```
@@ -323,8 +336,11 @@ collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失�
 
 ### UserModel 模式
 
-- **simple 模式** (`user_model_simple: true`)：恒速前进 `user_model_speed` m/s，适合直隧道
-- **online 模式** (`user_model_simple: false`)：Perlin 噪声生成多样化指令，更接近训练分布
+- **simple 模式** (`user_model_simple: true`)：`vx=user_model_speed`，`vy=vz=0`
+- **online 模式** (`user_model_simple: false`)：当前隧道 `UserModelTunnel` 的实际输出是
+  `vx=user_model_speed`、`vy` 为 Perlin 噪声、`vz=0`，也就是“恒定前进 + 随机横向漂移”
+- `user_model_seed` 现在同时传给 RL 与 IPC；两种方法在相同 seed 下会复用同一条
+  `UserModelTunnel` 指令序列
 
 ## 6. 架构说明
 
@@ -499,7 +515,7 @@ python3 $(rospack find navigation_runner)/scripts/analyze_results.py \
 
 | 节点 | 功能 | 输入 | 输出 |
 |------|------|------|------|
-| `rc_sim_node.py` | 自动起飞 + 模拟遥控器模式切换 | 定时器 | `/CERLAB/quadcopter/takeoff`, `/mavros/rc/in` |
+| `rc_sim_node.py` | 自动起飞 + 回放共享 usermodel RC 输入 | 定时器 + `UserModelTunnel` | `/CERLAB/quadcopter/takeoff`, `/mavros/rc/in` |
 | `lidar_sim_node.py` | LiDAR 点云模拟 | PCD + odom | `/pcl_render_node/cloud` |
 | `imu_bridge_node.py` | IMU 桥接 | odom + acc | `/mavros/imu/data` |
 | `cmd_bridge_node.py` | 指令转换（yaw-only XY + 高度保持） | `PositionCommand` | `/CERLAB/.../cmd_vel` |
@@ -508,8 +524,8 @@ python3 $(rospack find navigation_runner)/scripts/analyze_results.py \
 **RC 模拟模式切换流程：**
 ```
 启动 → 等待 Gazebo/takeoff subscriber → 发送一次 /CERLAB/quadcopter/takeoff →
-等待 4s 起飞 → Manual(ch4高) → Hover(ch5高) → Pilot(ch5高) →
-AutoPilot(ch10高) → 持续前进摇杆
+等待 0.6s 起飞 → 0.1s 内进入 Manual → 每个模式保持 0.15s 完成边沿切换 →
+AutoPilot(ch10高) → 共享 `UserModelTunnel` 摇杆输入
 ```
 
 **当前已确认的 IPC 迁移关键修复：**
@@ -523,6 +539,24 @@ AutoPilot(ch10高) → 持续前进摇杆
    变成负值”的桥接错误。
 4. IPC 模式默认使用 `ipc_tunnel.rviz`，并在 launch 里补上 `world -> map` 静态 TF；
    这修复了“话题其实在发，但 RViz 看不到点云/安全走廊”的可视化问题。
+5. IPC 的 `rc_sim_node.py` 不再在 AutoPilot 后只发送固定 `forward_stick=0.8`。
+   现在它会复用 RL 隧道部署的 `UserModelTunnel`，并把同一条体坐标输入序列映射到
+   RC 通道；在默认 `user_model_simple=false` 下，运行时表现为：
+   - `channel[1]` 固定为前进对应的 PWM（因为 `vx=user_model_speed`）
+   - `channel[0]` 随 Perlin 横向扰动变化
+   这才与 RL 测试时的 usermodel 分布一致。若只想手动回退到旧的恒定前进模式，
+   才需要显式设置 `use_user_model:=false`。
+6. `rc_sim_node.py` 的 startup waiting 已从“起飞后 4s + 多轮 3s 模式等待”压缩为
+   “起飞后 0.6s + 0.1/0.15s 的最小边沿脉冲”，避免无人机在真正进入 AutoPilot 前
+   就因为 Hover/Pilot 停留过久而跑偏。实际 probe 结果：
+   - 旧时序：第一次 AutoPilot RC 前，`x` 约前移 `0.81m`
+   - 新时序：第一次 AutoPilot RC 前，`x` 约前移 `0.21m`
+   - AutoPilot 首次触发时间也从约 `5.15s` 提前到约 `3.73s`
+7. `slope_inspection/IPC/include/callback.cpp` 里的 AutoPilot 进入条件已从“只接受一次
+   Channel 10 上升沿”改成“在 `UAV_Pilot` 中，若 Channel 10 持续保持高电平，也允许补锁存
+   AutoPilot”。同时 `rc_sim_node.py` 会先发一小段中性的 `AUTOPILOT EDGE`，再进入
+   `AUTOPILOT ACTIVE`。这修复了“`[RC Sim] -> AUTOPILOT` 已打印，但 IPC FSM 仍停在
+   `Pilot`、`/ipc/sfc` 始终不发”的问题。
 
 IPC 参数文件：`cfg/tunnel/ipc_gazebo_param.yaml`
 
@@ -683,6 +717,14 @@ gdb 回溯关键词：
   当前 Gazebo 隧道环境工作。
 - 当前默认 tunnel map / spawn 组合下，IPC 基线已经可以自动起飞、显示原版风格
   可视化，并完整记录一轮成功穿隧数据。
+- 在补上 AutoPilot 锁存修复并重编容器内 `ipc_node` 之后，`rosout` 已可稳定看到
+  `[IPC FSM]: Pilot --> Auto_pilot (latched high Channel 10).`，说明“RC 已切到
+  AUTOPILOT，但 IPC 仍卡在 Pilot”这一问题已经被单独修复。
+- 但 2026-04-15 的干净重跑 `ipc_20260415_092809_trial000.npz` 也暴露出一个**新的、
+  发生在 AutoPilot 之后**的规划问题：日志会反复出现
+  `rog error! new goal is free and unk in inf map!`，对应录制结果为
+  `goal_reached=False`、`total_time=121.281s`。这说明当前“进不了 AutoPilot / 没有 SFC”
+  的根因已经不是 RC/FSM，而是后续 `rog_map` / 目标生成链路还存在独立问题，需要继续分开调试。
 
 **历史问题（仍值得保留）**
 - RC 消息时序问题：`rc_sim_node.py` 现在会等待仿真时间 > 2s 再发送模式切换。
@@ -739,6 +781,50 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
    - `rostopic hz /ipc/sfc`
    - `rostopic hz /rog_map/occ`
    - RViz 必须使用 `ipc_tunnel.rviz`，Fixed Frame=`world`
+
+### Q: IPC 在真正进入 AutoPilot 前就已经明显向前/向上跑偏
+
+- 这通常不是 usermodel 本身的问题，而是 RC startup timing 太长，导致无人机在
+  `Hover` / `Pilot` 状态停留过久
+- 当前默认值已经压缩为：
+  - `takeoff_wait=0.6`
+  - `init_delay=0.1`
+  - `switch_delay=0.15`
+- 若你手动改大了这些值，第一次 AutoPilot RC 触发前就可能再次出现明显前移/上冲
+- 可直接检查：
+  `rostopic echo -n 1 /mavros/rc/in`
+  中 `channels[10] > 1500` 是否在起飞后很快出现；若迟迟没有，说明 RC mode 切换又被拖慢了
+
+### Q: `[RC Sim] -> AUTOPILOT` 已出现，但 IPC FSM 没有打印 `Pilot --> Auto_pilot`
+
+- 这类现象在当前迁移链里已经复现并确认过：RC 侧 `Channel 10` 明明已经持续拉高，
+  但原版 `slope_inspection/IPC/include/callback.cpp` 只在**单次上升沿**上切换
+  `UAV_Pilot -> UAV_AutoPilot`。如果那个边沿在 Gazebo/桥接时序中被错过一次，
+  IPC 就会永久卡在 `Pilot`，于是 `/ipc/sfc` 也不会再发布。
+- 当前修复分成两层：
+  1. `rc_sim_node.py` 先发中性的 `AUTOPILOT EDGE`，再延迟 `0.3s` 进入
+     `AUTOPILOT ACTIVE`
+  2. `callback.cpp` 在 `UAV_Pilot` 中对“持续高电平的 Channel 10”补做锁存
+- 修复后的关键验证信号：
+  - `rosout` 出现
+    `[IPC FSM]: Pilot --> Auto_pilot (latched high Channel 10).`
+  - `rostopic info /ipc/sfc` 能看到 `/ipc_node` 作为 publisher
+- **注意**：仅修改宿主机里的 `slope_inspection/IPC` 源码并不会自动影响当前 Docker 容器。
+  若容器里还是旧的 `ipc_node` 二进制，这个问题会原样复现；请按上文“Docker 开发环境”
+  中的 whitelist `catkin_make` 命令重编。
+
+### Q: 进入 AutoPilot 之后又反复出现 `rog error! new goal is free and unk in inf map!`
+
+- 这是在修复 AutoPilot 锁存问题后，新暴露出来的**后继问题**，不应再归因到 RC/FSM：
+  此时 IPC 已经进入 `Auto_pilot`，也已经开始接管控制，但后续 `rog_map` / 目标生成链路
+  仍可能为 inflation map 选到“free 且 unknown”的新目标点。
+- 当前已记录到的干净复现：
+  - 录制文件：`/root/results/ipc_20260415_092809_trial000.npz`
+  - `goal_reached=False`
+  - `total_time=121.281s`
+  - `rosout` 中重复报错位置：`ipc_fsm.cpp:313 (IPCFSMClass::AutoPilotHandle)`
+- 含义是：**“进不了 AutoPilot / 看不到 SFC” 已经修好，但 IPC 的后段规划还没有完全恢复。**
+  后续应继续单独调试 `rog_map` 与新目标采样逻辑，而不是回头重查 RC mode 切换。
 
 ### Q: 手动跑完一次后没有看到 `.npz` 结果文件
 

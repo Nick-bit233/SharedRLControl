@@ -14,7 +14,11 @@
     <arg name="use_safety_shield" default="false" />
     <arg name="device"          default="cpu" doc="cpu or cuda:0" />
     <arg name="rviz"            default="true" />
-    <arg name="user_model_simple" default="true" doc="true=constant forward, false=Perlin noise" />
+    <arg name="user_model_simple" default="false" doc="true=constant forward, false=Perlin noise" />
+    <arg name="user_model_speed" default="2.0" />
+    <arg name="user_model_freq_base" default="0.1" />
+    <arg name="user_model_freq_scale" default="0.3" />
+    <arg name="user_model_seed" default="42" />
     <arg name="spawn_x"        default="-15.0" />
     <arg name="spawn_y"        default="0.0" />
     <arg name="spawn_z"        default="0.1" />
@@ -70,6 +74,10 @@
         <param name="use_px4"             value="$(arg use_px4)" />
         <param name="use_safety_shield"   value="$(arg use_safety_shield)" />
         <param name="user_model_simple"   value="$(arg user_model_simple)" />
+        <param name="user_model_speed"    value="$(arg user_model_speed)" />
+        <param name="user_model_freq_base" value="$(arg user_model_freq_base)" />
+        <param name="user_model_freq_scale" value="$(arg user_model_freq_scale)" />
+        <param name="user_model_seed"     value="$(arg user_model_seed)" />
     </node>
 
     <!-- ============================================================ -->
