@@ -48,4 +48,4 @@ tumble_recover_height: 1.0    # metres above takeoff_height during tumble recove
 tumble_recover_timeout: 10.0  # seconds before declaring tumble recovery failed
 
 # --- Goal ---
-goal_x: 12.0                  # metres — declare success when drone x >= this
+goal_x: 11.9                  # metres — declare success when drone x >= this

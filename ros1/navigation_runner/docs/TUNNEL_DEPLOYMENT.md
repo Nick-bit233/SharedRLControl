@@ -397,7 +397,7 @@ IsaacSim 训练环境使用 `map_range = [6.0, 12.0, 5.0]`（config 坐标 `[x, 
 
 **PCD 地图 (`tunnel_map_default.pcd`)**:
 - 当前默认实验使用固定的预生成 PCD / Gazebo world 配对
-- 当前 `ros1/README.md` 中记录的生成命令为：`generate_tunnel_map.py --seed 288 -n 30 --cuboid-ratio 0.`
+- 当前 `ros1/README.md` 中记录的生成命令为：`generate_tunnel_map.py --seed 288 -n 15 --cuboid-ratio 0.5`
 - X ∈ [-12, 12]（24m，前进方向），Y ∈ [-6, 6]（12m，侧向），Z ∈ [0, 10]（10m，高度）
 - 出生区域：X ∈ [-12, -6]
 - 结构：地面、天花板、Y=±6 侧壁、X=-10 后墙，以及与 `tunnel_pcd_match_static.world` 对齐的一组固定障碍物
