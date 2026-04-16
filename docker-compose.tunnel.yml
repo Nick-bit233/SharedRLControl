@@ -8,7 +8,7 @@
 
 services:
   tunnel_debug:
-    image: tunnel_comparison:latest
+    image: tunnel_comparison:20260415-ipcfix
     container_name: tunnel_debug
     runtime: nvidia            # GPU passthrough for Gazebo rendering
     stdin_open: true           # keep alive for VSCode attach

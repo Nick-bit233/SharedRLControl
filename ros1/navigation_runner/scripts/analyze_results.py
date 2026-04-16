@@ -328,6 +328,42 @@ class ExperimentAnalyzer:
 
         fig = plt.figure(figsize=(16, 12))
         gs = GridSpec(3, 3, figure=fig, hspace=0.4, wspace=0.35)
+        methods_present = [method for method in ('rl', 'ipc') if results.get(method)]
+
+        def draw_metric_boxplot(ax, metric_key, title, ylabel):
+            series = []
+            labels = []
+            methods = []
+            for method in methods_present:
+                values = [
+                    item[metric_key]
+                    for item in results[method]
+                    if metric_key in item and np.isfinite(item[metric_key])
+                ]
+                if values:
+                    series.append(values)
+                    labels.append(self.LABELS[method])
+                    methods.append(method)
+
+            if series:
+                box = ax.boxplot(series, labels=labels, patch_artist=True)
+                for patch, method in zip(box['boxes'], methods):
+                    patch.set_facecolor(self.COLORS[method])
+                    patch.set_alpha(0.7)
+            else:
+                ax.text(
+                    0.5,
+                    0.5,
+                    'No valid data',
+                    ha='center',
+                    va='center',
+                    transform=ax.transAxes,
+                )
+                ax.set_xticks([])
+
+            ax.set_title(title)
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3, axis='y')
 
         ax = fig.add_subplot(gs[0, :2])
         for method, tlist in trajectories.items():
@@ -345,7 +381,8 @@ class ExperimentAnalyzer:
         ax.set_ylabel('Y (m)')
         ax.grid(True, alpha=0.3)
         ax.set_aspect('equal')
-        ax.legend()
+        if ax.lines:
+            ax.legend()
 
         ax = fig.add_subplot(gs[0, 2])
         for method, tlist in trajectories.items():
@@ -363,8 +400,6 @@ class ExperimentAnalyzer:
         ax.set_ylabel('Speed (m/s)')
         ax.grid(True, alpha=0.3)
 
-        methods_present = [method for method in ('rl', 'ipc') if results.get(method)]
-
         ax = fig.add_subplot(gs[1, 0])
         rates = [np.mean([item['goal_reached'] for item in results[m]]) * 100 for m in methods_present]
         bars = ax.bar([self.LABELS[m] for m in methods_present], rates,
@@ -377,26 +412,10 @@ class ExperimentAnalyzer:
         ax.set_ylim(0, 110)
 
         ax = fig.add_subplot(gs[1, 1])
-        data = [[item['max_x'] for item in results[m]] for m in methods_present]
-        box = ax.boxplot(data, labels=[self.LABELS[m] for m in methods_present],
-                         patch_artist=True)
-        for patch, method in zip(box['boxes'], methods_present):
-            patch.set_facecolor(self.COLORS[method])
-            patch.set_alpha(0.7)
-        ax.set_title('Forward Distance')
-        ax.set_ylabel('m')
-        ax.grid(True, alpha=0.3, axis='y')
+        draw_metric_boxplot(ax, 'max_x', 'Forward Distance', 'm')
 
         ax = fig.add_subplot(gs[1, 2])
-        data = [[item['min_obstacle_dist'] for item in results[m]] for m in methods_present]
-        box = ax.boxplot(data, labels=[self.LABELS[m] for m in methods_present],
-                         patch_artist=True)
-        for patch, method in zip(box['boxes'], methods_present):
-            patch.set_facecolor(self.COLORS[method])
-            patch.set_alpha(0.7)
-        ax.set_title('Minimum Obstacle Distance')
-        ax.set_ylabel('m')
-        ax.grid(True, alpha=0.3, axis='y')
+        draw_metric_boxplot(ax, 'min_obstacle_dist', 'Minimum Obstacle Distance', 'm')
 
         ax = fig.add_subplot(gs[2, :2])
         for method, tlist in trajectories.items():
@@ -414,18 +433,11 @@ class ExperimentAnalyzer:
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Distance (m)')
         ax.grid(True, alpha=0.3)
-        ax.legend()
+        if ax.lines:
+            ax.legend()
 
         ax = fig.add_subplot(gs[2, 2])
-        data = [[item['cmd_smoothness'] for item in results[m]] for m in methods_present]
-        box = ax.boxplot(data, labels=[self.LABELS[m] for m in methods_present],
-                         patch_artist=True)
-        for patch, method in zip(box['boxes'], methods_present):
-            patch.set_facecolor(self.COLORS[method])
-            patch.set_alpha(0.7)
-        ax.set_title('Command Smoothness')
-        ax.set_ylabel('Cmd delta')
-        ax.grid(True, alpha=0.3, axis='y')
+        draw_metric_boxplot(ax, 'cmd_smoothness', 'Command Smoothness', 'Cmd delta')
 
         plt.suptitle('ROS1 Tunnel Navigation Results', fontsize=14, fontweight='bold')
         plot_path = os.path.join(self.output_dir, 'comparison_plots.png')

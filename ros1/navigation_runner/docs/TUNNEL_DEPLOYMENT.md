@@ -62,6 +62,10 @@ docker compose -f docker-compose.tunnel.yml up -d
 docker exec -it tunnel_debug bash
 ```
 
+> 当前已验证并持久化了一个本地修复镜像：`tunnel_comparison:20260415-ipcfix`。
+> 这份 image 包含容器内重新编译后的 `slope_ws` / `ipc_node` 修复，`docker-compose.tunnel.yml`
+> 现在默认就固定到这个 tag。为了兼容旧命令，本机的 `tunnel_comparison:latest` 也已被重新标记到同一镜像。
+
 ### 1.2 运行 RL 模式
 
 ```bash
@@ -75,7 +79,7 @@ roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=false
 > **注意**: RL 模式现在同时启动 `lidar_sim_node`（PCD → PointCloud2）和
 > `map_manager`（占用地图 + RayCast 服务）。`lidar_sim_node` 提供实时点云数据，
 > `map_manager` 使用预构建 PCD 地图和实时点云来维护占用栅格。
-> 当前 `tunnel_comparison:latest` 镜像内的 PyTorch 是 CPU-only，因此推荐明确使用
+> 当前 `tunnel_comparison:20260415-ipcfix` 镜像内的 PyTorch 是 CPU-only，因此推荐明确使用
 > `device:=cpu`。如果误传 `device:=cuda:0`，当前的 batch 脚本和 `tunnel_navigation.py`
 > 都会自动回退到 `cpu`，避免 RL 节点因 CUDA 不可用而退出。
 
@@ -911,7 +915,7 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
       --output-dir /root/results/tunnel_batch_001
   ```
 - 常用参数：
-  - `--device`：当前 `tunnel_comparison:latest` 镜像内的 PyTorch 是 CPU-only；若未重建
+  - `--device`：当前 `tunnel_comparison:20260415-ipcfix` 镜像内的 PyTorch 是 CPU-only；若未重建
     CUDA 版镜像，请保持 `--device cpu`。脚本现在会把无效的 `cuda:*` 请求自动回退到 `cpu`
   - `--launch-timeout`：批处理外层 watchdog
   - `--goal-x` / `--collision-dist`：统一终止阈值

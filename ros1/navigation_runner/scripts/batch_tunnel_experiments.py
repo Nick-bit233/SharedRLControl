@@ -13,6 +13,27 @@ import sys
 import time
 from datetime import datetime
 
+EXPERIMENT_PROCESS_PATTERNS = (
+    "/opt/ros/noetic/bin/rosmaster --core",
+    "/opt/ros/noetic/lib/rosout/rosout",
+    "/opt/ros/noetic/bin/roslaunch navigation_runner tunnel_comparison.launch",
+    "gzserver",
+    "gzclient",
+    "gazebo_gui",
+    "rviz",
+    "navigation_runner/scripts/flight_recorder.py",
+    "navigation_runner/scripts/tunnel_navigation.py",
+    "navigation_runner/scripts/lidar_sim_node.py",
+    "navigation_runner/scripts/cmd_bridge_node.py",
+    "navigation_runner/scripts/rc_sim_node.py",
+    "/root/slope_ws/devel/lib/ipc/ipc_node",
+    "occupancy_map_node",
+    "spawn_model",
+    "topic_tools/throttle",
+    "quadcopterTFBroadcaster",
+    "static_transform_publisher",
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -71,6 +92,70 @@ def kill_process_group(proc):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def find_experiment_processes():
+    current_pid = os.getpid()
+    output = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
+    matches = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid = int(parts[0])
+        cmd = parts[1]
+        if pid == current_pid:
+            continue
+        if any(pattern in cmd for pattern in EXPERIMENT_PROCESS_PATTERNS):
+            matches.append((pid, cmd))
+    return matches
+
+
+def cleanup_experiment_processes(context):
+    matches = find_experiment_processes()
+    if not matches:
+        return
+
+    pids = [pid for pid, _ in matches]
+    print(
+        f"[Batch] Cleaning stale processes ({context}): "
+        + ", ".join(str(pid) for pid in pids)
+    )
+
+    for sig, wait_seconds in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 2.0)):
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            remaining = {pid for pid, _ in find_experiment_processes()}
+            if not any(pid in remaining for pid in pids):
+                return
+            time.sleep(0.2)
+
+    remaining = [pid for pid, _ in find_experiment_processes()]
+    if remaining:
+        print(f"[Batch] WARNING: some stale processes are still alive: {remaining}")
+
+
+def build_run_env(run_dir, run_slot):
+    env = os.environ.copy()
+    ros_master_port = 11311 + run_slot
+    gazebo_master_port = 11345 + run_slot
+    ros_log_dir = os.path.join(run_dir, "ros_logs")
+    os.makedirs(ros_log_dir, exist_ok=True)
+    env["ROS_IP"] = "127.0.0.1"
+    env["ROS_HOSTNAME"] = "127.0.0.1"
+    env["ROS_MASTER_URI"] = f"http://127.0.0.1:{ros_master_port}"
+    env["GAZEBO_MASTER_URI"] = f"http://127.0.0.1:{gazebo_master_port}"
+    env["ROS_LOG_DIR"] = ros_log_dir
+    return env
 
 
 def ensure_output_dir(args):
@@ -235,6 +320,7 @@ def collect_run_summary(run_dir, method, trial_id, run_id, batch_idx, run_idx,
 def run_batch(args, output_root):
     seed_plan = generate_seed_plan(args)
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    cleanup_experiment_processes("batch start")
     manifest = {
         "batch_config": {
             "num_batches": args.num_batches,
@@ -289,6 +375,8 @@ def run_batch(args, output_root):
                 os.makedirs(run_dir, exist_ok=True)
                 run_id = f"b{batch_idx:03d}_{method}_r{run_idx:03d}_seed{user_model_seed}"
                 log_path = os.path.join(run_dir, "launch.log")
+                cleanup_experiment_processes(f"before {run_id}")
+                run_env = build_run_env(run_dir, completed_runs)
                 cmd = build_roslaunch_cmd(
                     args=args,
                     method=method,
@@ -317,6 +405,7 @@ def run_batch(args, output_root):
                         stdout=log_handle,
                         stderr=subprocess.STDOUT,
                         preexec_fn=os.setsid,
+                        env=run_env,
                     )
                     try:
                         exit_code = proc.wait(timeout=args.launch_timeout)
@@ -344,6 +433,7 @@ def run_batch(args, output_root):
                 with open(os.path.join(output_root, "batch_manifest.json"), "w", encoding="utf-8") as handle:
                     json.dump(manifest, handle, indent=2)
 
+                cleanup_experiment_processes(f"after {run_id}")
                 completed_runs += 1
                 time.sleep(args.inter_run_delay)
 

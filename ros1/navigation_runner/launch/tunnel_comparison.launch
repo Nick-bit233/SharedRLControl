@@ -18,6 +18,7 @@
     <arg name="record" default="true"/>
     <arg name="rviz" default="true"/>
     <arg name="device" default="cpu"/>
+    <arg name="ipc_launch_prefix" default=""/>
     <arg name="user_model_simple" default="false"/>
     <arg name="user_model_speed" default="2.0"/>
     <arg name="user_model_freq_base" default="0.1"/>
@@ -118,6 +119,7 @@
             <arg name="record" value="false"/>
             <arg name="rviz" value="false"/>
             <arg name="device" value="$(arg device)"/>
+            <arg name="ipc_launch_prefix" value="$(arg ipc_launch_prefix)"/>
             <arg name="user_model_simple" value="$(arg user_model_simple)"/>
             <arg name="user_model_speed" value="$(arg user_model_speed)"/>
             <arg name="user_model_freq_base" value="$(arg user_model_freq_base)"/>
@@ -138,6 +140,7 @@
             <param name="rate" value="50"/>
             <param name="goal_x" value="$(arg goal_x)"/>
             <param name="collision_dist" value="$(arg collision_dist)"/>
+            <param name="collision_topic" value="$(eval '/tunnel_nav/collision' if arg('method') == 'rl' else '')"/>
             <param name="pcd_file" value="$(arg tunnel_map)"/>
             <param name="auto_terminate" value="$(arg auto_terminate)"/>
             <param name="shutdown_on_complete" value="$(arg shutdown_on_complete)"/>

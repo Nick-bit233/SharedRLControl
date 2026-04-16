@@ -30,6 +30,7 @@ class FlightRecorder:
         self.auto_start = rospy.get_param('~auto_start', True)
         self.goal_x = rospy.get_param('~goal_x', 15.0)
         self.collision_dist = rospy.get_param('~collision_dist', 0.05)
+        self.collision_topic = str(rospy.get_param('~collision_topic', '')).strip()
         self.pcd_file = rospy.get_param('~pcd_file', '')
         self.auto_terminate = rospy.get_param('~auto_terminate', True)
         self.shutdown_on_complete = rospy.get_param('~shutdown_on_complete', True)
@@ -64,6 +65,7 @@ class FlightRecorder:
         self.min_obstacle_dist = float('inf')
         self.initial_z = None
         self.airborne = False
+        self.external_collision = False
         self.obstacle_tree = self._load_obstacle_tree()
 
         os.makedirs(self.output_dir, exist_ok=True)
@@ -74,6 +76,11 @@ class FlightRecorder:
             '/CERLAB/quadcopter/cmd_vel', TwistStamped, self._cmd_cb, queue_size=1)
         self.human_cmd_sub = rospy.Subscriber(
             '/experiment_control/human_cmd', TwistStamped, self._human_cmd_cb, queue_size=1)
+        self.collision_sub = None
+        if self.collision_topic:
+            self.collision_sub = rospy.Subscriber(
+                self.collision_topic, Bool, self._collision_cb, queue_size=1
+            )
 
         self.start_sub = rospy.Subscriber(
             '/flight_recorder/start', Bool, self._start_cb, queue_size=1)
@@ -97,7 +104,8 @@ class FlightRecorder:
             'velocity': [], 'cmd_vel': [], 'cmd_vel_world': [],
             'human_cmd_body': [], 'human_cmd_world': [],
             'angular_vel': [], 'yaw': [],
-            'min_obstacle_dist': [], 'collision_flags': [],
+            'min_obstacle_dist': [], 'min_obstacle_dist_monitored': [],
+            'collision_flags': [],
         }
 
     def _load_obstacle_tree(self):
@@ -154,6 +162,20 @@ class FlightRecorder:
     def _human_cmd_cb(self, msg):
         self.latest_human_cmd = msg
 
+    def _collision_cb(self, msg):
+        self.external_collision = bool(msg.data)
+        if not self.external_collision or not self.recording or self.termination_reason:
+            return
+
+        t = (rospy.Time.now() - self.start_time).to_sec() if self.start_time is not None else 0.0
+        min_dist = self.min_obstacle_dist if np.isfinite(self.min_obstacle_dist) else float('inf')
+        rospy.logerr(
+            "[Recorder] External collision topic triggered at t=%.2fs (%s)",
+            t,
+            self.collision_topic,
+        )
+        self._request_termination('collision', t, min_dist)
+
     def _start_cb(self, msg):
         if msg.data and not self.recording:
             self._start_recording()
@@ -181,6 +203,7 @@ class FlightRecorder:
         self.finalize_timer = None
         self.min_obstacle_dist = float('inf')
         self.airborne = False
+        self.external_collision = False
         self.stop_pub.publish(Bool(data=False))
         rospy.loginfo("[Recorder] STARTED (%s trial %d)", self.method, self.trial_id)
 
@@ -272,11 +295,13 @@ class FlightRecorder:
         human_cmd_world = self._local_to_world(human_cmd_body, yaw)
 
         min_dist = float('inf')
+        monitored_min_dist = float('inf')
         collision_flag = False
         if self.obstacle_tree is not None:
             min_dist = float(self.obstacle_tree.query([p.x, p.y, p.z])[0])
-            collision_flag = self.airborne and (min_dist < self.collision_dist)
-            self.min_obstacle_dist = min_dist
+            monitored_min_dist = min_dist if self.airborne else float('inf')
+            collision_flag = monitored_min_dist < self.collision_dist
+            self.min_obstacle_dist = min(self.min_obstacle_dist, monitored_min_dist)
 
         self.buffers['timestamps'].append(t)
         self.buffers['position'].append([p.x, p.y, p.z])
@@ -289,6 +314,7 @@ class FlightRecorder:
         self.buffers['angular_vel'].append([w.x, w.y, w.z])
         self.buffers['yaw'].append(yaw)
         self.buffers['min_obstacle_dist'].append(min_dist)
+        self.buffers['min_obstacle_dist_monitored'].append(monitored_min_dist)
         self.buffers['collision_flags'].append(collision_flag)
 
         if self.auto_terminate and not self.termination_reason:
@@ -371,6 +397,11 @@ class FlightRecorder:
             'samples': int(len(ts)),
             'max_x': max_x,
             'min_obstacle_dist': float(
+                np.min(self.buffers['min_obstacle_dist_monitored'])
+                if self.buffers['min_obstacle_dist_monitored']
+                else float('inf')
+            ),
+            'min_obstacle_dist_raw': float(
                 np.min(self.buffers['min_obstacle_dist'])
                 if self.buffers['min_obstacle_dist']
                 else float('inf')

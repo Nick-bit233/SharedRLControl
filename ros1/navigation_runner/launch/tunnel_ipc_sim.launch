@@ -10,6 +10,7 @@
     <arg name="record" default="true"/>
     <arg name="rviz" default="true"/>
     <arg name="device" default="cpu"/>
+    <arg name="ipc_launch_prefix" default=""/>
     <arg name="user_model_simple" default="false"/>
     <arg name="user_model_speed" default="2.0"/>
     <arg name="user_model_freq_base" default="0.1"/>
@@ -98,7 +99,8 @@
     </node>
 
     <!-- ===== IPC Node (from slope_inspection) ===== -->
-    <node pkg="ipc" type="ipc_node" name="ipc_node" output="screen">
+    <node pkg="ipc" type="ipc_node" name="ipc_node" output="screen"
+          launch-prefix="$(arg ipc_launch_prefix)">
         <!-- Service remaps -->
         <remap from="reboot"    to="/mavros/cmd/command"/>
         <remap from="arming"    to="/mavros/cmd/arming"/>

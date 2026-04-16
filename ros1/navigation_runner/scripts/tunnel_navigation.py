@@ -327,6 +327,7 @@ class TunnelNavigator:
         self.collision_pub = rospy.Publisher(
             "/tunnel_nav/collision", Bool, queue_size=2, latch=True
         )
+        self.collision_pub.publish(Bool(data=False))
         self.human_cmd_pub = rospy.Publisher(
             "/experiment_control/human_cmd", TwistStamped, queue_size=2
         )
