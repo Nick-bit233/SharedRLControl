@@ -168,11 +168,19 @@ target_link_libraries(safe_action_node ${PROJECT_NAME})
 # See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
 
 ## Mark executable scripts (Python etc.) for installation
-## in contrast to setup.py, you can choose the destination
-# catkin_install_python(PROGRAMS
-#   scripts/my_python_script
-#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+catkin_install_python(PROGRAMS
+  scripts/tunnel_navigation.py
+  scripts/rc_sim_node.py
+  scripts/lidar_sim_node.py
+  scripts/imu_bridge_node.py
+  scripts/cmd_bridge_node.py
+  scripts/mavros_fake_node.py
+  scripts/flight_recorder.py
+  scripts/run_comparison.py
+  scripts/batch_tunnel_experiments.py
+  scripts/analyze_results.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
 ## Mark executables for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html

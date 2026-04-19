@@ -1,0 +1,306 @@
+<?xml version="1.0" ?>
+<sdf version='1.7'>
+  <world name='tunnel_pcd_match'>
+    <!-- Lighting -->
+    <light name='sun' type='directional'>
+      <cast_shadows>1</cast_shadows>
+      <pose>0 0 15 0 -0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Physics -->
+    <gravity>0 0 -9.8</gravity>
+    <physics type='ode'>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+    <scene>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>1</shadows>
+    </scene>
+
+    <!-- Ground plane -->
+    <model name='ground_plane'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name='visual'>
+          <cast_shadows>0</cast_shadows>
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Grey</name>
+          </script></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- wall_left at Y=-6.0 -->
+    <model name='wall_left'>
+      <static>1</static>
+      <pose>0 -6.0000 5.0000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>24.0000 0.3 10.0000</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>24.0000 0.3 10.0000</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 0.7</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- wall_right at Y=6.0 -->
+    <model name='wall_right'>
+      <static>1</static>
+      <pose>0 6.0000 5.0000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>24.0000 0.3 10.0000</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>24.0000 0.3 10.0000</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 0.7</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- back_wall at X=-10.0 -->
+    <model name='back_wall'>
+      <static>1</static>
+      <pose>-10.0000 0 5.0000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.3 12.0000 10.0000</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.3 12.0000 10.0000</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 0.7</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='cyl_0'>
+      <static>1</static>
+      <pose>0.992642 4.507143 4.927976 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><cylinder><radius>0.246806</radius><length>9.855952</length></cylinder></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><cylinder><radius>0.246806</radius><length>9.855952</length></cylinder></geometry>
+          <material><ambient>0.6 0.3 0.1 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='cyl_1'>
+      <static>1</static>
+      <pose>-2.504088 -4.419164 5.000000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><cylinder><radius>0.412422</radius><length>10.000000</length></cylinder></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><cylinder><radius>0.412422</radius><length>10.000000</length></cylinder></geometry>
+          <material><ambient>0.6 0.3 0.1 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='box_0'>
+      <static>1</static>
+      <pose>-4.670648 4.699099 5.000000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.509095 0.510043 10.000000</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.509095 0.510043 10.000000</size></box></geometry>
+          <material><ambient>0.3 0.3 0.6 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='box_1'>
+      <static>1</static>
+      <pose>-0.132124 0.247564 3.727780 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.767112 0.483696 7.455560</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.767112 0.483696 7.455560</size></box></geometry>
+          <material><ambient>0.3 0.3 0.6 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='cyl_2'>
+      <static>1</static>
+      <pose>-0.325686 -1.336382 3.824280 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><cylinder><radius>0.259902</radius><length>7.648560</length></cylinder></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><cylinder><radius>0.259902</radius><length>7.648560</length></cylinder></geometry>
+          <material><ambient>0.6 0.3 0.1 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='cyl_3'>
+      <static>1</static>
+      <pose>3.227751 0.924146 2.185802 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><cylinder><radius>0.251157</radius><length>4.371603</length></cylinder></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><cylinder><radius>0.251157</radius><length>4.371603</length></cylinder></geometry>
+          <material><ambient>0.6 0.3 0.1 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='cyl_4'>
+      <static>1</static>
+      <pose>-3.959175 4.488855 5.000000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><cylinder><radius>0.291384</radius><length>10.000000</length></cylinder></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><cylinder><radius>0.291384</radius><length>10.000000</length></cylinder></geometry>
+          <material><ambient>0.6 0.3 0.1 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='box_2'>
+      <static>1</static>
+      <pose>-3.437246 1.842330 3.760610 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.697106 0.420633 7.521220</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.697106 0.420633 7.521220</size></box></geometry>
+          <material><ambient>0.3 0.3 0.6 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='box_3'>
+      <static>1</static>
+      <pose>9.549126 -2.412200 4.650089 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.712041 0.728026 9.300178</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.712041 0.728026 9.300178</size></box></geometry>
+          <material><ambient>0.3 0.3 0.6 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='cyl_5'>
+      <static>1</static>
+      <pose>-2.042329 4.695846 5.000000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><cylinder><radius>0.468448</radius><length>10.000000</length></cylinder></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><cylinder><radius>0.468448</radius><length>10.000000</length></cylinder></geometry>
+          <material><ambient>0.6 0.3 0.1 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='box_4'>
+      <static>1</static>
+      <pose>4.566400 4.218742 2.353970 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.427136 0.595198 4.707940</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.427136 0.595198 4.707940</size></box></geometry>
+          <material><ambient>0.3 0.3 0.6 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='box_5'>
+      <static>1</static>
+      <pose>1.218837 -2.286510 5.000000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.568561 0.725618 10.000000</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.568561 0.725618 10.000000</size></box></geometry>
+          <material><ambient>0.3 0.3 0.6 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='cyl_6'>
+      <static>1</static>
+      <pose>-2.745212 3.021970 2.298203 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><cylinder><radius>0.431673</radius><length>4.596405</length></cylinder></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><cylinder><radius>0.431673</radius><length>4.596405</length></cylinder></geometry>
+          <material><ambient>0.6 0.3 0.1 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='cyl_7'>
+      <static>1</static>
+      <pose>-1.820549 -4.944779 5.000000 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><cylinder><radius>0.418702</radius><length>10.000000</length></cylinder></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><cylinder><radius>0.418702</radius><length>10.000000</length></cylinder></geometry>
+          <material><ambient>0.6 0.3 0.1 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='box_6'>
+      <static>1</static>
+      <pose>7.340326 -4.259553 3.433863 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.917862 0.773979 6.867726</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.917862 0.773979 6.867726</size></box></geometry>
+          <material><ambient>0.3 0.3 0.6 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

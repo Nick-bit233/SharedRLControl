@@ -1,0 +1,44 @@
+# Occupancy map parameters for tunnel deployment (prebuilt PCD map)
+sensor_input_mode: 1            # 0=depth camera, 1=pointcloud
+localization_mode: 1            # 0=pose, 1=odom
+
+point_cloud_topic: /pcl_render_node/cloud
+odom_topic: /CERLAB/quadcopter/odom
+pose_topic: /CERLAB/quadcopter/pose
+
+robot_size: [0.3, 0.3, 0.1]    # [x, y, z] in meters
+
+# Depth camera params (kept for reference, not used in pointcloud mode)
+depth_image_topic: /no_topic
+depth_intrinsics: [554.254691191187, 554.254691191187, 320.5, 240.5]
+depth_scale_factor: 10
+depth_min_value: 0.5
+depth_max_value: 5.0
+
+# Body-to-camera transform (4x4 row-major identity — lidar is at body frame)
+body_to_camera: [1, 0, 0, 0,
+                 0, 1, 0, 0,
+                 0, 0, 1, 0,
+                 0, 0, 0, 1]
+
+raycast_max_length: 5.0
+
+# Occupancy probability parameters
+p_hit: 0.70
+p_miss: 0.35
+p_min: 0.12
+p_max: 0.97
+p_occ: 0.80
+
+# Map settings (adjust for your tunnel size)
+map_resolution: 0.1            # meters per voxel
+ground_height: -0.1
+map_size: [60, 60, 10]         # [x, y, z] metres
+local_update_range: [5, 5, 5]
+local_bound_inflation: 3.0
+local_map_size: [5, 5, 5]
+max_height_visualization: 8
+
+# Path to prebuilt tunnel map (PCD format)
+# REQUIRED: set this to your generated tunnel .pcd file
+prebuilt_map_directory: "/root/catkin_ws/src/navigation_runner/cfg/tunnel/tunnel_map_default.pcd"

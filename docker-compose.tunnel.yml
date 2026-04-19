@@ -1,0 +1,50 @@
+# =============================================================
+# Docker Compose for persistent tunnel comparison debugging
+# Usage:
+#   docker compose -f docker-compose.tunnel.yml up -d
+#   # Then attach VSCode via "Dev Containers: Attach to Running Container"
+#   # Or open a shell: docker exec -it tunnel_debug bash
+# =============================================================
+
+services:
+  tunnel_debug:
+    image: tunnel_comparison:20260415-ipcfix
+    container_name: tunnel_debug
+    runtime: nvidia            # GPU passthrough for Gazebo rendering
+    stdin_open: true           # keep alive for VSCode attach
+    tty: true
+    network_mode: host         # simplifies ROS networking
+
+    environment:
+      - DISPLAY=${DISPLAY:-:1}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - QT_X11_NO_MITSHM=1    # fix shared memory issues with X11
+
+    volumes:
+      # --- X11 socket for GUI (Gazebo, RViz) on host monitor ---
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+      # --- Source code mounts (edit on host, test in container) ---
+      # Python scripts: edits reflect immediately, no rebuild needed
+      - ./ros1/navigation_runner/scripts:/root/catkin_ws/src/navigation_runner/scripts:rw
+      - ./ros1/navigation_runner/cfg:/root/catkin_ws/src/navigation_runner/cfg:rw
+      - ./ros1/navigation_runner/launch:/root/catkin_ws/src/navigation_runner/launch:rw
+      - ./ros1/navigation_runner/docs:/root/catkin_ws/src/navigation_runner/docs:rw
+
+      # RL checkpoints (read-only, large files)
+      - ./isaac-training/outputs:/root/catkin_ws/src/navigation_runner/checkpoints:ro
+
+      # Gazebo world files (edit tunnel layout without rebuild)
+      - ./ros1/uav_simulator/worlds:/root/catkin_ws/src/uav_simulator/worlds:rw
+
+      # Persistent experiment outputs: host ros1/results/ <-> container results dirs
+      # Keep both paths mounted for compatibility with older scripts that still use
+      # /root/catkin_ws/results while the newer launch files default to /root/results.
+      - ./ros1/results:/root/results:rw
+      - ./ros1/results:/root/catkin_ws/results:rw
+
+    working_dir: /root/catkin_ws
+
+    # Keep container running (entrypoint sources ROS + starts Xvfb if needed)
+    command: ["bash"]

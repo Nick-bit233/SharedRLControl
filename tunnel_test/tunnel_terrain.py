@@ -20,7 +20,8 @@ from isaaclab.terrains.height_field.utils import height_field_to_mesh
 
 # ============== Tunnel Terrain (same as env_tunnel.py) ==============
 
-INIT_POS = [-8.0, 0.0, 4.0]
+# Match the training environment's tunnel reset pose.
+INIT_POS = [-7.0, 0.0, 5.0]
 INIT_QUAT = [1.0, 0.0, 0.0, 0.0]
 
 # Fixed seed for legacy np.random so that the offline heightfield

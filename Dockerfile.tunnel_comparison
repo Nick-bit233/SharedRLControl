@@ -1,0 +1,85 @@
+# =============================================================
+# Dockerfile: RL vs IPC Tunnel Comparison Environment
+# Extends slope_inspection:test (has IPC + OsqpEigen + mavros)
+# Adds: Gazebo 11 + CERLAB simulator + PyTorch + scipy
+# =============================================================
+FROM slope_inspection:test
+
+LABEL description="RL vs IPC tunnel comparison on CERLAB Gazebo"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---------- Gazebo 11 + ROS packages + headless rendering ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gazebo11 \
+    libgazebo11-dev \
+    ros-noetic-gazebo-ros \
+    ros-noetic-gazebo-ros-pkgs \
+    ros-noetic-gazebo-plugins \
+    ros-noetic-cv-bridge \
+    ros-noetic-image-transport \
+    ros-noetic-vision-msgs \
+    ros-noetic-rviz \
+    ros-noetic-pcl-ros \
+    python3-pip \
+    python3-setuptools \
+    xvfb \
+    mesa-utils \
+    libgl1-mesa-dri \
+    libgl1-mesa-glx \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- Python dependencies (Python 3.8 compatible) ----------
+RUN pip3 install --no-cache-dir \
+    numpy==1.24.4 \
+    scipy==1.10.1 \
+    matplotlib==3.7.5 \
+    networkx==3.1 \
+    torch==2.0.1+cpu -f https://download.pytorch.org/whl/cpu/torch_stable.html
+
+# ---------- Build CERLAB packages ----------
+ENV CATKIN_WS=/root/catkin_ws
+RUN mkdir -p ${CATKIN_WS}/src
+
+COPY ros1/uav_simulator     ${CATKIN_WS}/src/uav_simulator
+COPY ros1/map_manager       ${CATKIN_WS}/src/map_manager
+COPY ros1/onboard_detector  ${CATKIN_WS}/src/onboard_detector
+COPY ros1/navigation_runner ${CATKIN_WS}/src/navigation_runner
+
+# Build catkin workspace (cmake 4.x compat flag)
+SHELL ["/bin/bash", "-c"]
+RUN source /opt/ros/noetic/setup.bash && \
+    source /root/slope_ws/devel/setup.bash && \
+    cd ${CATKIN_WS} && \
+    catkin_make -DCMAKE_BUILD_TYPE=Release \
+               -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+               -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+# Register ipc package for rospack/roslaunch (source cleaned in base image, binary remains)
+# rospack crawls the src dirs listed in .catkin, so create a stub package there
+RUN mkdir -p /root/slope_ws/src/ipc && \
+    printf '<?xml version="1.0"?>\n<package format="2">\n  <name>ipc</name>\n  <version>0.0.0</version>\n  <description>IPC planner (binary-only)</description>\n  <maintainer email="ipc@localhost.local">maintainer</maintainer>\n  <license>MIT</license>\n  <buildtool_depend>catkin</buildtool_depend>\n</package>\n' \
+    > /root/slope_ws/src/ipc/package.xml
+
+# ---------- Environment ----------
+RUN echo 'source /opt/ros/noetic/setup.bash' >> /root/.bashrc && \
+    echo 'source /root/slope_ws/devel/setup.bash' >> /root/.bashrc && \
+    echo 'source /root/catkin_ws/devel/setup.bash' >> /root/.bashrc && \
+    echo 'export GAZEBO_PLUGIN_PATH=/root/catkin_ws/src/uav_simulator/plugins:${GAZEBO_PLUGIN_PATH}' >> /root/.bashrc
+
+ENV GAZEBO_MODEL_PATH=/usr/share/gazebo-11/models:${CATKIN_WS}/src/uav_simulator/models
+ENV GAZEBO_PLUGIN_PATH=${CATKIN_WS}/src/uav_simulator/plugins:${GAZEBO_PLUGIN_PATH}
+
+# ---------- Rendering fallback (Xvfb when no host DISPLAY) ----------
+# When host X11 is forwarded, entrypoint.sh skips Xvfb and uses GPU directly.
+# These are defaults for fully headless (CI/batch) mode only:
+ENV MESA_GL_VERSION_OVERRIDE=3.3
+
+# ---------- Default working directory ----------
+WORKDIR ${CATKIN_WS}
+
+# Start Xvfb on DISPLAY :99 before any command
+COPY ros1/uav_simulator/scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

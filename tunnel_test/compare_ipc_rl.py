@@ -581,7 +581,6 @@ def main():
             # Only keep in memory for inline visualization
             need_inline_viz = (viz_mode == "all") or (viz_mode == "first" and trial_idx == 0)
             prev_vel_w_np = np.zeros(3)
-            prev_human_action = torch.zeros((1, action_dim), device=device)
 
             if use_ipc:
                 ipc.reset()
@@ -640,7 +639,7 @@ def main():
                             "agents": TensorDict({
                                 "observation": TensorDict({
                                     "state": drone_state,
-                                    "human_action": prev_human_action,
+                                    "human_action": human_action_input,
                                     "lidar": lidar_obs,
                                 }, batch_size=[1])
                             }, batch_size=[1])
@@ -682,9 +681,6 @@ def main():
                         sfc_planes=sfc_planes, ref_path=ref_path,
                         lidar_hits_w=lidar_hits_np,
                     )
-
-                    prev_human_action = human_action_input.clone()
-
                     # Progress log (useful in headless mode)
                     if headless and frame % 100 == 0:
                         logger.debug(f"  [{trial_name}] frame {frame}/{NUM_FRAMES}, x={pos_np[0]:.2f}")
