@@ -120,3 +120,7 @@ tunnel_test/logs/
 
 # Ignore ros1 navigation runner logs and results
 ros1/results/
+
+# paper works
+PAPER_PLAN.md
+paper/

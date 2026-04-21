@@ -336,6 +336,7 @@ def generate_trajectories_gpu(
     batch_size: int = 1024,
     rank: int = 0,
     world_size: int = 1,
+    directional_bias: Optional[DictConfig] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """
     Generate trajectories using GPU-batched Perlin noise.
@@ -386,6 +387,23 @@ def generate_trajectories_gpu(
         [max_speed, max_speed, max_speed_z] + ([max_speed_yaw] if D == 4 else []),
         device=device
     )
+
+    # === Optional directional bias (e.g., for tunnel-like tasks that
+    # require sustained forward x progress). When `directional_bias` is
+    # set, every channel can be optionally rescaled (`amp_scale`) and
+    # additively biased (`bias`, in m/s). Lengths must be either D, or
+    # padded with zeros. Default keeps the original zero-mean behavior. ===
+    if directional_bias is not None:
+        bias_list = list(directional_bias.get("bias", [0.0] * D))
+        amp_list = list(directional_bias.get("amp_scale", [1.0] * D))
+        # Pad / truncate to D
+        bias_list = (bias_list + [0.0] * D)[:D]
+        amp_list = (amp_list + [1.0] * D)[:D]
+        bias_t = torch.tensor(bias_list, device=device, dtype=torch.float32)
+        amp_t = torch.tensor(amp_list, device=device, dtype=torch.float32)
+    else:
+        bias_t = torch.zeros(D, device=device, dtype=torch.float32)
+        amp_t = torch.ones(D, device=device, dtype=torch.float32)
     
     # Generate in batches
     num_batches = (local_num_trajs + batch_size - 1) // batch_size
@@ -413,7 +431,8 @@ def generate_trajectories_gpu(
         
         # Generate raw Perlin noise
         raw_noise = batched_perlin_noise_gpu(time_grid, seeds, noise_freq, D, device)  # (B, T, D)
-        target_vels = raw_noise * scale  # Scale to physical units
+        # Per-channel amplitude scaling + additive directional bias (m/s)
+        target_vels = raw_noise * scale * amp_t + bias_t  # Scale to physical units
         
         # Apply filters and integrate
         alpha = 1.0 - smoothness  # (B, 1)
@@ -641,8 +660,15 @@ def main(cfg: DictConfig):
             batch_size=cfg.batch_size,
             rank=rank,
             world_size=world_size,
+            directional_bias=cfg.get("directional_bias", None),
         )
     else:  # library
+        if cfg.get("directional_bias", None) is not None:
+            print(
+                "[Generator] WARNING: directional_bias is currently only "
+                "implemented for backend=batched (GPU). It will be ignored "
+                "by the CPU library backend."
+            )
         velocities, positions, bboxes, styles = generate_trajectories_cpu(
             num_trajectories=cfg.num_trajectories,
             trajectory_length=cfg.trajectory_length,

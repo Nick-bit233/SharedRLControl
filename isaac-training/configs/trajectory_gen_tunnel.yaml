@@ -1,0 +1,75 @@
+# Tunnel-targeted trajectory generation config (M2: feasible-but-diverse pilot).
+#
+# Key change vs `trajectory_gen.yaml`: a `directional_bias` block adds a
+# sustained forward (+x) velocity component so generated pilot trajectories
+# remain feasible for the tunnel task while still diversifying vy / vx-magnitude
+# / vz patterns.
+#
+# Action layout (action_dim=3): [vx, vy, vz]
+# - vx: positive bias 1.0 m/s + Perlin amplitude 0.5  (range ~ [0.0, 2.0])
+# - vy: zero bias, full Perlin amplitude (left/right diversity)
+# - vz: zero bias, low Perlin amplitude (avoid wasted height maneuvers)
+#
+# Usage (single GPU):
+#   python src/datasets/trajectory_generator.py \\
+#       --config-name trajectory_gen_tunnel
+#
+# Usage (multi-GPU):
+#   torchrun --nproc_per_node=4 src/datasets/trajectory_generator.py \\
+#       --config-name trajectory_gen_tunnel
+
+defaults:
+  - _self_
+
+# Output settings — keep tunnel datasets isolated so other experiments
+# can keep using the original `data/trajectories.h5`.
+output_path: "${hydra:runtime.cwd}/data/trajectories_tunnel.h5"
+
+# Generation parameters
+num_trajectories: 100000
+trajectory_length: 4096
+action_dim: 3
+batch_size: 1024
+
+backend: batched
+device: "cuda:0"
+num_workers: 8
+
+# Physical parameters (must match training config)
+dt: 0.016
+max_speed: 2.0
+max_speed_z: 1.0
+max_speed_yaw: 0.5
+repulsive_gain: 1.0
+
+# Generator works in a wider reference map than the actual tunnel env to
+# diversify start/end y positions while the tunnel env clips to its own range.
+reference_map_bounds: [20.0, 20.0, 5.0]
+
+# Style parameters (richer than default to broaden the pilot distribution)
+style:
+  frequency_base: 0.1
+  frequency_scale: 0.2     # was 0.1 -> broader frequency mix
+  smoothness_base: 0.4     # slightly less smooth -> more reactive corrections
+  smoothness_scale: 0.5
+  laziness: 0.3            # slightly larger deadband range
+
+# === Tunnel-feasibility bias ===
+# Adds per-channel scaling and additive bias on top of the raw Perlin
+# velocities, so the generator stops being zero-mean.
+#
+# Channels follow [vx, vy, vz]:
+#   - amp_scale: multiplicative factor on Perlin amplitude (1.0 = full max_speed swing)
+#   - bias:      additive m/s applied to every step
+#
+# The combination below gives:
+#   - vx ~ N(1.0, ~0.5) bounded by APF clamp at +/- 2*max_speed -> sustained forward push
+#   - vy ~ N(0.0, ~2.0) -> wide lateral diversity (left/right switching, drift)
+#   - vz small variation around 0 -> avoid pointless climb/dive
+directional_bias:
+  amp_scale: [0.5, 1.0, 0.2]
+  bias:      [1.0, 0.0, 0.0]
+
+# HDF5 compression
+compression: gzip
+compression_level: 4
