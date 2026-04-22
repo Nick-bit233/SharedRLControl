@@ -282,7 +282,31 @@ class TrajectoryDataset:
         available_neg[:, 2] = start_pos[:, 2] - 1.0
         
         available = torch.min(available_pos, available_neg)
-        
+
+        # Defensive guard: a negative `available` means start_pos is OUTSIDE the
+        # configured map_bounds along that axis (e.g. axis-order mismatch between
+        # caller and dataset). Without this guard, scale_per_axis becomes negative
+        # and gets silently clamped to min_scale_factor, severely down-scaling all
+        # generated velocities. Warn loudly (rate-limited) and treat the bad axis
+        # as unconstrained so it does not hijack the per-batch min.
+        if (available < 0).any():
+            if not getattr(self, "_warned_negative_available", False):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[trajectory_dataset.sample_scaled] `available` has negative "
+                    "entries (start_pos outside map_bounds along some axis). "
+                    "This usually indicates an axis-order mismatch between the "
+                    "calling env and the dataset. Negative entries are being "
+                    "ignored; check that map_bounds is in the same (x, y, z) "
+                    "order as start_pos. start_pos[0]=%s map_bounds=%s",
+                    start_pos[0].tolist(), map_bounds.tolist()
+                )
+                self._warned_negative_available = True
+            # Replace negative entries with +inf so they don't dominate the per-axis min.
+            available = torch.where(
+                available < 0, torch.full_like(available, float("inf")), available
+            )
+
         scale_per_axis = available / bbox_extent.clamp(min=0.01)
         scale_factors = scale_per_axis.min(dim=1).values
         scale_factors = scale_factors.clamp(min=self.min_scale_factor, max=2.0)

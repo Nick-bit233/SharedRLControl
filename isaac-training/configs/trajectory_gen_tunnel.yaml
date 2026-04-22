@@ -6,7 +6,10 @@
 # / vz patterns.
 #
 # Action layout (action_dim=3): [vx, vy, vz]
-# - vx: positive bias 1.0 m/s + Perlin amplitude 0.5  (range ~ [0.0, 2.0])
+# - vx: bias 1.5 m/s + Perlin amplitude max_speed*0.25 = ±0.5  (range [1.0, 2.0])
+#       This matches the online tunnely model's effective forward speed (~2 m/s)
+#       and guarantees feasibility: tunnel length 17 m at min vx=1.0 m/s -> ~17 s
+#       = ~1063 step at dt=0.016, well within max_episode_length=1500.
 # - vy: zero bias, full Perlin amplitude (left/right diversity)
 # - vz: zero bias, low Perlin amplitude (avoid wasted height maneuvers)
 #
@@ -63,12 +66,12 @@ style:
 #   - bias:      additive m/s applied to every step
 #
 # The combination below gives:
-#   - vx ~ N(1.0, ~0.5) bounded by APF clamp at +/- 2*max_speed -> sustained forward push
-#   - vy ~ N(0.0, ~2.0) -> wide lateral diversity (left/right switching, drift)
+#   - vx ~ 1.5 +- 0.5 m/s  -> sustained forward push, matches online model speed
+#   - vy ~ N(0.0, ~2.0)    -> wide lateral diversity (left/right switching, drift)
 #   - vz small variation around 0 -> avoid pointless climb/dive
 directional_bias:
-  amp_scale: [0.5, 1.0, 0.2]
-  bias:      [1.0, 0.0, 0.0]
+  amp_scale: [0.25, 1.0, 0.2]
+  bias:      [1.5, 0.0, 0.0]
 
 # HDF5 compression
 compression: gzip

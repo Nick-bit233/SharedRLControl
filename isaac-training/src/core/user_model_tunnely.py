@@ -103,10 +103,17 @@ class UserModelTunnel:
         self.device = cfg.device
         self.dt = cfg.sim.dt
         
-        # Map boundaries for APF [x, y, z]
-        # Assuming map_range is half-extents
+        # Map boundaries for APF [x, y, z] in IsaacSim world frame.
+        # NOTE: cfg.env.map_range is stored as [Isaac-y, Isaac-x, Isaac-z] half-extents
+        # (see comment in configs/experiment/tunnel.yaml). The downstream consumers
+        # (e.g. trajectory_dataset.sample_scaled) expect map_bounds aligned with
+        # start_pos which is in IsaacSim (x, y, z) order. Swap the first two
+        # elements so map_bounds[i] correctly pairs with pos[i].
+        _raw_map_range = list(cfg.env.map_range)
+        if len(_raw_map_range) >= 2:
+            _raw_map_range[0], _raw_map_range[1] = _raw_map_range[1], _raw_map_range[0]
         self.env_map_range = torch.tensor(
-            cfg.env.map_range, dtype=torch.float32, device=self.device
+            _raw_map_range, dtype=torch.float32, device=self.device
         )
 
         # Parameters
