@@ -56,7 +56,7 @@ early_stopping:
 # === Switch to offline trajectory dataset (feasible-but-diverse pilot) ===
 user_model:
   offline_mode: true
-  dataset_path: ./data/trajectories_tunnel.h5
+  dataset_path: ${hydra:runtime.cwd}/data/trajectories_tunnel.h5
   sampling_mode: scaled        # boundary-aware, keeps tunnel feasibility
   gpu_cache_reserve_gb: 2.0
   min_scale_factor: 0.5

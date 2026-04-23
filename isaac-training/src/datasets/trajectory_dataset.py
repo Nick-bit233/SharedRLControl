@@ -268,46 +268,70 @@ class TrajectoryDataset:
             index=window_indices.unsqueeze(-1).expand(-1, -1, 3)
         )  # (B, window_size, 3)
         
-        # Compute window bboxes
+        # Compute window bboxes (relative to window's start position)
         positions_relative = positions_window - positions_window[:, 0:1, :]
-        
-        bbox_min = positions_relative.min(dim=1).values
-        bbox_max = positions_relative.max(dim=1).values
-        bbox_extent = (bbox_max - bbox_min).abs()
-        
-        # Compute available space
-        available_pos = map_bounds - start_pos.abs()
-        available_neg = map_bounds + start_pos
-        available_pos[:, 2] = 2 * map_bounds[2] - start_pos[:, 2]
-        available_neg[:, 2] = start_pos[:, 2] - 1.0
-        
-        available = torch.min(available_pos, available_neg)
+        bbox_min = positions_relative.min(dim=1).values   # (B, 3) <= 0 along an axis
+        bbox_max = positions_relative.max(dim=1).values   # (B, 3) >= 0 along an axis
 
-        # Defensive guard: a negative `available` means start_pos is OUTSIDE the
-        # configured map_bounds along that axis (e.g. axis-order mismatch between
-        # caller and dataset). Without this guard, scale_per_axis becomes negative
-        # and gets silently clamped to min_scale_factor, severely down-scaling all
-        # generated velocities. Warn loudly (rate-limited) and treat the bad axis
-        # as unconstrained so it does not hijack the per-batch min.
-        if (available < 0).any():
+        # === Available room for the window, evaluated SEPARATELY per direction ===
+        # `start_pos` and `map_bounds` are in the SAME coordinate order (Isaac x,y,z).
+        # Convention: map_bounds[i] is the half-extent so the env axis i lies in
+        #   x: [-map_bounds[0], +map_bounds[0]]
+        #   y: [-map_bounds[1], +map_bounds[1]]
+        #   z: [           1.0,  2*map_bounds[2]]   (floor at 1.0)
+        # The window's drone position trace must satisfy
+        #     start_pos + scale * bbox_min  >=  lower_bound
+        #     start_pos + scale * bbox_max  <=  upper_bound
+        # which gives independent per-direction constraints below.
+        #
+        # NOTE on the previous bug:
+        #   The old formula `available_pos = map_bounds - start_pos.abs()` is only
+        #   correct when start_pos is at the centre of the map; for asymmetric
+        #   starts (e.g. the tunnel start at Isaac-x=-7 with map half-extent 12)
+        #   it severely under-estimates the room available in the +x direction
+        #   (it returned 5 m instead of the true 19 m), causing scale_factors to
+        #   collapse to `min_scale_factor=0.5` and silently halving every sampled
+        #   velocity. That was the dominant reason `debug/vec_target/x` averaged
+        #   ~0.5 m/s instead of the configured ~1.5 m/s.
+        room_pos = torch.empty_like(start_pos)
+        room_neg = torch.empty_like(start_pos)
+        # x, y axes use +/- map_bounds
+        room_pos[:, :2] = map_bounds[:2] - start_pos[:, :2]   # >=0 if start inside
+        room_neg[:, :2] = start_pos[:, :2] + map_bounds[:2]   # >=0 if start inside
+        # z axis uses [1.0, 2*map_bounds[2]]
+        room_pos[:, 2] = 2 * map_bounds[2] - start_pos[:, 2]
+        room_neg[:, 2] = start_pos[:, 2] - 1.0
+
+        # Defensive guard: negative room means start_pos is OUTSIDE the configured
+        # map_bounds along that axis (e.g. axis-order mismatch). Warn loudly and
+        # treat that direction as unconstrained.
+        if ((room_pos < 0) | (room_neg < 0)).any():
             if not getattr(self, "_warned_negative_available", False):
                 import logging
                 logging.getLogger(__name__).warning(
-                    "[trajectory_dataset.sample_scaled] `available` has negative "
-                    "entries (start_pos outside map_bounds along some axis). "
-                    "This usually indicates an axis-order mismatch between the "
-                    "calling env and the dataset. Negative entries are being "
-                    "ignored; check that map_bounds is in the same (x, y, z) "
-                    "order as start_pos. start_pos[0]=%s map_bounds=%s",
+                    "[trajectory_dataset.sample_scaled] start_pos outside "
+                    "map_bounds along some axis (room_pos or room_neg < 0). "
+                    "Likely an axis-order mismatch between the calling env and "
+                    "the dataset. start_pos[0]=%s map_bounds=%s",
                     start_pos[0].tolist(), map_bounds.tolist()
                 )
                 self._warned_negative_available = True
-            # Replace negative entries with +inf so they don't dominate the per-axis min.
-            available = torch.where(
-                available < 0, torch.full_like(available, float("inf")), available
-            )
+            inf = torch.full_like(room_pos, float("inf"))
+            room_pos = torch.where(room_pos < 0, inf, room_pos)
+            room_neg = torch.where(room_neg < 0, inf, room_neg)
 
-        scale_per_axis = available / bbox_extent.clamp(min=0.01)
+        # Per-axis scale: limit by both forward and backward extent of the window.
+        # bbox_max >= 0 paired with room_pos; -bbox_min >= 0 paired with room_neg.
+        eps = 0.01
+        scale_fwd = room_pos / bbox_max.clamp(min=eps)
+        scale_bwd = room_neg / (-bbox_min).clamp(min=eps)
+        # If the window does not move at all in a direction (bbox=0), that side
+        # imposes no constraint. clamp(min=eps) above already prevents the div-0
+        # case but artificially limits scale; replace with inf for the trivial
+        # cases where the window has zero excursion in that direction.
+        scale_fwd = torch.where(bbox_max <= eps, torch.full_like(scale_fwd, float("inf")), scale_fwd)
+        scale_bwd = torch.where((-bbox_min) <= eps, torch.full_like(scale_bwd, float("inf")), scale_bwd)
+        scale_per_axis = torch.min(scale_fwd, scale_bwd)
         scale_factors = scale_per_axis.min(dim=1).values
         scale_factors = scale_factors.clamp(min=self.min_scale_factor, max=2.0)
         

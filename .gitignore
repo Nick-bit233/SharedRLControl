@@ -108,8 +108,10 @@ isaac-training/training/scripts/wandb/
 isaac-training/training/scripts/outputs/
 isaac-training/third_party/warp/_build/
 
+# Ignore test logs and files
 isaac-training/outputs/
 isaac-training/tests/
+isaac-training/figures/
 
 outputs/
 

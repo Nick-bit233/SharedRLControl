@@ -47,7 +47,13 @@ repulsive_gain: 1.0
 
 # Generator works in a wider reference map than the actual tunnel env to
 # diversify start/end y positions while the tunnel env clips to its own range.
-reference_map_bounds: [20.0, 20.0, 5.0]
+# NOTE on x-axis half-extent (200 m, much larger than the env): with the
+# directional_bias below, the drone gains +1.5 m/s of forward bias. Across the
+# full 4096-step trajectory at dt=0.016 s that is ~98 m of forward travel,
+# which would cause the drone to BOUNCE back and forth inside a 20 m map and
+# leave the realised mean vx near zero. With a 200 m x-extent, the trajectory
+# stays monotonic forward and the realised forward velocity matches the bias.
+reference_map_bounds: [200.0, 20.0, 5.0]
 
 # Style parameters (richer than default to broaden the pilot distribution)
 style:
