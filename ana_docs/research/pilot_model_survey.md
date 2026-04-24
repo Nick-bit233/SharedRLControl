@@ -498,10 +498,13 @@ class UserModelIntent:
 
 **验证基线**：
 
-- 复用 `flight_recorder` 录 5–10 段真人飞行 → 用作 `UserModelIntent` 的"参数辨识"基准（fit α/β/Ψ/Φ + perception 参数）。
+- 分布可视化对比：在相同地图上，采样并绘制原 `UserModel`  / `UserModelDiverse` vs `UserModelIntent`得到的轨迹分布，比较真实性和多样性。（绘制轨迹时不考虑真实物理碰撞，但可以标注产生碰撞风险的区间）
+
 - 在 `ana_docs/research/` 增加一份 `pilot_realism_metrics.md`，定义"pilot 真实度"指标：自相关函数、回中频率、推杆速率分布、轴间相关性、模式 dwell 直方图，对比 Perlin / Diverse / Intent / 真人 4 种 pilot。
-- M2 失败案例 (`ana_docs/experiments/m2_diverse_pilot_analysis.md`) 用 `UserModelIntent` Stage 3 配置重跑，观察 `α=0 + wrong_direction_prob=0.5` 极端 stress 下助手是否仍能工作。
-- A/B 测试：相同 reward 与 PPO 配置下，原 `UserModelDiverse` vs `UserModelIntent`（Stage 2）训出的助手在固定真人录制脚本上的成功率与碰撞率。
+
+- A/B 测试：相同 reward 与 PPO 配置下（采用和SharedRLControl/isaac-training/experiments/04_tunnel_task一致的配置，可能需要对齐任务目标），原 `UserModel`  / `UserModelTunnely` vs `UserModelIntent`训出的助手在固定真人录制脚本上的成功率与碰撞率。
+
+- （可选）复用 `flight_recorder` 录 5–10 段真人飞行 → 用作 `UserModelIntent` 的"参数辨识"基准（fit α/β/Ψ/Φ + perception 参数）。
 
 ---
 
