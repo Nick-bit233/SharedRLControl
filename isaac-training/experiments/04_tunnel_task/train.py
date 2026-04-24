@@ -41,6 +41,7 @@ from torchrl.envs.transforms import TransformedEnv, Compose, InitTracker, Tensor
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from omni_drones.utils.torchrl import RenderCallback
 from torchrl.data import Unbounded
+from src.experiment_utils import load_trajectory_dataset, resolve_constrained_policy
 
 # Configs are now in the 'configs' directory
 @hydra.main(config_path="../../configs", config_name="train", version_base=None)
@@ -50,14 +51,8 @@ def main(cfg):
 
     # Import environment and algorithm (must after sim_app is instantiated)
     from src.envs.env_tunnel import EnvTunnelResidual
-    # Import PPO algorithm — select via cfg.algo.distribution: "tanh_normal" (default) or "beta"
-    algo_distribution = cfg.algo.get("distribution", "tanh_normal")
-    if algo_distribution == "beta":
-        from src.algos.ppo_constrained_beta import ConstrainedResidualPPO_Beta as ConstrainedResidualPPO
-        print("[Train] Using Beta distribution PPO")
-    else:
-        from src.algos.ppo_constrained import ConstrainedResidualPPO
-        print("[Train] Using TanhNormal distribution PPO")
+    ConstrainedResidualPPO, algo_label = resolve_constrained_policy(cfg)
+    print(f"[Train] Using {algo_label}")
 
     # === Special Mode Configuration ===
     profiling_mode = cfg.get("profiling_mode", False)  # Enable via CLI: profiling_mode=true
@@ -108,7 +103,7 @@ def main(cfg):
         # warmup_iterations = 0 # Removed
     else:
         # Normal Training Mode: Load parameters from Hydra Config
-        print("[Train] Starting Simple Environment...")
+        print("[Train] Starting Tunnel Environment...")
         
         # Calculate total frames: frames_per_batch * num_envs * total_batches
         max_iterations = cfg.get("max_iterations", 20010)
@@ -140,26 +135,7 @@ def main(cfg):
         print(OmegaConf.to_yaml(cfg))
 
     # === Load Trajectory Dataset (if offline mode enabled) ===
-    trajectory_dataset = None
-    if cfg.user_model.get("offline_mode", False):
-        from src.datasets.trajectory_dataset import TrajectoryDataset
-        
-        dataset_path = cfg.user_model.get("dataset_path", None)
-        if dataset_path is None:
-            raise ValueError("user_model.dataset_path must be set when offline_mode=True")
-        
-        if not os.path.exists(dataset_path):
-            raise FileNotFoundError(f"Trajectory dataset not found: {dataset_path}")
-        
-        print(f"[Train] Loading trajectory dataset from: {dataset_path}")
-        trajectory_dataset = TrajectoryDataset(
-            dataset_path=dataset_path,
-            device=torch.device(cfg.device),
-            gpu_cache_reserve_gb=cfg.user_model.get("gpu_cache_reserve_gb", 2.0),
-            min_scale_factor=cfg.user_model.get("min_scale_factor", 0.5),
-            preload_data=cfg.user_model.get("preload_data", True)
-        )
-        print(f"[Train] Trajectory dataset loaded successfully")
+    trajectory_dataset = load_trajectory_dataset(cfg)
 
     # === 初始化环境 ===
     env = EnvTunnelResidual(cfg, trajectory_dataset=trajectory_dataset)

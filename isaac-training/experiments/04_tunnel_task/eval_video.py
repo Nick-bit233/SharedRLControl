@@ -54,6 +54,7 @@ import hydra
 import imageio
 import numpy as np
 from omegaconf import OmegaConf
+from src.experiment_utils import load_trajectory_dataset, resolve_constrained_policy
 
 from omni_drones import init_simulation_app
 from omni_drones.utils.torchrl import RenderCallback
@@ -89,13 +90,8 @@ def main(cfg):
 
     # Imports that depend on sim app
     from src.envs.env_tunnel import EnvTunnelResidual
-    algo_distribution = cfg.algo.get("distribution", "tanh_normal")
-    if algo_distribution == "beta":
-        from src.algos.ppo_constrained_beta import (
-            ConstrainedResidualPPO_Beta as ConstrainedResidualPPO,
-        )
-    else:
-        from src.algos.ppo_constrained import ConstrainedResidualPPO
+    ConstrainedResidualPPO, algo_label = resolve_constrained_policy(cfg)
+    print(f"[EvalVideo] Using {algo_label}")
 
     # ---------------- output dir ----------------
     from hydra.core.hydra_config import HydraConfig
@@ -108,21 +104,7 @@ def main(cfg):
           f"max_episode_length={cfg.env.max_episode_length}")
 
     # ---------------- offline trajectory dataset (if M2-style) ----------------
-    trajectory_dataset = None
-    if cfg.user_model.get("offline_mode", False):
-        from src.datasets.trajectory_dataset import TrajectoryDataset
-        dataset_path = cfg.user_model.get("dataset_path", None)
-        if dataset_path is None or not os.path.exists(dataset_path):
-            raise FileNotFoundError(
-                f"offline_mode=True but dataset missing: {dataset_path}")
-        print(f"[EvalVideo] Loading trajectory dataset: {dataset_path}")
-        trajectory_dataset = TrajectoryDataset(
-            dataset_path=dataset_path,
-            device=torch.device(cfg.device),
-            gpu_cache_reserve_gb=cfg.user_model.get("gpu_cache_reserve_gb", 2.0),
-            min_scale_factor=cfg.user_model.get("min_scale_factor", 0.5),
-            preload_data=cfg.user_model.get("preload_data", True),
-        )
+    trajectory_dataset = load_trajectory_dataset(cfg)
 
     # ---------------- env + policy ----------------
     env = EnvTunnelResidual(cfg, trajectory_dataset=trajectory_dataset)
