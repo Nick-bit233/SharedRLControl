@@ -55,3 +55,9 @@ class RegCoeffScheduler:
             "_above_count": self._above_count,
             "_initialized": self._initialized,
         }
+
+    def load_state_dict(self, state):
+        self.current_reg_coeff = state.get("current_reg_coeff", self.current_reg_coeff)
+        self.ema_success = state.get("ema_success", self.ema_success)
+        self._above_count = state.get("_above_count", self._above_count)
+        self._initialized = state.get("_initialized", self._initialized)

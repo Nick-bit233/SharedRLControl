@@ -168,13 +168,54 @@ def main(cfg):
     # === CHANGED: Use ConstrainedResidualPPO ===
     policy = ConstrainedResidualPPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
 
-    # === Resume from checkpoint (for multi-stage curriculum) ===
+    # === Resume from checkpoint (for multi-stage curriculum / fine-tune) ===
+    # Supports two formats:
+    #   (1) Legacy "weights-only" ckpt — a plain state_dict produced by
+    #       torch.save(policy.state_dict(), ...). Only model weights restored.
+    #   (2) Rich ckpt (M3+) — a dict with keys:
+    #         policy, actor_optim, critic_optim, feature_extractor_optim,
+    #         iter, env_frames, reg_scheduler (optional), best_eval_success
     resume_ckpt = cfg.get("resume_checkpoint", None)
+    resume_state = None
     if resume_ckpt is not None:
         print(f"[Train] Loading checkpoint: {resume_ckpt}")
-        state_dict = torch.load(resume_ckpt, map_location=cfg.device)
-        policy.load_state_dict(state_dict)
+        loaded = torch.load(resume_ckpt, map_location=cfg.device)
+        if isinstance(loaded, dict) and "policy" in loaded and any(
+            k in loaded for k in ("actor_optim", "critic_optim", "iter")
+        ):
+            print("[Train] Detected RICH checkpoint format (weights + optimizer + state).")
+            policy.load_state_dict(loaded["policy"])
+            resume_state = loaded
+        else:
+            print("[Train] Detected legacy WEIGHTS-ONLY checkpoint format.")
+            policy.load_state_dict(loaded)
         print(f"[Train] Checkpoint loaded successfully.")
+
+    # === Restore optimizer / curriculum / iter counters from rich ckpt ===
+    start_iter = 0
+    start_env_frames = 0
+    if resume_state is not None:
+        try:
+            if "actor_optim" in resume_state:
+                policy.actor_optim.load_state_dict(resume_state["actor_optim"])
+            if "critic_optim" in resume_state:
+                policy.critic_optim.load_state_dict(resume_state["critic_optim"])
+            if "feature_extractor_optim" in resume_state and hasattr(policy, "feature_extractor_optim"):
+                policy.feature_extractor_optim.load_state_dict(resume_state["feature_extractor_optim"])
+            print("[Train] Optimizer states restored from rich checkpoint.")
+        except Exception as e:
+            print(f"[Train] WARNING: optimizer restore failed: {e} — continuing with fresh optimizer.")
+        start_iter = int(resume_state.get("iter", 0))
+        start_env_frames = int(resume_state.get("env_frames", 0))
+        print(f"[Train] Resuming at iter={start_iter}, env_frames={start_env_frames}")
+
+    # Shrink the collector budget so that absolute iter target (max_iterations)
+    # is honored even when resuming partway through.
+    if start_iter > 0:
+        remaining = max(0, max_iterations - start_iter) if not profiling_mode else 0
+        if not profiling_mode and remaining > 0:
+            MAX_FRAME_NUM = cfg.algo.training_frame_num * cfg.env.num_envs * remaining
+            print(f"[Train] Resuming: shrinking collector budget to {remaining} more iters.")
 
     print("[Train] Environment structure.")
     print(env)
@@ -383,6 +424,21 @@ def main(cfg):
     best_policy_state = None
     latest_eval_success = None  # Cached eval success for curriculum scheduler
 
+    # Restore curriculum + best tracking from rich checkpoint
+    if resume_state is not None:
+        if reg_scheduler is not None and "reg_scheduler" in resume_state:
+            try:
+                reg_scheduler.load_state_dict(resume_state["reg_scheduler"])
+                print(f"[Train] RegCoeffScheduler state restored: "
+                      f"reg_coeff={reg_scheduler.current_reg_coeff:.4f}, "
+                      f"ema_success={reg_scheduler.ema_success:.3f}")
+                policy.set_reg_coeff(reg_scheduler.current_reg_coeff)
+            except Exception as e:
+                print(f"[Train] WARNING: curriculum restore failed: {e}")
+        if "best_eval_success" in resume_state:
+            best_eval_success = float(resume_state["best_eval_success"])
+            print(f"[Train] best_eval_success carried over: {best_eval_success:.3f}")
+
     # === Early Stopping ===
     es_cfg = cfg.get("early_stopping", {})
     early_stopping_enabled = es_cfg.get("enable", False)
@@ -424,8 +480,10 @@ def main(cfg):
     # === 主训练循环 ===
     import time as time_module
     batch_start_time = time_module.perf_counter()
-    
+    i = -1  # initialise so final-ckpt save works even if loop never runs
+
     for i, data in enumerate(collector):
+        global_iter = start_iter + i
         # === CHANGED: No Warmup Scale needed ===
         # Constrained Optimization handles the balance dynamically.
         # We implicitly assume residual_scale is fixed at 1.0 (default in init)
@@ -437,8 +495,8 @@ def main(cfg):
         batch_start_time = time_module.perf_counter()
         
         info = {
-            "batch": i,
-            "env_frames": collector._frames,
+            "batch": global_iter,
+            "env_frames": collector._frames + start_env_frames,
             "rollout_fps": collector._fps,
         }
 
@@ -470,10 +528,10 @@ def main(cfg):
 
         # 每隔 eval_interval 评估一次 (BEFORE curriculum update, so eval data is available)
         if eval_interval > 0 and i % eval_interval == 0:
-            logging.info(f"Eval at {collector._frames} steps.")
+            logging.info(f"Eval at iter {global_iter} ({collector._frames} steps).")
             eval_info = evaluate()
             info.update(eval_info)
-            print(f"[Train] Eval info at step {collector._frames}: DONE")
+            print(f"[Train] Eval info at iter {global_iter} ({collector._frames} steps): DONE")
 
             # Cache latest eval success rate for curriculum scheduler
             _latest_eval_success = eval_info.get("eval/stats_success", None)
@@ -496,7 +554,7 @@ def main(cfg):
                 best_ckpt_path = os.path.join(best_save_dir, "checkpoint_best.pt")
                 torch.save(best_policy_state, best_ckpt_path)
                 es_degradation_count = 0
-                print(f"[Train] 🏆 New best model! success={current_success:.3f} at step {i}")
+                print(f"[Train] 🏆 New best model! success={current_success:.3f} at iter {global_iter}")
             elif early_stopping_enabled and best_eval_success > 0:
                 # Check for performance degradation
                 if current_success < best_eval_success - es_min_delta:
@@ -529,16 +587,46 @@ def main(cfg):
         if i % save_interval == 0 and not profiling_mode:
             save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
             os.makedirs(save_dir, exist_ok=True)
-            ckpt_path = os.path.join(save_dir, f"checkpoint_{i}.pt")
-            torch.save(policy.state_dict(), ckpt_path)
-            print("[RunnerSimple]: model saved at training step: ", i)
+            ckpt_path = os.path.join(save_dir, f"checkpoint_{global_iter}.pt")
+            rich_ckpt = {
+                "policy": policy.state_dict(),
+                "iter": global_iter,
+                "env_frames": collector._frames + start_env_frames,
+                "best_eval_success": best_eval_success,
+            }
+            try:
+                rich_ckpt["actor_optim"] = policy.actor_optim.state_dict()
+                rich_ckpt["critic_optim"] = policy.critic_optim.state_dict()
+                if hasattr(policy, "feature_extractor_optim"):
+                    rich_ckpt["feature_extractor_optim"] = policy.feature_extractor_optim.state_dict()
+            except Exception as e:
+                print(f"[Train] WARNING: failed to snapshot optimizer state: {e}")
+            if reg_scheduler is not None:
+                rich_ckpt["reg_scheduler"] = reg_scheduler.state_dict()
+            torch.save(rich_ckpt, ckpt_path)
+            print("[RunnerSimple]: model saved at training step: ", global_iter)
 
     # === Save final checkpoint ===
     if not profiling_mode:
         save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
         os.makedirs(save_dir, exist_ok=True)
         final_ckpt_path = os.path.join(save_dir, "checkpoint_final.pt")
-        torch.save(policy.state_dict(), final_ckpt_path)
+        final_rich = {
+            "policy": policy.state_dict(),
+            "iter": start_iter + max(i, 0),
+            "env_frames": collector._frames + start_env_frames,
+            "best_eval_success": best_eval_success,
+        }
+        try:
+            final_rich["actor_optim"] = policy.actor_optim.state_dict()
+            final_rich["critic_optim"] = policy.critic_optim.state_dict()
+            if hasattr(policy, "feature_extractor_optim"):
+                final_rich["feature_extractor_optim"] = policy.feature_extractor_optim.state_dict()
+        except Exception as e:
+            print(f"[Train] WARNING: failed to snapshot optimizer state for final ckpt: {e}")
+        if reg_scheduler is not None:
+            final_rich["reg_scheduler"] = reg_scheduler.state_dict()
+        torch.save(final_rich, final_ckpt_path)
         print(f"[Train] Final checkpoint saved: {final_ckpt_path}")
         # Write path to a marker file so pipeline scripts can find it
         marker_path = os.path.join(cfg.log_output_dir, "final_checkpoint_path.txt")

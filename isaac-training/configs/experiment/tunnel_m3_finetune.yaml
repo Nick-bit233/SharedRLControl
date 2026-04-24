@@ -1,0 +1,69 @@
+# @package _global_
+# === M3: Recover-then-Lock Fine-Tune ===
+# Goal: Resume from M2 Phase A `checkpoint_14000.pt` and LOCK the
+# 100%/0% peak that was reached around iter 17k but never saved
+# (Phase A only persisted ckpts every 1000 iter).
+#
+# Strategy:
+#   - Inherit M2 diverse-pilot setup (offline dataset + reg_coeff=0.005).
+#   - Halve LR (5e-5 -> 2.5e-5) so that fine-tune does not destabilise
+#     the already-good weights.
+#   - Halve entropy_loss_coefficient to suppress the late-Phase-A
+#     vec_policy drift (0.55 -> 0.87).
+#   - Save and eval every 250 iter so the next peak ckpt cannot be lost.
+#   - Total absolute iter budget = 22000 (start_iter 14000 + 8000 more).
+#   - Resume mechanism (train.py) was upgraded in M3 to also restore
+#     optimizer + curriculum + frame counter, so the first eval should
+#     reproduce ~92%/7% (the eval recorded at iter 14000 in Phase A).
+#
+# Usage (recommended via the launcher):
+#   python experiments/04_tunnel_task/run_m3_finetune.py
+#
+# Manual:
+#   python experiments/04_tunnel_task/train.py \
+#       experiment=tunnel_m3_finetune \
+#       resume_checkpoint=<absolute-path-to>/checkpoint_14000.pt
+
+defaults:
+  - tunnel_m2_diverse_pilot
+
+algo:
+  feature_extractor:
+    learning_rate: 2.5e-5
+  actor:
+    learning_rate: 2.5e-5
+  critic:
+    learning_rate: 2.5e-5
+  entropy_loss_coefficient: 5e-4   # halved from default 1e-3
+  min_concentration: 2.0
+  reg_coeff: 0.005                 # M1 + M2 winner
+
+# Absolute iter target: 14000 (M2 Phase A) + 8000 fine-tune = 22000.
+# train.py shrinks the collector budget automatically when a rich ckpt
+# is loaded, so this value represents the FINAL absolute iter.
+max_iterations: 22010
+eval_interval: 250
+save_interval: 250
+
+# Default to Phase A best-on-disk. Override via launcher / CLI if needed.
+resume_checkpoint: ${hydra:runtime.cwd}/outputs/tunnel_m2_diverse_pilot/tunnel_m2_20260423_070951/2026-04-23_07-09-54/wandb/run-20260423_071004-kdtyh522/files/checkpoint_14000.pt
+
+# Inherits offline diverse-pilot dataset settings from tunnel_m2_diverse_pilot.
+
+curriculum:
+  enable: False
+
+early_stopping:
+  enable: False
+
+record_video: False
+
+wandb:
+  name: tunnel_m3_finetune
+  group: tunnel_m3_finetune
+
+hydra:
+  run:
+    dir: ./outputs/tunnel_m3_finetune/${now:%Y-%m-%d_%H-%M-%S}
+
+job_name: tunnel_m3_finetune
