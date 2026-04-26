@@ -60,7 +60,6 @@ record_video: False
 
 wandb:
   name: tunnel_m3_finetune
-  group: tunnel_m3_finetune
 
 hydra:
   run:
