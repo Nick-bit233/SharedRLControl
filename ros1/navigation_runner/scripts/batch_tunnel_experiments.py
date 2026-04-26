@@ -13,6 +13,8 @@ import sys
 import time
 from datetime import datetime
 
+DEFAULT_CHECKPOINT = "$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"
+
 EXPERIMENT_PROCESS_PATTERNS = (
     "/opt/ros/noetic/bin/rosmaster --core",
     "/opt/ros/noetic/lib/rosout/rosout",
@@ -60,6 +62,8 @@ def parse_args():
     parser.add_argument("--goal-x", type=float, default=10.0)
     parser.add_argument("--collision-dist", type=float, default=0.05)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT,
+                        help="RL checkpoint passed to tunnel_comparison.launch")
     parser.add_argument("--gui", action="store_true",
                         help="Show Gazebo GUI")
     parser.add_argument("--rviz", action="store_true",
@@ -260,6 +264,7 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"goal_x:={args.goal_x}",
         f"collision_dist:={args.collision_dist}",
         f"device:={args.device}",
+        f"checkpoint:={args.checkpoint}",
         f"user_model_simple:={bool_str(args.user_model_simple)}",
         f"user_model_speed:={args.user_model_speed}",
         f"user_model_freq_base:={args.user_model_freq_base}",
@@ -276,8 +281,8 @@ def load_json(path):
 
 
 def collect_run_summary(run_dir, method, trial_id, run_id, batch_idx, run_idx,
-                        map_seed, user_model_seed, timed_out, exit_code, log_path,
-                        map_path, world_path):
+                         map_seed, user_model_seed, timed_out, exit_code, log_path,
+                         map_path, world_path, checkpoint):
     summary_path = os.path.join(run_dir, "run_summary.json")
     if os.path.exists(summary_path):
         summary = load_json(summary_path)
@@ -310,6 +315,7 @@ def collect_run_summary(run_dir, method, trial_id, run_id, batch_idx, run_idx,
     summary["log_file"] = os.path.relpath(log_path, os.path.dirname(run_dir))
     summary["pcd_file"] = summary.get("pcd_file", map_path) or map_path
     summary["tunnel_world"] = summary.get("tunnel_world", world_path) or world_path
+    summary["checkpoint"] = checkpoint
     summary["run_dir"] = run_dir
 
     with open(summary_path, "w", encoding="utf-8") as handle:
@@ -331,6 +337,7 @@ def run_batch(args, output_root):
             "goal_x": args.goal_x,
             "collision_dist": args.collision_dist,
             "device": args.device,
+            "checkpoint": args.checkpoint,
             "gui": args.gui,
             "rviz": args.rviz,
             "user_model_simple": args.user_model_simple,
@@ -428,6 +435,7 @@ def run_batch(args, output_root):
                     log_path=log_path,
                     map_path=map_path,
                     world_path=world_path,
+                    checkpoint=args.checkpoint,
                 )
                 manifest["runs"].append(summary)
                 with open(os.path.join(output_root, "batch_manifest.json"), "w", encoding="utf-8") as handle:

@@ -5,7 +5,7 @@
 # ============================================================
 
 # --- Policy (must match training) ---
-checkpoint_path: "/root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_M2_14000.pt"           # Overridden by launch file; set here only for manual rosrun
+checkpoint_path: "/root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"           # Overridden by launch file; set here only for manual rosrun
 action_limit: 2.0             # m/s, must match training config
 device: "cpu"                 # "cpu" or "cuda:0"
 deterministic: true           # true = use mean action (no sampling noise)

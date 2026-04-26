@@ -74,6 +74,10 @@ roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=true
 
 # 无 GUI（headless + Xvfb）
 roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=false
+
+# 显式指定 M3 最终模型（当前默认也是这份权重）
+roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=false \
+    checkpoint:="$(rospack find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"
 ```
 
 > **注意**: RL 模式现在同时启动 `lidar_sim_node`（PCD → PointCloud2）和
@@ -107,7 +111,7 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 |------|--------|------|
 | `method` | `rl` | `rl` 或 `ipc` |
 | `gui` | `false` | Gazebo GUI（需 X11） |
-| `checkpoint` | `cfg/tunnel/checkpoint_best.pt` | RL 模型路径 |
+| `checkpoint` | `cfg/ckpts/checkpoint_tunnel_M3_21500.pt` | RL 模型路径 |
 | `tunnel_map` | `cfg/tunnel/tunnel_map_default.pcd` | 隧道 PCD 地图 |
 | `device` | `cpu` | `cpu` 或 `cuda:0` |
 | `keyboard` | `false` | 键盘控制模式（仅 RL） |
@@ -189,7 +193,7 @@ rosrun map_manager occupancy_map_node
 # 终端 4: RL 导航节点
 rosparam load $(rospack find navigation_runner)/cfg/tunnel/tunnel_nav_param.yaml /tunnel_navigator
 rosparam set /tunnel_navigator/checkpoint_path \
-    "$(rospack find navigation_runner)/cfg/tunnel/checkpoint_best.pt"
+    "$(rospack find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"
 rosrun navigation_runner tunnel_navigation.py __name:=tunnel_navigator
 
 # 终端 5: RViz
@@ -348,6 +352,12 @@ collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失�
   `vx=user_model_speed`、`vy` 为 Perlin 噪声、`vz=0`，也就是“恒定前进 + 随机横向漂移”
 - `user_model_seed` 现在同时传给 RL 与 IPC；两种方法在相同 seed 下会复用同一条
   `UserModelTunnel` 指令序列
+
+**M3 注意事项**：`checkpoint_tunnel_M3_21500.pt` 的训练主线继承了
+`tunnel_m2_diverse_pilot`，训练时使用 offline feasible-diverse pilot dataset。
+当前 ROS1 批量实验默认仍使用 online Perlin `UserModelTunnel`，因此默认批量结果应解释为
+M3 模型在 ROS1/Gazebo + online pilot 下的泛化验证，而不是对 M3 offline pilot
+训练分布的逐样本复现。若需要严格复现 M3 训练输入分布，需要另行接入 offline pilot replay。
 
 ## 6. 架构说明
 
@@ -611,9 +621,10 @@ ros1/navigation_runner/
 │   ├── occupancy_map_tunnel.yaml     # 占用地图参数
 │   ├── ipc_gazebo_param.yaml         # IPC Gazebo 参数
 │   ├── ipc_tunnel.rviz               # IPC 专用 RViz 配置（Fixed Frame=world）
-│   ├── checkpoint_best.pt            # 训练好的 RL 模型权重（1.6MB）
 │   ├── tunnel_map_default.pcd        # 默认隧道障碍物地图
 │   └── tunnel.rviz                   # RViz 显示配置
+├── cfg/ckpts/
+│   └── checkpoint_tunnel_M3_21500.pt # M3 最终版隧道模型权重
 ├── docs/
 │   └── TUNNEL_DEPLOYMENT.md          # 本文档
 └── ...
@@ -645,7 +656,10 @@ docker-compose.tunnel.yml             # 持久化开发容器
 | human_action 维度 | 3D | 3D | ✅ |
 | 四元数约定 | [w,x,y,z] | [w,x,y,z] | ✅ |
 | 归一化方向 | (range-d)/range | (range-d)/range | ✅ |
+| Beta min_concentration | 2.0 | 2.0 | ✅ |
+| 确定性推理 | Beta mode | Beta mode | ✅ |
 | residual_scale | 从 checkpoint | 从 checkpoint | ✅ |
+| pilot 分布 | offline diverse dataset | online Perlin UserModelTunnel | ⚠️ 泛化验证，不是逐分布复现 |
 
 ## 12. 常见问题
 
