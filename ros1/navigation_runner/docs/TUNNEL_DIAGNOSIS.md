@@ -64,6 +64,7 @@ Gazebo 非 PX4 路径还有两层执行侧保护：
 | 横向速度限幅 | `_publish_cmd()` | 将 heading-local 水平速度范数限制到 `gazebo_max_hvel`，当前为 `2.0m/s` |
 | z 速度执行模式 | `_publish_cmd()` | `gazebo_z_mode=alt_hold` 时用高度保持覆盖 policy z；`policy`/`policy_clamped`/`blend` 可用于验证完整 3D policy velocity 或折中模式 |
 | policy z 起飞门控 | `_publish_cmd()` | 默认 `gazebo_policy_z_takeoff_gate=true`，在 `z >= takeoff_height - gazebo_policy_z_gate_tolerance` 前仍使用 altitude hold，避免低空起飞阶段进入训练外分布 |
+| 完整 policy 接管门控 | `_control_callback()` | 默认 `policy_takeoff_gate=true`，在 `z >= takeoff_height - policy_takeoff_gate_tolerance` 前不运行 policy、不推进 online user model、不发布 policy x/y/z，只持续发布 takeoff pose |
 | 姿态翻倒恢复 | `_publish_cmd()` | `roll/pitch > tumble_deg` 时切到 pose hold；超过 `tumble_recover_timeout` 仍未恢复则声明 collision 并发布 `/tunnel_nav/collision=True` |
 
 ### 2. `flight_recorder.py` 实验指标与终止
@@ -76,6 +77,7 @@ Gazebo 非 PX4 路径还有两层执行侧保护：
 | `/CERLAB/quadcopter/cmd_vel` | 记录最终发给 Gazebo 插件的本体系速度命令 |
 | `/experiment_control/human_cmd` | 记录 RL/IPC 使用的 user model 输入 |
 | `/tunnel_nav/policy_cmd` | 记录 RL policy 原始世界系速度输出，用于和实际执行的 `cmd_vel` 对比 |
+| `/tunnel_nav/policy_active` | 记录完整 RL policy 是否已经通过起飞门控并接管控制 |
 | `/tunnel_nav/z_policy_active` | 记录 `policy`/`policy_clamped`/`blend` 的 z 轴是否已经通过起飞门控 |
 | `/tunnel_nav/collision` | 仅 RL 模式启用，接收 TunnelNav 外部碰撞判定 |
 
@@ -113,6 +115,7 @@ Gazebo world 里的障碍物有 SDF collision geometry，真实接触会影响�
 | Gazebo contact 没有直接进入 recorder | 真实接触可能只表现为 tumble 或 timeout | 若要严格统计物理碰撞，应增加 Gazebo contact topic 或插件输出，并接入 recorder |
 | RL 的 `cmd[2]` 默认不直接执行 | 默认 `gazebo_z_mode=alt_hold` 仍使用高度保持覆盖 z 速度，闭环状态分布会偏离完整 3D 速度执行 | 已加入 `gazebo_z_mode=policy|policy_clamped|blend` 做 A/B；recorder 同时保存 `policy_cmd_*`、最终 `cmd_vel*` 和 `z_policy_active` |
 | 低空就执行完整 policy z | policy mode 若从 `z≈0.4m` 开始接管 z，M3 会大量输出 `±1.96m/s`，这不是 user model z 采样问题，而是起飞阶段 OOD 推理 | 已默认启用 policy z 起飞门控；如需复现纯 policy mode，可显式关闭 `gazebo_policy_z_takeoff_gate` |
+| 低空就运行/执行 policy x-y | 只门控 z 轴时，日志仍会出现 policy `cmd=[...]`，且 x/y 已经在低空执行 | 已默认启用完整 `policy_takeoff_gate`；gate 前不会 forward policy，也不会推进 online user model |
 | `safety_min_dist=0.2` 小于训练碰撞半径 `0.3` | ROS1 护栏比训练终止更宽松，可能允许进入训练中已接近终止的区域 | 如果目标是保守验证，可考虑把 `safety_min_dist` 提到 `0.3` 并把它作为 safety-intervention，而不是 collision 指标 |
 
 当前推荐解读是：`goal_reached/collision/timeout` 是 batch 终止标签；`min_obstacle_dist` 和接近障碍比例描述风险暴露；`safety_stop` 是外部护栏介入，不应被混同为模型自身成功避障。

@@ -128,6 +128,12 @@ class TunnelConfig:
         self.gazebo_policy_z_gate_tolerance = float(
             rospy.get_param("~gazebo_policy_z_gate_tolerance", 0.5)
         )
+        self.policy_takeoff_gate = _param_bool(
+            rospy.get_param("~policy_takeoff_gate", True)
+        )
+        self.policy_takeoff_gate_tolerance = float(
+            rospy.get_param("~policy_takeoff_gate_tolerance", 0.5)
+        )
         # Gazebo max horizontal velocity clamp. The CERLAB velocity PID can
         # pitch excessively when the drone is physically blocked but still
         # receiving high-speed commands ("PID windup"). Clamping prevents
@@ -240,6 +246,10 @@ class TunnelNavigator:
             f"takeoff_gate={self.cfg.gazebo_policy_z_takeoff_gate}, "
             f"gate_tol={self.cfg.gazebo_policy_z_gate_tolerance})"
         )
+        rospy.loginfo(
+            f"[TunnelNav]   policy_gate   : {self.cfg.policy_takeoff_gate} "
+            f"(tol={self.cfg.policy_takeoff_gate_tolerance})"
+        )
         rospy.loginfo(f"[TunnelNav] ===================")
 
         # ---- User model OR keyboard input ----
@@ -285,6 +295,7 @@ class TunnelNavigator:
         self.min_dist = float("inf")  # current minimum obstacle distance
         self.initial_z = None
         self.safety_airborne = False
+        self.policy_active = False
         self.z_policy_active = False
         # Tumble recovery state
         self.in_tumble_recovery = False
@@ -381,6 +392,9 @@ class TunnelNavigator:
         self.collision_pub.publish(Bool(data=False))
         self.policy_cmd_pub = rospy.Publisher(
             "/tunnel_nav/policy_cmd", TwistStamped, queue_size=2
+        )
+        self.policy_active_pub = rospy.Publisher(
+            "/tunnel_nav/policy_active", Bool, queue_size=2
         )
         self.z_policy_active_pub = rospy.Publisher(
             "/tunnel_nav/z_policy_active", Bool, queue_size=2
@@ -593,6 +607,10 @@ class TunnelNavigator:
         if not self.ready:
             # Keep publishing takeoff pose while waiting for first raycast
             self.pose_pub.publish(self._make_takeoff_pose())
+            self.policy_active = False
+            self.policy_active_pub.publish(Bool(data=False))
+            self.z_policy_active = False
+            self.z_policy_active_pub.publish(Bool(data=False))
             return
 
         if self.external_stop:
@@ -648,6 +666,39 @@ class TunnelNavigator:
             )
             self.status_pub.publish(String(data=status_msg))
             return
+
+        if (
+            (not self.cfg.keyboard_mode)
+            and self.cfg.policy_takeoff_gate
+            and not self.policy_active
+        ):
+            cur_z = float(self.odom.pose.pose.position.z)
+            gate_height = self.cfg.takeoff_height - self.cfg.policy_takeoff_gate_tolerance
+            if cur_z < gate_height:
+                self.pose_pub.publish(self._make_takeoff_pose())
+                self.policy_active_pub.publish(Bool(data=False))
+                self.z_policy_active = False
+                self.z_policy_active_pub.publish(Bool(data=False))
+                rospy.loginfo_throttle(
+                    2.0,
+                    f"[TunnelNav] Holding takeoff pose until policy gate: "
+                    f"z={cur_z:.2f} < {gate_height:.2f}",
+                )
+                pos = self.odom.pose.pose.position
+                status_msg = (
+                    f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                    f"cmd=[pose_hold] | min_d={self.min_dist:.2f} | POLICY_GATE"
+                )
+                self.status_pub.publish(String(data=status_msg))
+                return
+            self.policy_active = True
+            rospy.loginfo(
+                f"[TunnelNav] Policy control enabled at z={cur_z:.2f} "
+                f"(gate={gate_height:.2f})"
+            )
+        if not self.policy_active:
+            self.policy_active = True
+        self.policy_active_pub.publish(Bool(data=True))
 
         # 1. Build observation
         state, human_action, lidar = self._build_obs()
@@ -887,6 +938,9 @@ class TunnelNavigator:
         position and attitude — plain zero-velocity cmd_vel doesn't
         fight attitude drift as effectively.
         """
+        self.policy_active = False
+        if hasattr(self, "policy_active_pub"):
+            self.policy_active_pub.publish(Bool(data=False))
         self.z_policy_active = False
         if hasattr(self, "z_policy_active_pub"):
             self.z_policy_active_pub.publish(Bool(data=False))

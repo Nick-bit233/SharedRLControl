@@ -35,6 +35,8 @@
     <arg name="gazebo_z_blend_alpha" default="0.5" />
     <arg name="gazebo_policy_z_takeoff_gate" default="true" />
     <arg name="gazebo_policy_z_gate_tolerance" default="0.5" />
+    <arg name="policy_takeoff_gate" default="true" />
+    <arg name="policy_takeoff_gate_tolerance" default="0.5" />
     <arg name="start_gazebo"   default="true" />
     <arg name="gui"            default="false" doc="Gazebo GUI (disable for Docker/headless)" />
 
@@ -105,6 +107,8 @@
         <param name="gazebo_z_blend_alpha" value="$(arg gazebo_z_blend_alpha)" />
         <param name="gazebo_policy_z_takeoff_gate" value="$(arg gazebo_policy_z_takeoff_gate)" />
         <param name="gazebo_policy_z_gate_tolerance" value="$(arg gazebo_policy_z_gate_tolerance)" />
+        <param name="policy_takeoff_gate" value="$(arg policy_takeoff_gate)" />
+        <param name="policy_takeoff_gate_tolerance" value="$(arg policy_takeoff_gate_tolerance)" />
     </node>
 
     <!-- ============================================================ -->

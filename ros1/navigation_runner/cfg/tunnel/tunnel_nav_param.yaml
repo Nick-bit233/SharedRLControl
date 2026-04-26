@@ -57,6 +57,8 @@ gazebo_policy_z_max: 2.0      # max |vz| for policy_clamped/blend modes
 gazebo_z_blend_alpha: 0.5     # blend: alpha*policy_vz + (1-alpha)*alt_hold
 gazebo_policy_z_takeoff_gate: true  # hold altitude until close to training init height
 gazebo_policy_z_gate_tolerance: 0.5 # enable policy z when z >= takeoff_height - tolerance
+policy_takeoff_gate: true     # do not run/execute policy before near training init height
+policy_takeoff_gate_tolerance: 0.5 # enable policy when z >= takeoff_height - tolerance
 tumble_deg: 45.0              # roll/pitch threshold for tumble detection (degrees)
 tumble_recover_height: 1.0    # metres above takeoff_height during tumble recovery
 tumble_recover_timeout: 10.0  # seconds before declaring tumble recovery failed

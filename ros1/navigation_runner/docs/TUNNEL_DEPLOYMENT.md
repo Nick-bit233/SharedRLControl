@@ -120,6 +120,7 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 | `output_dir` | `/root/results` | 数据输出目录 |
 | `gazebo_z_mode` | `alt_hold` | RL z 速度执行模式：`alt_hold`、`policy`、`policy_clamped` 或 `blend` |
 | `gazebo_policy_z_takeoff_gate` | `true` | `policy`/`policy_clamped`/`blend` 下先用高度保持起飞，接近 `takeoff_height` 后再执行 policy z |
+| `policy_takeoff_gate` | `true` | 起飞接近训练高度前不运行 policy，不执行 policy x/y/z |
 
 ### 1.5 键盘控制模式
 
@@ -263,6 +264,7 @@ ros1/uav_simulator/worlds/                          → /root/catkin_ws/src/uav_
 |------|------|------|------|
 | `/CERLAB/quadcopter/cmd_vel` | `geometry_msgs/TwistStamped` | 20 Hz | 速度指令（body frame） |
 | `/tunnel_nav/policy_cmd` | `geometry_msgs/TwistStamped` | 20 Hz | RL policy 原始世界系速度输出（用于和实际 cmd_vel 对比） |
+| `/tunnel_nav/policy_active` | `std_msgs/Bool` | 20 Hz | RL policy 是否已通过完整起飞门控并接管控制 |
 | `/tunnel_nav/z_policy_active` | `std_msgs/Bool` | 20 Hz | policy z 是否已通过起飞门控并接管执行 |
 | `/CERLAB/quadcopter/takeoff` | `std_msgs/Empty` | 一次 | 起飞指令（CERLAB 插件） |
 | `/tunnel_nav/lidar_cloud` | `sensor_msgs/PointCloud2` | 30 Hz | LiDAR 射线命中点（RViz 红色点云） |
@@ -413,7 +415,7 @@ mean in (0,1) → linear map to [-action_limit, action_limit]
 - **体帧 (body)**: 前=x, 左=y, 上=z — 观测空间
 - **世界帧 (world)**: ENU — 动作输出空间
 - **四元数**: 训练使用 [w,x,y,z]（scalar-first），ROS 使用 [x,y,z,w]，导航节点内部自动转换
-- **cmd_vel**: 策略输出世界帧速度 → 用 yaw 旋转矩阵转为 body 帧 → 发布给 CERLAB 插件；默认 `gazebo_z_mode=alt_hold` 会用高度保持覆盖 z，`policy`/`policy_clamped`/`blend` 可用于 A/B 验证完整或部分 z 速度执行。为避免起飞低空阶段偏离训练初始高度，`gazebo_policy_z_takeoff_gate=true` 时会先用高度保持，达到 `takeoff_height - gazebo_policy_z_gate_tolerance` 后再让 policy z 接管。
+- **cmd_vel**: 起飞门控前只发布 takeoff pose，不运行 policy、不推进 online user model、不执行 policy x/y/z；达到 `takeoff_height - policy_takeoff_gate_tolerance` 后，策略输出世界帧速度 → 用 yaw 旋转矩阵转为 body 帧 → 发布给 CERLAB 插件。默认 `gazebo_z_mode=alt_hold` 会用高度保持覆盖 z，`policy`/`policy_clamped`/`blend` 可用于 A/B 验证完整或部分 z 速度执行。
 
 ### 6.3.1 隧道地图坐标系
 
@@ -949,6 +951,7 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
   - `--launch-timeout`：批处理外层 watchdog
   - `--goal-x` / `--collision-dist`：统一终止阈值
   - `--gazebo-z-mode`：默认 `alt_hold`；可设为 `policy`/`policy_clamped`/`blend` 评估执行完整 3D policy velocity 的影响
+  - `--disable-policy-takeoff-gate`：关闭默认完整接管门控，复现 raycast ready 后立即运行 policy 的旧行为
   - `--disable-gazebo-policy-z-takeoff-gate`：关闭默认起飞门控，用于复现从低空立即执行 policy z 的纯 policy mode
   - `--user-model-speed` / `--user-model-freq-*`：共享 RL / IPC 输入配置
   - `--num-obstacles` / `--cuboid-ratio`：每批次地图生成参数

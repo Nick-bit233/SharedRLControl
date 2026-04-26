@@ -75,6 +75,10 @@ def parse_args():
                         help="Let policy z control start immediately, even below takeoff_height")
     parser.add_argument("--gazebo-policy-z-gate-tolerance", type=float, default=0.5,
                         help="Enable policy z when z >= takeoff_height - tolerance")
+    parser.add_argument("--disable-policy-takeoff-gate", action="store_true",
+                        help="Run and execute RL policy immediately after raycast readiness")
+    parser.add_argument("--policy-takeoff-gate-tolerance", type=float, default=0.5,
+                        help="Enable full policy control when z >= takeoff_height - tolerance")
     parser.add_argument("--gui", action="store_true",
                         help="Show Gazebo GUI")
     parser.add_argument("--rviz", action="store_true",
@@ -291,6 +295,8 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"gazebo_z_blend_alpha:={args.gazebo_z_blend_alpha}",
         f"gazebo_policy_z_takeoff_gate:={bool_str(not args.disable_gazebo_policy_z_takeoff_gate)}",
         f"gazebo_policy_z_gate_tolerance:={args.gazebo_policy_z_gate_tolerance}",
+        f"policy_takeoff_gate:={bool_str(not args.disable_policy_takeoff_gate)}",
+        f"policy_takeoff_gate_tolerance:={args.policy_takeoff_gate_tolerance}",
         f"user_model_simple:={bool_str(args.user_model_simple)}",
         f"user_model_profile:={args.user_model_profile}",
         f"user_model_speed:={args.user_model_speed}",
@@ -377,6 +383,8 @@ def run_batch(args, output_root):
             "gazebo_z_blend_alpha": args.gazebo_z_blend_alpha,
             "gazebo_policy_z_takeoff_gate": not args.disable_gazebo_policy_z_takeoff_gate,
             "gazebo_policy_z_gate_tolerance": args.gazebo_policy_z_gate_tolerance,
+            "policy_takeoff_gate": not args.disable_policy_takeoff_gate,
+            "policy_takeoff_gate_tolerance": args.policy_takeoff_gate_tolerance,
             "gui": args.gui,
             "rviz": args.rviz,
             "user_model_simple": args.user_model_simple,

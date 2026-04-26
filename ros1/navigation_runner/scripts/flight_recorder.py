@@ -71,6 +71,10 @@ class FlightRecorder:
         self.gazebo_policy_z_gate_tolerance = float(
             rospy.get_param('~gazebo_policy_z_gate_tolerance', 0.0)
         )
+        self.policy_takeoff_gate = _param_bool(rospy.get_param('~policy_takeoff_gate', True))
+        self.policy_takeoff_gate_tolerance = float(
+            rospy.get_param('~policy_takeoff_gate_tolerance', 0.0)
+        )
         self.tunnel_world = rospy.get_param('~tunnel_world', '')
 
         self._init_buffers()
@@ -80,6 +84,7 @@ class FlightRecorder:
         self.latest_cmd = None
         self.latest_human_cmd = None
         self.latest_policy_cmd = None
+        self.latest_policy_active = False
         self.latest_z_policy_active = False
         self.reached_goal = False
         self.collision = False
@@ -104,6 +109,8 @@ class FlightRecorder:
             '/experiment_control/human_cmd', TwistStamped, self._human_cmd_cb, queue_size=1)
         self.policy_cmd_sub = rospy.Subscriber(
             '/tunnel_nav/policy_cmd', TwistStamped, self._policy_cmd_cb, queue_size=1)
+        self.policy_active_sub = rospy.Subscriber(
+            '/tunnel_nav/policy_active', Bool, self._policy_active_cb, queue_size=1)
         self.z_policy_active_sub = rospy.Subscriber(
             '/tunnel_nav/z_policy_active', Bool, self._z_policy_active_cb, queue_size=1)
         self.collision_sub = None
@@ -134,7 +141,7 @@ class FlightRecorder:
             'velocity': [], 'cmd_vel': [], 'cmd_vel_world': [],
             'human_cmd_body': [], 'human_cmd_world': [],
             'policy_cmd_world': [], 'policy_cmd_body': [], 'policy_cmd_valid': [],
-            'z_policy_active': [],
+            'policy_active': [], 'z_policy_active': [],
             'angular_vel': [], 'yaw': [],
             'min_obstacle_dist': [], 'min_obstacle_dist_monitored': [],
             'collision_flags': [],
@@ -196,6 +203,9 @@ class FlightRecorder:
 
     def _policy_cmd_cb(self, msg):
         self.latest_policy_cmd = msg
+
+    def _policy_active_cb(self, msg):
+        self.latest_policy_active = bool(msg.data)
 
     def _z_policy_active_cb(self, msg):
         self.latest_z_policy_active = bool(msg.data)
@@ -372,6 +382,7 @@ class FlightRecorder:
         self.buffers['policy_cmd_world'].append(policy_cmd_world.tolist())
         self.buffers['policy_cmd_body'].append(policy_cmd_body.tolist())
         self.buffers['policy_cmd_valid'].append(policy_cmd_valid)
+        self.buffers['policy_active'].append(bool(self.latest_policy_active))
         self.buffers['z_policy_active'].append(bool(self.latest_z_policy_active))
         self.buffers['angular_vel'].append([w.x, w.y, w.z])
         self.buffers['yaw'].append(yaw)
@@ -413,6 +424,7 @@ class FlightRecorder:
         human_world = np.array(self.buffers['human_cmd_world'], dtype=np.float32)
         policy_world = np.array(self.buffers['policy_cmd_world'], dtype=np.float32)
         policy_valid = np.array(self.buffers['policy_cmd_valid'], dtype=bool)
+        policy_active = np.array(self.buffers['policy_active'], dtype=bool)
         z_policy_active = np.array(self.buffers['z_policy_active'], dtype=bool)
         collision_flags = np.array(self.buffers['collision_flags'], dtype=bool)
         if cmd_world.size and policy_world.size and np.any(policy_valid):
@@ -428,6 +440,9 @@ class FlightRecorder:
             mean_executed_vz = 0.0
         z_policy_active_fraction = (
             float(np.mean(z_policy_active)) if z_policy_active.size else 0.0
+        )
+        policy_active_fraction = (
+            float(np.mean(policy_active)) if policy_active.size else 0.0
         )
 
         save_dict = {
@@ -454,6 +469,9 @@ class FlightRecorder:
             'gazebo_z_blend_alpha': self.gazebo_z_blend_alpha,
             'gazebo_policy_z_takeoff_gate': self.gazebo_policy_z_takeoff_gate,
             'gazebo_policy_z_gate_tolerance': self.gazebo_policy_z_gate_tolerance,
+            'policy_takeoff_gate': self.policy_takeoff_gate,
+            'policy_takeoff_gate_tolerance': self.policy_takeoff_gate_tolerance,
+            'policy_active_fraction': policy_active_fraction,
             'z_policy_active_fraction': z_policy_active_fraction,
             'goal_x': self.goal_x,
             'collision_dist': self.collision_dist,
@@ -496,6 +514,9 @@ class FlightRecorder:
             'gazebo_z_blend_alpha': float(self.gazebo_z_blend_alpha),
             'gazebo_policy_z_takeoff_gate': bool(self.gazebo_policy_z_takeoff_gate),
             'gazebo_policy_z_gate_tolerance': float(self.gazebo_policy_z_gate_tolerance),
+            'policy_takeoff_gate': bool(self.policy_takeoff_gate),
+            'policy_takeoff_gate_tolerance': float(self.policy_takeoff_gate_tolerance),
+            'policy_active_fraction': policy_active_fraction,
             'z_policy_active_fraction': z_policy_active_fraction,
             'mean_abs_policy_exec_vz_delta': mean_abs_policy_exec_vz_delta,
             'max_abs_policy_exec_vz_delta': max_abs_policy_exec_vz_delta,
