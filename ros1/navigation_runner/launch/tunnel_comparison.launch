@@ -13,7 +13,7 @@
     <arg name="tunnel_world"
          default="$(find uav_simulator)/worlds/generated_env/tunnel_pcd_match_static.world"/>
     <arg name="checkpoint"
-         default="$(find navigation_runner)/cfg/tunnel/checkpoint_best.pt"/>
+         default="$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M2_14000.pt"/>
     <arg name="trial_id" default="0"/>
     <arg name="record" default="true"/>
     <arg name="rviz" default="true"/>

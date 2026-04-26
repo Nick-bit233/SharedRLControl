@@ -92,6 +92,9 @@ docker-compose.override.yml
 */wandb/*/files/
 */wandb/*/*.wandb
 
+# Ignore checkpoint and model weights
+ros1/navigation_runner/cfg/ckpts/
+
 # Ignore Isaac Orbit symlink
 isaac-training/third_party/orbit/_isaac_sim
 
@@ -126,3 +129,4 @@ ros1/results/
 # paper works
 PAPER_PLAN.md
 paper/
+
