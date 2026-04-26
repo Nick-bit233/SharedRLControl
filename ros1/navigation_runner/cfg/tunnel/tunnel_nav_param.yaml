@@ -28,9 +28,17 @@ takeoff_height: 5.0           # metres — must match training init height (env_
 # --- User model / keyboard mode ---
 keyboard_mode: false              # true = keyboard teleop as human input; false = UserModelTunnel
 user_model_simple: false       # true = constant forward speed; false = Perlin noise
+user_model_profile: "m3_diverse" # m3_diverse | legacy_perlin | simple
 user_model_speed: 2.0         # m/s forward speed
 user_model_freq_base: 0.1     # Perlin noise base frequency (online mode only)
-user_model_freq_scale: 0.3    # Perlin noise frequency scale (online mode only)
+user_model_freq_scale: 0.2    # M3 diverse-pilot frequency scale
+user_model_vx_bias: 1.5       # M3 directional-bias forward component
+user_model_vx_amp: 0.5        # M3 vx variation: 1.5 +/- 0.5
+user_model_vy_amp: 2.0        # M3 broad lateral pilot diversity
+user_model_vz_amp: 0.0        # keep Gazebo main run altitude-neutral
+user_model_smoothness_base: 0.4
+user_model_smoothness_scale: 0.5
+user_model_laziness: 0.3
 user_model_seed: 288           # deterministic seed shared with IPC comparison input
 
 # --- Safety ---

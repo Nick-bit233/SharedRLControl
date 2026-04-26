@@ -12,9 +12,17 @@
     <arg name="device" default="cpu"/>
     <arg name="ipc_launch_prefix" default=""/>
     <arg name="user_model_simple" default="false"/>
+    <arg name="user_model_profile" default="m3_diverse"/>
     <arg name="user_model_speed" default="2.0"/>
     <arg name="user_model_freq_base" default="0.1"/>
-    <arg name="user_model_freq_scale" default="0.3"/>
+    <arg name="user_model_freq_scale" default="0.2"/>
+    <arg name="user_model_vx_bias" default="1.5"/>
+    <arg name="user_model_vx_amp" default="0.5"/>
+    <arg name="user_model_vy_amp" default="2.0"/>
+    <arg name="user_model_vz_amp" default="0.0"/>
+    <arg name="user_model_smoothness_base" default="0.4"/>
+    <arg name="user_model_smoothness_scale" default="0.5"/>
+    <arg name="user_model_laziness" default="0.3"/>
     <arg name="user_model_seed" default="42"/>
     <arg name="user_model_rate" default="20.0"/>
     <arg name="output_dir" default="/root/results"/>
@@ -81,9 +89,17 @@
         <param name="use_user_model" value="true"/>
         <param name="device" value="$(arg device)"/>
         <param name="user_model_simple" value="$(arg user_model_simple)"/>
+        <param name="user_model_profile" value="$(arg user_model_profile)"/>
         <param name="user_model_speed" value="$(arg user_model_speed)"/>
         <param name="user_model_freq_base" value="$(arg user_model_freq_base)"/>
         <param name="user_model_freq_scale" value="$(arg user_model_freq_scale)"/>
+        <param name="user_model_vx_bias" value="$(arg user_model_vx_bias)"/>
+        <param name="user_model_vx_amp" value="$(arg user_model_vx_amp)"/>
+        <param name="user_model_vy_amp" value="$(arg user_model_vy_amp)"/>
+        <param name="user_model_vz_amp" value="$(arg user_model_vz_amp)"/>
+        <param name="user_model_smoothness_base" value="$(arg user_model_smoothness_base)"/>
+        <param name="user_model_smoothness_scale" value="$(arg user_model_smoothness_scale)"/>
+        <param name="user_model_laziness" value="$(arg user_model_laziness)"/>
         <param name="user_model_seed" value="$(arg user_model_seed)"/>
         <param name="user_model_rate" value="$(arg user_model_rate)"/>
         <param name="forward_stick" value="0.8"/>
@@ -150,6 +166,15 @@
             <param name="run_id" value="$(arg run_id)"/>
             <param name="map_seed" value="$(arg map_seed)"/>
             <param name="user_model_seed" value="$(arg user_model_seed)"/>
+            <param name="user_model_profile" value="$(arg user_model_profile)"/>
+            <param name="user_model_simple" value="$(arg user_model_simple)"/>
+            <param name="user_model_speed" value="$(arg user_model_speed)"/>
+            <param name="user_model_freq_base" value="$(arg user_model_freq_base)"/>
+            <param name="user_model_freq_scale" value="$(arg user_model_freq_scale)"/>
+            <param name="user_model_vx_bias" value="$(arg user_model_vx_bias)"/>
+            <param name="user_model_vx_amp" value="$(arg user_model_vx_amp)"/>
+            <param name="user_model_vy_amp" value="$(arg user_model_vy_amp)"/>
+            <param name="user_model_vz_amp" value="$(arg user_model_vz_amp)"/>
             <param name="tunnel_world" value="$(arg tunnel_world)"/>
         </node>
     </group>

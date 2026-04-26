@@ -112,16 +112,33 @@ class UserModelTunnel:
         dt: float = 0.05,
         buffer_size: int = 128,
         simple_mode: bool = True,
+        profile: str = "m3_diverse",
         freq_base: float = 0.1,
-        freq_scale: float = 0.3,
+        freq_scale: float = 0.2,
+        vx_bias: float = 1.5,
+        vx_amp: float = 0.5,
+        vy_amp: float = 2.0,
+        vz_amp: float = 0.0,
+        smoothness_base: float = 0.4,
+        smoothness_scale: float = 0.5,
+        laziness: float = 0.3,
         device: str = "cpu",
     ):
         self.device = torch.device(device)
         self.max_speed = max_speed
         self.dt = dt
         self.buffer_size = buffer_size
-        self.simple_mode = simple_mode
-        self.num_channels = 1
+        requested_profile = str(profile)
+        self.simple_mode = simple_mode or requested_profile == "simple"
+        self.profile = "simple" if self.simple_mode else requested_profile
+        if self.profile == "perlin":
+            self.profile = "legacy_perlin"
+        if self.profile not in ("simple", "legacy_perlin", "m3_diverse"):
+            raise ValueError(
+                f"Unsupported UserModelTunnel profile '{self.profile}'. "
+                "Expected simple, legacy_perlin, or m3_diverse."
+            )
+        self.num_channels = 1 if self.profile == "legacy_perlin" else 3
 
         # State (batch size = 1 for ROS single-drone)
         N = 1
@@ -133,6 +150,15 @@ class UserModelTunnel:
         self.freq_base = freq_base
         self.freq_scale = freq_scale
         self.noise_freq = torch.rand(N, 1, device=self.device) * freq_scale + freq_base
+        self.vx_bias = vx_bias
+        self.vx_amp = vx_amp
+        self.vy_amp = vy_amp
+        self.vz_amp = vz_amp
+        self.smoothness_base = smoothness_base
+        self.smoothness_scale = smoothness_scale
+        self.laziness_max = laziness
+        self.smoothness = torch.zeros(N, 1, device=self.device)
+        self.laziness = torch.zeros(N, 1, device=self.device)
         self.prev_action = torch.zeros(N, 3, device=self.device)
 
     def reset(self, seed: int = None):
@@ -152,9 +178,16 @@ class UserModelTunnel:
                 torch.rand(N, 1, generator=gen, device=self.device) * self.freq_scale
                 + self.freq_base
             )
+            self.smoothness = (
+                torch.rand(N, 1, generator=gen, device=self.device) * self.smoothness_scale
+                + self.smoothness_base
+            )
+            self.laziness = torch.rand(N, 1, generator=gen, device=self.device) * self.laziness_max
         else:
             self.noise_seeds = torch.randint(0, 100000, (N, self.num_channels), device=self.device)
             self.noise_freq = torch.rand(N, 1, device=self.device) * self.freq_scale + self.freq_base
+            self.smoothness = torch.rand(N, 1, device=self.device) * self.smoothness_scale + self.smoothness_base
+            self.laziness = torch.rand(N, 1, device=self.device) * self.laziness_max
 
         if not self.simple_mode:
             self._refill_buffer()
@@ -185,6 +218,49 @@ class UserModelTunnel:
         return action
 
     def _refill_buffer(self):
+        if self.profile == "legacy_perlin":
+            self._refill_legacy_perlin()
+            return
+
+        T = self.buffer_size
+        dt = self.dt
+        N = 1
+
+        t_start = self.noise_time.unsqueeze(1)
+        t_steps = torch.arange(T, device=self.device).unsqueeze(0) * dt
+        time_grid = t_start + t_steps
+
+        channel_noise = _batched_perlin_noise(
+            self.num_channels, time_grid, self.noise_seeds,
+            self.noise_freq, self.device,
+        )  # (1, T, 3)
+
+        amps = torch.tensor(
+            [self.vx_amp, self.vy_amp, self.vz_amp],
+            device=self.device,
+            dtype=torch.float32,
+        )
+        bias = torch.tensor(
+            [self.vx_bias, 0.0, 0.0],
+            device=self.device,
+            dtype=torch.float32,
+        )
+        raw = channel_noise * amps + bias
+        raw = torch.where(raw.abs() < self.laziness.unsqueeze(1), torch.zeros_like(raw), raw)
+
+        alpha = 1.0 - self.smoothness
+        last = self.prev_action.clone()
+        for i in range(T):
+            last = alpha * raw[:, i, :] + (1.0 - alpha) * last
+            self.action_buffer[:, i, :] = last
+
+        self.action_buffer[..., 0] = self.action_buffer[..., 0].clamp(0.0, self.max_speed)
+        self.action_buffer[..., 1] = self.action_buffer[..., 1].clamp(-self.max_speed, self.max_speed)
+        self.action_buffer[..., 2] = self.action_buffer[..., 2].clamp(-self.max_speed, self.max_speed)
+        self.prev_action[:] = self.action_buffer[:, -1, :]
+        self.noise_time += T * dt
+
+    def _refill_legacy_perlin(self):
         T = self.buffer_size
         dt = self.dt
         N = 1

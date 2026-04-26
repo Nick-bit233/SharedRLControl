@@ -331,10 +331,18 @@ lidar_hres: 10.0         # 度 → 36 水平波束
 control_freq: 20.0       # Hz
 takeoff_height: 5.0      # 米（与当前隧道训练初始化高度一致）
 deterministic: true      # 确定性输出
-user_model_simple: false # 默认使用在线 Perlin usermodel
+user_model_simple: false
+user_model_profile: m3_diverse # m3_diverse | legacy_perlin | simple
 user_model_speed: 2.0    # m/s
 user_model_freq_base: 0.1
-user_model_freq_scale: 0.3
+user_model_freq_scale: 0.2
+user_model_vx_bias: 1.5
+user_model_vx_amp: 0.5
+user_model_vy_amp: 2.0
+user_model_vz_amp: 0.0  # 主实验保持高度中性
+user_model_smoothness_base: 0.4
+user_model_smoothness_scale: 0.5
+user_model_laziness: 0.3
 user_model_seed: 42      # RL / IPC 共用，确保输入序列可复现
 safety_min_dist: 0.3     # 米，安全停止距离（0 = 禁用）
 collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失败）
@@ -347,17 +355,20 @@ collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失�
 
 ### UserModel 模式
 
-- **simple 模式** (`user_model_simple: true`)：`vx=user_model_speed`，`vy=vz=0`
-- **online 模式** (`user_model_simple: false`)：当前隧道 `UserModelTunnel` 的实际输出是
-  `vx=user_model_speed`、`vy` 为 Perlin 噪声、`vz=0`，也就是“恒定前进 + 随机横向漂移”
+- **m3_diverse 模式**（默认）：对齐 `trajectory_gen_tunnel.yaml` 的 feasible-diverse pilot，
+  `vx≈1.5±0.5`、`vy` 为宽 Perlin 扰动、`vz=0`。这是 M3 ROS1 批量主实验推荐设置。
+- **legacy_perlin 模式**：旧 ROS1 online user model，`vx=user_model_speed`、
+  `vy=user_model_speed*Perlin`、`vz=0`。仅建议用于 ablation / 历史结果复现。
+- **simple 模式** (`user_model_simple: true` 或 `user_model_profile:=simple`)：
+  `vx=user_model_speed`，`vy=vz=0`，用于 sanity check。
 - `user_model_seed` 现在同时传给 RL 与 IPC；两种方法在相同 seed 下会复用同一条
   `UserModelTunnel` 指令序列
 
 **M3 注意事项**：`checkpoint_tunnel_M3_21500.pt` 的训练主线继承了
 `tunnel_m2_diverse_pilot`，训练时使用 offline feasible-diverse pilot dataset。
-当前 ROS1 批量实验默认仍使用 online Perlin `UserModelTunnel`，因此默认批量结果应解释为
-M3 模型在 ROS1/Gazebo + online pilot 下的泛化验证，而不是对 M3 offline pilot
-训练分布的逐样本复现。若需要严格复现 M3 训练输入分布，需要另行接入 offline pilot replay。
+当前 ROS1 批量实验默认使用 `m3_diverse` online 近似，而不是旧 `legacy_perlin`。
+它用于验证 M3 模型在 ROS1/Gazebo 中面对 M3-aligned pilot 分布的表现；若需要严格复现
+M3 offline dataset 的逐样本输入，需要另行接入 offline pilot replay。
 
 ## 6. 架构说明
 
@@ -659,7 +670,7 @@ docker-compose.tunnel.yml             # 持久化开发容器
 | Beta min_concentration | 2.0 | 2.0 | ✅ |
 | 确定性推理 | Beta mode | Beta mode | ✅ |
 | residual_scale | 从 checkpoint | 从 checkpoint | ✅ |
-| pilot 分布 | offline diverse dataset | online Perlin UserModelTunnel | ⚠️ 泛化验证，不是逐分布复现 |
+| pilot 分布 | offline diverse dataset: `vx≈1.5±0.5`, broad `vy` | `m3_diverse`: `vx≈1.5±0.5`, broad `vy`, `vz=0` | ✅ 主分布近似；非逐样本 replay |
 
 ## 12. 常见问题
 

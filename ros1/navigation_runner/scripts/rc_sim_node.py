@@ -39,9 +39,17 @@ class RCSimulator:
         self.yaw_stick = rospy.get_param('~yaw_stick', 0.0)
         self.use_user_model = rospy.get_param('~use_user_model', False)
         self.user_model_simple = rospy.get_param('~user_model_simple', False)
+        self.user_model_profile = rospy.get_param('~user_model_profile', 'm3_diverse')
         self.user_model_speed = rospy.get_param('~user_model_speed', 2.0)
         self.user_model_freq_base = rospy.get_param('~user_model_freq_base', 0.1)
-        self.user_model_freq_scale = rospy.get_param('~user_model_freq_scale', 0.3)
+        self.user_model_freq_scale = rospy.get_param('~user_model_freq_scale', 0.2)
+        self.user_model_vx_bias = rospy.get_param('~user_model_vx_bias', 1.5)
+        self.user_model_vx_amp = rospy.get_param('~user_model_vx_amp', 0.5)
+        self.user_model_vy_amp = rospy.get_param('~user_model_vy_amp', 2.0)
+        self.user_model_vz_amp = rospy.get_param('~user_model_vz_amp', 0.0)
+        self.user_model_smoothness_base = rospy.get_param('~user_model_smoothness_base', 0.4)
+        self.user_model_smoothness_scale = rospy.get_param('~user_model_smoothness_scale', 0.5)
+        self.user_model_laziness = rospy.get_param('~user_model_laziness', 0.3)
         self.user_model_seed = int(rospy.get_param('~user_model_seed', 42))
         self.user_model_rate = rospy.get_param('~user_model_rate', 20.0)
         self.user_model_device = rospy.get_param('~device', 'cpu')
@@ -102,8 +110,16 @@ class RCSimulator:
                 dt=dt,
                 buffer_size=128,
                 simple_mode=self.user_model_simple,
+                profile=self.user_model_profile,
                 freq_base=self.user_model_freq_base,
                 freq_scale=self.user_model_freq_scale,
+                vx_bias=self.user_model_vx_bias,
+                vx_amp=self.user_model_vx_amp,
+                vy_amp=self.user_model_vy_amp,
+                vz_amp=self.user_model_vz_amp,
+                smoothness_base=self.user_model_smoothness_base,
+                smoothness_scale=self.user_model_smoothness_scale,
+                laziness=self.user_model_laziness,
                 device=self.user_model_device,
             )
         except Exception as exc:
@@ -118,8 +134,16 @@ class RCSimulator:
                 dt=dt,
                 buffer_size=128,
                 simple_mode=self.user_model_simple,
+                profile=self.user_model_profile,
                 freq_base=self.user_model_freq_base,
                 freq_scale=self.user_model_freq_scale,
+                vx_bias=self.user_model_vx_bias,
+                vx_amp=self.user_model_vx_amp,
+                vy_amp=self.user_model_vy_amp,
+                vz_amp=self.user_model_vz_amp,
+                smoothness_base=self.user_model_smoothness_base,
+                smoothness_scale=self.user_model_smoothness_scale,
+                laziness=self.user_model_laziness,
                 device='cpu',
             )
         model.reset(seed=self.user_model_seed)

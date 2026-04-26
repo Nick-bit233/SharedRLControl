@@ -73,9 +73,19 @@ def parse_args():
     parser.add_argument("--spawn-z", type=float, default=0.1)
     parser.add_argument("--user-model-simple", action="store_true",
                         help="Use simple user model instead of Perlin profile")
+    parser.add_argument("--user-model-profile", default="m3_diverse",
+                        choices=("m3_diverse", "legacy_perlin", "simple"),
+                        help="Online pilot profile for RL and IPC")
     parser.add_argument("--user-model-speed", type=float, default=2.0)
     parser.add_argument("--user-model-freq-base", type=float, default=0.1)
-    parser.add_argument("--user-model-freq-scale", type=float, default=0.3)
+    parser.add_argument("--user-model-freq-scale", type=float, default=0.2)
+    parser.add_argument("--user-model-vx-bias", type=float, default=1.5)
+    parser.add_argument("--user-model-vx-amp", type=float, default=0.5)
+    parser.add_argument("--user-model-vy-amp", type=float, default=2.0)
+    parser.add_argument("--user-model-vz-amp", type=float, default=0.0)
+    parser.add_argument("--user-model-smoothness-base", type=float, default=0.4)
+    parser.add_argument("--user-model-smoothness-scale", type=float, default=0.5)
+    parser.add_argument("--user-model-laziness", type=float, default=0.3)
     parser.add_argument("--num-obstacles", type=int, default=15)
     parser.add_argument("--cuboid-ratio", type=float, default=0.5)
     parser.add_argument("--map-resolution", type=float, default=0.1)
@@ -266,9 +276,17 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"device:={args.device}",
         f"checkpoint:={args.checkpoint}",
         f"user_model_simple:={bool_str(args.user_model_simple)}",
+        f"user_model_profile:={args.user_model_profile}",
         f"user_model_speed:={args.user_model_speed}",
         f"user_model_freq_base:={args.user_model_freq_base}",
         f"user_model_freq_scale:={args.user_model_freq_scale}",
+        f"user_model_vx_bias:={args.user_model_vx_bias}",
+        f"user_model_vx_amp:={args.user_model_vx_amp}",
+        f"user_model_vy_amp:={args.user_model_vy_amp}",
+        f"user_model_vz_amp:={args.user_model_vz_amp}",
+        f"user_model_smoothness_base:={args.user_model_smoothness_base}",
+        f"user_model_smoothness_scale:={args.user_model_smoothness_scale}",
+        f"user_model_laziness:={args.user_model_laziness}",
         f"spawn_x:={args.spawn_x}",
         f"spawn_y:={args.spawn_y}",
         f"spawn_z:={args.spawn_z}",
@@ -341,9 +359,17 @@ def run_batch(args, output_root):
             "gui": args.gui,
             "rviz": args.rviz,
             "user_model_simple": args.user_model_simple,
+            "user_model_profile": args.user_model_profile,
             "user_model_speed": args.user_model_speed,
             "user_model_freq_base": args.user_model_freq_base,
             "user_model_freq_scale": args.user_model_freq_scale,
+            "user_model_vx_bias": args.user_model_vx_bias,
+            "user_model_vx_amp": args.user_model_vx_amp,
+            "user_model_vy_amp": args.user_model_vy_amp,
+            "user_model_vz_amp": args.user_model_vz_amp,
+            "user_model_smoothness_base": args.user_model_smoothness_base,
+            "user_model_smoothness_scale": args.user_model_smoothness_scale,
+            "user_model_laziness": args.user_model_laziness,
             "num_obstacles": args.num_obstacles,
             "cuboid_ratio": args.cuboid_ratio,
             "map_resolution": args.map_resolution,
@@ -464,6 +490,8 @@ def maybe_run_analysis(args, output_root):
 
 def main():
     args = parse_args()
+    if args.user_model_simple:
+        args.user_model_profile = "simple"
     args.device = resolve_device(args.device)
     output_root = ensure_output_dir(args)
     manifest = run_batch(args, output_root)

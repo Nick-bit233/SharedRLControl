@@ -145,8 +145,8 @@
 1. 本次没有重新完整跑一遍修正后的 Isaac Sim `compare_ipc_rl.py` 与 Gazebo 做逐帧对齐；如果后续要做论文级别对比，建议补这一组。
 2. 本次 Gazebo 通过 `docker exec` 拉起 `roslaunch` 时，需要额外设置 `ROS_HOSTNAME=127.0.0.1 ROS_IP=127.0.0.1`，否则容器里的 `HOSTNAME` 不能自回连。这是 ROS 网络配置问题，不是隧道策略逻辑问题。
 3. 当前默认起飞点 `spawn_x=-8.5` 是针对现有 Gazebo 资产的安全设计；后续如果要做 Isaac Sim / Gazebo 严格对比，应优先区分“起飞安全补偿”与“airborne 轨迹差异”这两个问题。
-4. 当前 ROS1 默认权重已切到 M3 `checkpoint_tunnel_M3_21500.pt`。这份权重可被 ROS1 standalone loader 直接加载，但 M3 训练使用 offline feasible-diverse pilot dataset，而 ROS1 默认批量实验仍使用 online Perlin `UserModelTunnel`；默认结果应解释为 cross-pilot generalization，而不是 M3 训练输入分布的逐样本复现。
+4. 当前 ROS1 默认权重已切到 M3 `checkpoint_tunnel_M3_21500.pt`，默认 user model 也已切到 `m3_diverse`：`vx≈1.5±0.5`、宽 `vy` Perlin、`vz=0`。这份权重可被 ROS1 standalone loader 直接加载；`m3_diverse` 是对 M3 offline feasible-diverse pilot dataset 的在线近似，而不是逐样本 replay。
 5. 如果后续目标是提高这张固定地图上的通过率，优先应该检查：
    - 当前 checkpoint 是否就是期望的最佳隧道权重；
-   - `UserModelTunnel` 的 Perlin 分布是否是本次要验证的目标输入分布；
+   - `UserModelTunnel` 的 profile 是否是本次要验证的目标输入分布；
    - 是否需要针对固定地图做 deterministic/simpler human input 的对照（例如 `user_model_simple=true`）。

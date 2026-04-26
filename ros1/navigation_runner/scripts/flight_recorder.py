@@ -47,6 +47,15 @@ class FlightRecorder:
         self.run_id = run_id_param or f'{self.method}_trial{int(self.trial_id):03d}'
         self.map_seed = int(rospy.get_param('~map_seed', -1))
         self.user_model_seed = int(rospy.get_param('~user_model_seed', -1))
+        self.user_model_profile = rospy.get_param('~user_model_profile', '')
+        self.user_model_simple = bool(rospy.get_param('~user_model_simple', False))
+        self.user_model_speed = float(rospy.get_param('~user_model_speed', 0.0))
+        self.user_model_freq_base = float(rospy.get_param('~user_model_freq_base', 0.0))
+        self.user_model_freq_scale = float(rospy.get_param('~user_model_freq_scale', 0.0))
+        self.user_model_vx_bias = float(rospy.get_param('~user_model_vx_bias', 0.0))
+        self.user_model_vx_amp = float(rospy.get_param('~user_model_vx_amp', 0.0))
+        self.user_model_vy_amp = float(rospy.get_param('~user_model_vy_amp', 0.0))
+        self.user_model_vz_amp = float(rospy.get_param('~user_model_vz_amp', 0.0))
         self.tunnel_world = rospy.get_param('~tunnel_world', '')
 
         self._init_buffers()
@@ -361,6 +370,15 @@ class FlightRecorder:
             'run_idx': self.run_idx,
             'map_seed': self.map_seed,
             'user_model_seed': self.user_model_seed,
+            'user_model_profile': self.user_model_profile,
+            'user_model_simple': self.user_model_simple,
+            'user_model_speed': self.user_model_speed,
+            'user_model_freq_base': self.user_model_freq_base,
+            'user_model_freq_scale': self.user_model_freq_scale,
+            'user_model_vx_bias': self.user_model_vx_bias,
+            'user_model_vx_amp': self.user_model_vx_amp,
+            'user_model_vy_amp': self.user_model_vy_amp,
+            'user_model_vz_amp': self.user_model_vz_amp,
             'goal_x': self.goal_x,
             'collision_dist': self.collision_dist,
             'termination_reason': self.termination_reason,
@@ -387,6 +405,15 @@ class FlightRecorder:
             'run_idx': int(self.run_idx),
             'map_seed': int(self.map_seed),
             'user_model_seed': int(self.user_model_seed),
+            'user_model_profile': self.user_model_profile,
+            'user_model_simple': bool(self.user_model_simple),
+            'user_model_speed': float(self.user_model_speed),
+            'user_model_freq_base': float(self.user_model_freq_base),
+            'user_model_freq_scale': float(self.user_model_freq_scale),
+            'user_model_vx_bias': float(self.user_model_vx_bias),
+            'user_model_vx_amp': float(self.user_model_vx_amp),
+            'user_model_vy_amp': float(self.user_model_vy_amp),
+            'user_model_vz_amp': float(self.user_model_vz_amp),
             'goal_reached': bool(self.reached_goal),
             'collision': bool(self.collision),
             'termination_reason': self.termination_reason or 'manual_stop',
