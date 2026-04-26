@@ -106,6 +106,7 @@ class TunnelConfig:
         self.use_safety_shield = rospy.get_param("~use_safety_shield", False)
         self.safety_min_dist = rospy.get_param("~safety_min_dist", 0.3)
         self.collision_dist = rospy.get_param("~collision_dist", 0.05)
+        self.safety_start_takeoff_delta = rospy.get_param("~safety_start_takeoff_delta", 0.5)
         self.takeoff_height = rospy.get_param("~takeoff_height", 1.0)
         # Gazebo altitude-hold P-gain. The CERLAB plugin has no built-in
         # altitude hold when receiving cmd_vel; we overlay a P-controller
@@ -251,6 +252,8 @@ class TunnelNavigator:
         self.safety_stop = False
         self.collision = False  # True = min_dist < collision_dist → task failed
         self.min_dist = float("inf")  # current minimum obstacle distance
+        self.initial_z = None
+        self.safety_airborne = False
         # Tumble recovery state
         self.in_tumble_recovery = False
         self.tumble_recovery_start = None  # rospy.Time when recovery started
@@ -370,6 +373,8 @@ class TunnelNavigator:
     def _odom_cb(self, msg: Odometry):
         self.odom = msg
         self.odom_received = True
+        if self.initial_z is None:
+            self.initial_z = float(msg.pose.pose.position.z)
 
     def _mavros_state_cb(self, msg):
         self.mavros_state = msg
@@ -720,6 +725,7 @@ class TunnelNavigator:
                         "— declaring collision"
                     )
                     self.collision = True
+                    self.collision_pub.publish(Bool(data=True))
                     self._publish_stop()
                     return
 
@@ -875,6 +881,20 @@ class TunnelNavigator:
                     self.odom.pose.pose.position.y,
                     self.odom.pose.pose.position.z,
                 ], dtype=np.float32)
+                if self.initial_z is None:
+                    self.initial_z = float(pos[2])
+                if not self.safety_airborne:
+                    if pos[2] >= self.initial_z + self.cfg.safety_start_takeoff_delta:
+                        self.safety_airborne = True
+                        rospy.loginfo(
+                            f"[TunnelNav] Safety monitor airborne at z={pos[2]:.2f} "
+                            f"(baseline={self.initial_z:.2f})"
+                        )
+                    else:
+                        self.min_dist = float("inf")
+                        self.safety_stop = False
+                        rate.sleep()
+                        continue
                 if self.pcd_raycaster is not None:
                     min_dist = self.pcd_raycaster.nearest_distance(pos)
                 else:

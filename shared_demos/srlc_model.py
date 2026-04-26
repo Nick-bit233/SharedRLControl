@@ -136,7 +136,14 @@ def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_li
     print(f"[INFO] Loading SRLC model: type={model_type}, checkpoint={checkpoint_path}, action_dim={action_dim}, state_dim={state_dim}, lidar={enable_lidar}")
     policy = ppo_model(cfg_model.algo, observation_spec, action_spec, device)
     try:
-        policy.load_state_dict(torch.load(checkpoint_path, map_location=device))
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+        if isinstance(checkpoint, dict) and "policy" in checkpoint:
+            checkpoint = checkpoint["policy"]
+            print("[INFO] Detected rich checkpoint; loading checkpoint['policy'].")
+        policy.load_state_dict(checkpoint)
         print(f"[INFO] Model loaded successfully.")
     except Exception as e:
         print(f"[ERROR] Failed to load model: {e}")

@@ -45,6 +45,7 @@ user_model_seed: 288           # deterministic seed shared with IPC comparison i
 use_safety_shield: false      # Use ORCA safe_action_node
 safety_min_dist: 0.2          # Emergency stop distance (metres) — training collision=0.3m
 collision_dist: 0.05          # Below this = collision = task failed (metres)
+safety_start_takeoff_delta: 0.5  # Enable safety monitor after takeoff clears ground
 
 # --- Gazebo deployment ---
 # These only apply when use_px4=false (CERLAB Gazebo plugin).

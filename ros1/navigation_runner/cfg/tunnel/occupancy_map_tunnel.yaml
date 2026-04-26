@@ -1,6 +1,7 @@
 # Occupancy map parameters for tunnel deployment (prebuilt PCD map)
 sensor_input_mode: 1            # 0=depth camera, 1=pointcloud
 localization_mode: 1            # 0=pose, 1=odom
+verbose: false                  # Suppress high-rate "[OccMap]: Occupancy update time" logs
 
 point_cloud_topic: /pcl_render_node/cloud
 odom_topic: /CERLAB/quadcopter/odom

@@ -6,7 +6,11 @@ parser = argparse.ArgumentParser(description="Compare IPC vs RL in Tunnel Enviro
 parser.add_argument("--model_type", type=str, default="ConstrainedBeta",
                     choices=["Simple", "Residual", "Constrained", "ConstrainedBeta"])
 parser.add_argument("--checkpoint", type=str,
-                    default="/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/shared_demos/ckpts/260331/checkpoint_final.pt")
+                    default="/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/ros1/navigation_runner/cfg/ckpts/checkpoint_tunnel_M3_21500.pt")
+parser.add_argument("--mode", type=str, default="both", choices=["both", "rl", "ipc"],
+                    help="Controller(s) to run. Use --mode rl for RL-only model inference tests.")
+parser.add_argument("--rl_only", action="store_true",
+                    help="Deprecated alias for --mode rl")
 parser.add_argument("--ipc_config", type=str, default=None,
                     help="Path to IPC config YAML (default: ipc_config.yaml in same dir)")
 parser.add_argument("--no_sfc", action="store_true", help="Disable CIRI SFC for IPC")
@@ -43,6 +47,8 @@ parser.add_argument("--log_dir", type=str, default=None,
                     help="Output log directory (default: logs/ in script dir)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if args_cli.rl_only:
+    args_cli.mode = "rl"
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -359,6 +365,7 @@ def main():
 
     logger.debug(f"Headless mode: {headless}")
     logger.debug(f"Num trials: {args_cli.num_trials}, Frames/trial: {args_cli.num_frames}")
+    logger.debug(f"Run mode: {args_cli.mode}")
 
     sim_cfg = sim_utils.SimulationCfg(dt=dt, device=device)
     sim = SimulationContext(sim_cfg)
@@ -432,60 +439,68 @@ def main():
     user_model = UserModelTunnel(num_envs=1, cfg=mock_cfg, logger=logger)
     logger.debug("UserModelTunnel enabled for reproducible comparison")
 
-    # --- IPC Controller ---
-    ipc_config_path = args_cli.ipc_config or os.path.join(os.path.dirname(__file__), "ipc_config.yaml")
-    ipc_cfg = load_config(ipc_config_path)
-    if args_cli.no_sfc:
-        ipc_cfg.use_sfc = False
-
-    # Apply speed profile overrides
-    if args_cli.ipc_speed_profile == "fast":
-        ipc_cfg.max_sfc_steps = 1
-        ipc_cfg.mpc.horizon = 5
-        ipc_cfg.replan_interval = 40
-        ipc_cfg.max_obstacle_points = 80
-        ipc_cfg.obstacle_query_radius = 3.0
-        ipc_cfg.astar.resolution = 1.0
-        ipc_cfg.astar.timeout = 0.02
-        logger.info("IPC speed profile: FAST (horizon=5, sfc_steps=1)")
-    elif args_cli.ipc_speed_profile == "balanced":
-        ipc_cfg.max_sfc_steps = 2
-        ipc_cfg.mpc.horizon = 8
-        ipc_cfg.replan_interval = 30
-        ipc_cfg.max_obstacle_points = 120
-        ipc_cfg.obstacle_query_radius = 4.0
-        logger.info("IPC speed profile: BALANCED (horizon=8, sfc_steps=2)")
-
-    ipc = IPCController(cfg=ipc_cfg)
+    run_ipc = args_cli.mode in ("both", "ipc")
+    run_rl = args_cli.mode in ("both", "rl")
 
     hf, obstacles = extract_obstacles_from_heightfield(terrain_cfg.terrain_generator, tunnel_mode=True)
-    # Prefer heightfield-based map for most accurate obstacle representation.
-    gen_cfg = terrain_cfg.terrain_generator
-    if hf is not None and hf.any():
-        # Pixel 0 is at -size/2 (fence-post convention: N+1 pixels for N*h metres)
-        origin = np.array([-gen_cfg.size[0] / 2.0, -gen_cfg.size[1] / 2.0, 0.0])
-        ipc.build_map(heightfield=hf.astype(float),
-                      horizontal_scale=gen_cfg.horizontal_scale,
-                      vertical_scale=gen_cfg.vertical_scale,
-                      origin=origin)
-        logger.debug(f"IPC map built from heightfield ({len(obstacles)} obstacle clusters)")
-    elif obstacles:
-        ipc.build_map(obstacles=obstacles)
-        logger.debug(f"IPC map built with {len(obstacles)} obstacle clusters")
-    else:
-        logger.warning("No obstacles extracted — IPC runs without occupancy grid")
+    ipc = None
+    ipc_cfg = None
+    if run_ipc:
+        # --- IPC Controller ---
+        ipc_config_path = args_cli.ipc_config or os.path.join(os.path.dirname(__file__), "ipc_config.yaml")
+        ipc_cfg = load_config(ipc_config_path)
+        if args_cli.no_sfc:
+            ipc_cfg.use_sfc = False
+
+        # Apply speed profile overrides
+        if args_cli.ipc_speed_profile == "fast":
+            ipc_cfg.max_sfc_steps = 1
+            ipc_cfg.mpc.horizon = 5
+            ipc_cfg.replan_interval = 40
+            ipc_cfg.max_obstacle_points = 80
+            ipc_cfg.obstacle_query_radius = 3.0
+            ipc_cfg.astar.resolution = 1.0
+            ipc_cfg.astar.timeout = 0.02
+            logger.info("IPC speed profile: FAST (horizon=5, sfc_steps=1)")
+        elif args_cli.ipc_speed_profile == "balanced":
+            ipc_cfg.max_sfc_steps = 2
+            ipc_cfg.mpc.horizon = 8
+            ipc_cfg.replan_interval = 30
+            ipc_cfg.max_obstacle_points = 120
+            ipc_cfg.obstacle_query_radius = 4.0
+            logger.info("IPC speed profile: BALANCED (horizon=8, sfc_steps=2)")
+
+        ipc = IPCController(cfg=ipc_cfg)
+
+        # Prefer heightfield-based map for most accurate obstacle representation.
+        gen_cfg = terrain_cfg.terrain_generator
+        if hf is not None and hf.any():
+            # Pixel 0 is at -size/2 (fence-post convention: N+1 pixels for N*h metres)
+            origin = np.array([-gen_cfg.size[0] / 2.0, -gen_cfg.size[1] / 2.0, 0.0])
+            ipc.build_map(heightfield=hf.astype(float),
+                          horizontal_scale=gen_cfg.horizontal_scale,
+                          vertical_scale=gen_cfg.vertical_scale,
+                          origin=origin)
+            logger.debug(f"IPC map built from heightfield ({len(obstacles)} obstacle clusters)")
+        elif obstacles:
+            ipc.build_map(obstacles=obstacles)
+            logger.debug(f"IPC map built with {len(obstacles)} obstacle clusters")
+        else:
+            logger.warning("No obstacles extracted — IPC runs without occupancy grid")
 
     # --- RL Policy ---
     action_dim = 3
     state_dim = args_cli.state_dim
-    policy = load_srlc_model(
-        args_cli.model_type, args_cli.checkpoint, device,
-        action_dim=action_dim, enable_lidar=True, state_dim=state_dim,
-    )
-    if policy is None:
-        logger.error("Failed to load RL model!")
-        _shutdown_sim()
-        return
+    policy = None
+    if run_rl:
+        policy = load_srlc_model(
+            args_cli.model_type, args_cli.checkpoint, device,
+            action_dim=action_dim, enable_lidar=True, state_dim=state_dim,
+        )
+        if policy is None:
+            logger.error("Failed to load RL model!")
+            _shutdown_sim()
+            return
 
     NUM_FRAMES = args_cli.num_frames
     NUM_TRIALS = args_cli.num_trials
@@ -543,6 +558,7 @@ def main():
                 "num_obstacles": args_cli.num_obstacles,
                 "terrain_seed": terrain_seed,
                 "success_x": args_cli.success_x,
+                "mode": args_cli.mode,
                 "model_type": args_cli.model_type,
                 "checkpoint": args_cli.checkpoint,
                 "use_sfc": not args_cli.no_sfc,
@@ -556,8 +572,14 @@ def main():
         with open(results_path, 'w') as f:
             json.dump(output, f, indent=2, default=str)
 
+    trial_methods = []
+    if run_ipc:
+        trial_methods.append(("IPC", True))
+    if run_rl:
+        trial_methods.append(("RL", False))
+
     for trial_idx in range(NUM_TRIALS):
-        for trial_name, use_ipc in [("IPC", True), ("RL", False)]:
+        for trial_name, use_ipc in trial_methods:
             if not simulation_app.is_running():
                 break
 
@@ -758,7 +780,12 @@ def main():
     rl_agg = aggregate(all_results["RL"])
 
     print(f"\n{'='*70}")
-    print(f"COMPARISON RESULTS: IPC vs RL  ({NUM_TRIALS} trials, {NUM_FRAMES} frames/trial)")
+    title = {
+        "both": "IPC vs RL",
+        "rl": "RL only",
+        "ipc": "IPC only",
+    }[args_cli.mode]
+    print(f"RESULTS: {title}  ({NUM_TRIALS} trials, {NUM_FRAMES} frames/trial)")
     print(f"{'='*70}")
 
     # Key metrics table
@@ -803,6 +830,7 @@ def main():
             "num_obstacles": args_cli.num_obstacles,
             "terrain_seed": terrain_seed,
             "success_x": args_cli.success_x,
+            "mode": args_cli.mode,
             "model_type": args_cli.model_type,
             "checkpoint": args_cli.checkpoint,
             "use_sfc": not args_cli.no_sfc,

@@ -33,112 +33,85 @@
 
 诊断时的 airborne 对照主要围绕“旧错误基线 `spawn_x=-10`”与“中间审计参考值 `spawn_x=-7`”展开；**当前仓库默认起飞点已进一步调整为 `spawn_x=-8.5`**，用于避免当前 Gazebo PCD/world 资产组合下的起飞碰撞。
 
-历史诊断时已确认：
+## 当前 RL 外部安全护栏与碰撞判定设计
 
-- `ros1/navigation_runner/cfg/tunnel/checkpoint_best.pt`
-- `shared_demos/ckpts/260331/checkpoint_final.pt`
+这里的“外部”指不属于 M3/RL policy 本身的机制。RL 模型只输出世界系速度命令；下面这些逻辑会在模型输出前后拦截、覆盖、终止或记录实验结果。
 
-是同一份权重（SHA256 一致）：
+### 1. `TunnelNav` 在线安全护栏
 
-`5dc96155ec22cd8eca80cc6414d2ccb0f150e6fa7e774f7f0ee6280813858055`
+`tunnel_navigation.py` 在 RL 模式中运行一个 10Hz 的 `_safety_check()` 后台线程：
 
-## 关键证据
+| 状态/阈值 | 默认值 | 行为 |
+| --- | ---: | --- |
+| `safety_start_takeoff_delta` | `0.5m` | 起飞前不启用安全/碰撞检测，避免 PCD 地面点被误判为碰撞；超过初始高度 `+0.5m` 后永久启用 |
+| `safety_min_dist` | `0.2m` | 可恢复安全停车：设置 `safety_stop=True`，控制循环发布 `_publish_stop()`，即当前位置 XY + `takeoff_height` 姿态保持 |
+| `collision_dist` | `0.05m` | 不可恢复碰撞：设置 `collision=True`，发布 `/tunnel_nav/collision=True`，控制循环永久停止本 run 的 RL 推理 |
 
-### 1. ROS1 standalone 推理之前是错的
+距离来源优先使用 Python `PcdRaycaster.nearest_distance()` 对同一份 PCD 地图做全图最近点查询；只有未启用 Python PCD raycaster 时，才 fallback 到稀疏 raycast hit 点距离。这个设计是为了避免“上一帧 raycast 命中点 + 当前高速位姿”产生 stale-hit 假碰撞。
 
-对同一 checkpoint、同一 observation 张量做离线对比：
+控制循环中的优先级是：
 
-| 对比项 | mean abs diff | max abs diff |
-| --- | ---: | ---: |
-| 修复前 | `1.5619` | `4.7396` |
-| 修复后 | `0.000333` | `0.002712` |
+1. `external_stop`：由 recorder 或其他实验控制节点请求停止。
+2. `goal_reached`：到达 `goal_x` 后发布 stop。
+3. `collision`：永久停止，并保持悬停。
+4. `safety_stop`：可恢复悬停；距离恢复到 `safety_min_dist` 以上后继续模型推理。
+5. 正常路径：构造观测、发布 human command、M3 推理、发布速度命令。
 
-这说明此前 ROS1 standalone 模型实现本身就不等价，Gazebo 结果不能直接拿来和 Isaac Sim 做结论。
+Gazebo 非 PX4 路径还有两层执行侧保护：
 
-### 2. `prev_human_action` 不是小误差，而是实质性观测错误
+| 机制 | 位置 | 行为 |
+| --- | --- | --- |
+| 横向速度限幅 | `_publish_cmd()` | 将 heading-local 水平速度范数限制到 `gazebo_max_hvel`，当前为 `2.0m/s` |
+| 姿态翻倒恢复 | `_publish_cmd()` | `roll/pitch > tumble_deg` 时切到 pose hold；超过 `tumble_recover_timeout` 仍未恢复则声明 collision 并发布 `/tunnel_nav/collision=True` |
 
-把训练侧策略输入中的当前 `human_action` 换成上一时刻/零输入，动作变化量为：
+### 2. `flight_recorder.py` 实验指标与终止
 
-- `mean_abs_diff ≈ 0.7432`
-- `max_abs_diff ≈ 3.9195`
-- 典型样本前向速度差可达 `≈ 1.32 m/s`
+`flight_recorder.py` 是 batch 指标的最终来源。它订阅：
 
-因此 `compare_ipc_rl.py` 之前那条参考链路也会放大“ROS1 vs Isaac Sim”假差异。
-
-### 3. `spawn_x=-10` 会直接污染结论
-
-用同一份 checkpoint、同一份 PCD、同一套 `UserModelTunnel` 做**理想速度跟踪**离线滚动：
-
-| 起点 | 结果 |
+| 输入 | 用途 |
 | --- | --- |
-| `(-10, 0, 5)` | 第 1 步即 `safety_stop`，`min_dist=0.1` |
-| `(-7, 0, 5)` | 第 169 步在 `x≈8.59, y≈-1.67, z≈4.99` 触发 `safety_stop` |
+| `/CERLAB/quadcopter/odom_raw` | 记录位置、速度、姿态；计算 goal/timeout |
+| `/CERLAB/quadcopter/cmd_vel` | 记录最终发给 Gazebo 插件的本体系速度命令 |
+| `/experiment_control/human_cmd` | 记录 RL/IPC 使用的 user model 输入 |
+| `/tunnel_nav/collision` | 仅 RL 模式启用，接收 TunnelNav 外部碰撞判定 |
 
-这说明旧的 `spawn_x=-10` 默认值本身就会把实验放在错误起点上；即使没有 Gazebo 动力学，离线滚动也会立刻触发安全停止。
+recorder 也会加载 PCD 并建立 `cKDTree`，每帧计算真实最近障碍距离：
 
-### 4. 修正后的 Gazebo 运行与理想滚动相近
+- 起飞前：`min_obstacle_dist_monitored = inf`，不用于碰撞终止。
+- 起飞后：`min_obstacle_dist_monitored = KDTree nearest distance`。
+- 如果 `monitored_min_dist < collision_dist`，则终止为 `collision`。
+- 如果收到 `/tunnel_nav/collision=True`，也终止为 `collision`。
+- 如果 `x >= goal_x`，终止为 `goal_reached`。
+- 如果超过 `timeout_sec`，终止为 `timeout`。
 
-在 Docker 容器里使用修正后的基线拉起 headless Gazebo 后：
+因此，当前 batch 里的 “collision” 有两条来源：
 
-- 地图加载成功
-- Gazebo 插件成功起飞
-- `tunnel_navigation.py` 能正常进入“构造观测 -> 策略推理 -> 发布动作”闭环
+1. recorder 自己的 PCD KDTree 指标碰撞；
+2. RL 专属的 `/tunnel_nav/collision` 外部碰撞信号。
 
-实际 Gazebo 运行中，节点状态最终停在：
+IPC 模式没有 `/tunnel_nav/collision`，主要依赖 recorder 的 PCD KDTree 和 timeout/goal。
 
-- `x≈8.7, y≈-1.4, z≈5.0`
-- `min_d≈0.10`
-- `SAFETY_STOP`
+### 3. Gazebo 仿真器自身碰撞
 
-而理想速度跟踪离线滚动停在：
+Gazebo world 里的障碍物有 SDF collision geometry，真实接触会影响动力学，例如被墙/障碍物挡住、翻倒或速度 PID 积分异常。但当前 batch 指标**不直接订阅 Gazebo contact sensor**。仿真器碰撞会通过以下间接路径进入指标：
 
-- `x≈8.59, y≈-1.67, z≈4.99`
-- `min_dist≈0.20`
-- `safety_stop`
+1. 机体靠近 PCD 障碍物到 `collision_dist` 以下，recorder 判为 collision。
+2. 机体姿态翻倒，TunnelNav 的 tumble recovery 超时后发布 `/tunnel_nav/collision=True`。
+3. 机体被卡住但未进入上述阈值，最终通常表现为 `timeout`。
 
-两者位置已经比较接近，说明**修正后的 Gazebo 执行端没有表现出“完全不同于策略本身”的异常轨迹**。  
-换句话说，当前剩余偏差不支持“ROS1/Gazebo 动力学把一个本来正确的策略彻底带坏了”这一说法。
+### 4. 当前设计反思
 
-## 已修复代码项
+| 问题 | 影响 | 当前处理/建议 |
+| --- | --- | --- |
+| PCD 包含地面，起飞前最近距离很小 | 曾导致 RL 一启动就被判 collision，模型完全不推理 | 已用 `safety_start_takeoff_delta=0.5` 让 TunnelNav 和 recorder 都从 airborne 后开始监控 |
+| `safety_stop` 是可恢复护栏，不是终止事件 | 可能把“非常危险但未碰撞”的 episode 变成 timeout，影响 success/collision 解读 | 分析结果时同时看 `pct_close_*`、`min_obstacle_dist` 和 `termination_reason`；如果论文指标需要“护栏介入率”，应单独记录 safety_stop 时间占比 |
+| recorder 与 TunnelNav 都能判 collision | 双通道提高安全性，但也可能出现来源不一致 | 当前两者都使用 PCD 最近距离，并共享 `collision_dist=0.05`；建议后续在 `run_summary.json` 增加 `collision_source` |
+| Gazebo contact 没有直接进入 recorder | 真实接触可能只表现为 tumble 或 timeout | 若要严格统计物理碰撞，应增加 Gazebo contact topic 或插件输出，并接入 recorder |
+| RL 的 `cmd[2]` 在 Gazebo 路径不直接执行 | Gazebo 使用 altitude hold 覆盖 z 速度，因此策略 z 输出只能作为诊断信号 | 这是有意的 sim-to-Gazebo 稳定性折中；报告中应说明 Gazebo 执行命令不是完整 3D policy velocity |
+| `safety_min_dist=0.2` 小于训练碰撞半径 `0.3` | ROS1 护栏比训练终止更宽松，可能允许进入训练中已接近终止的区域 | 如果目标是保守验证，可考虑把 `safety_min_dist` 提到 `0.3` 并把它作为 safety-intervention，而不是 collision 指标 |
 
-- `ros1/navigation_runner/scripts/tunnel_deployment/policy_net.py`
-  - 修正特征拼接顺序为 `[cnn, human_action, state]`
-  - 修正 batch>1 调试日志崩溃
-  - 修正 lazy layer materialize/load 顺序
-- `tunnel_test/compare_ipc_rl.py`
-  - 改为使用当前步 `human_action`
-- `tunnel_test/tunnel_terrain.py`
-  - `INIT_POS` 改为 `[-7.0, 0.0, 5.0]`
-- `ros1/navigation_runner/launch/tunnel_comparison.launch`
-  - 历史错误基线 `spawn_x=-10.0` 已被移除；诊断过程中先回到 `-7.0` 做对齐审计
-  - 当前仓库默认值已进一步调整为 `spawn_x=-8.5`，作为 Gazebo 侧安全起飞微调
-  - `flight_recorder goal_x` 改为 `12.0`
+当前推荐解读是：`goal_reached/collision/timeout` 是 batch 终止标签；`min_obstacle_dist` 和接近障碍比例描述风险暴露；`safety_stop` 是外部护栏介入，不应被混同为模型自身成功避障。
 
-## 最终归因
-
-### 对“之前的大差距”的归因
-
-**主因是实现/配置错误，不是模型本身迁移到 ROS1/Gazebo 后天然失效。**
-
-最关键的三个污染源是：
-
-1. ROS1 standalone 策略网络实现错误；
-2. Isaac Sim 参考脚本 `compare_ipc_rl.py` 的 `human_action` 时序错误；
-3. ROS1 运行基线默认起点错误（`spawn_x=-10`）。
-
-只要这三项任意一项没排掉，之前的“ROS1 明显比 Isaac Sim 差很多”都不能作为模型迁移失败的证据。
-
-### 对“修正后仍然没有通关”的归因
-
-当前证据更支持：
-
-- 在固定 `tunnel_map_default.pcd`
-- 当前 `UserModelTunnel`（Perlin 模式）
-- 当前 checkpoint
-
-这一组合下，策略本身就会在后段靠近 `x≈8.6~8.7, y≈-1.5` 的障碍区域并触发安全停止。  
-
-因此，**修正后的剩余问题更像是策略/人机输入分布/固定地图实例上的行为问题，而不是 ROS1/Gazebo 迁移实现错误**。
 
 ## 仍需注意的事项
 
