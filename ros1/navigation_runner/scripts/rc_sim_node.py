@@ -46,7 +46,7 @@ class RCSimulator:
         self.user_model_vx_bias = rospy.get_param('~user_model_vx_bias', 1.5)
         self.user_model_vx_amp = rospy.get_param('~user_model_vx_amp', 0.5)
         self.user_model_vy_amp = rospy.get_param('~user_model_vy_amp', 2.0)
-        self.user_model_vz_amp = rospy.get_param('~user_model_vz_amp', 0.0)
+        self.user_model_vz_amp = rospy.get_param('~user_model_vz_amp', 0.2)
         self.user_model_smoothness_base = rospy.get_param('~user_model_smoothness_base', 0.4)
         self.user_model_smoothness_scale = rospy.get_param('~user_model_smoothness_scale', 0.5)
         self.user_model_laziness = rospy.get_param('~user_model_laziness', 0.3)

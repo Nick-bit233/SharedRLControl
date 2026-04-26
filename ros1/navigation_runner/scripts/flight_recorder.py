@@ -19,6 +19,12 @@ except ImportError:
     HAS_SCIPY = False
 
 
+def _param_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
 class FlightRecorder:
     def __init__(self):
         rospy.init_node('flight_recorder', anonymous=False)
@@ -55,7 +61,16 @@ class FlightRecorder:
         self.user_model_vx_bias = float(rospy.get_param('~user_model_vx_bias', 0.0))
         self.user_model_vx_amp = float(rospy.get_param('~user_model_vx_amp', 0.0))
         self.user_model_vy_amp = float(rospy.get_param('~user_model_vy_amp', 0.0))
-        self.user_model_vz_amp = float(rospy.get_param('~user_model_vz_amp', 0.0))
+        self.user_model_vz_amp = float(rospy.get_param('~user_model_vz_amp', 0.2))
+        self.gazebo_z_mode = rospy.get_param('~gazebo_z_mode', '')
+        self.gazebo_policy_z_max = float(rospy.get_param('~gazebo_policy_z_max', 0.0))
+        self.gazebo_z_blend_alpha = float(rospy.get_param('~gazebo_z_blend_alpha', 0.0))
+        self.gazebo_policy_z_takeoff_gate = _param_bool(
+            rospy.get_param('~gazebo_policy_z_takeoff_gate', True)
+        )
+        self.gazebo_policy_z_gate_tolerance = float(
+            rospy.get_param('~gazebo_policy_z_gate_tolerance', 0.0)
+        )
         self.tunnel_world = rospy.get_param('~tunnel_world', '')
 
         self._init_buffers()
@@ -64,6 +79,8 @@ class FlightRecorder:
         self.latest_odom = None
         self.latest_cmd = None
         self.latest_human_cmd = None
+        self.latest_policy_cmd = None
+        self.latest_z_policy_active = False
         self.reached_goal = False
         self.collision = False
         self.data_saved = False
@@ -85,6 +102,10 @@ class FlightRecorder:
             '/CERLAB/quadcopter/cmd_vel', TwistStamped, self._cmd_cb, queue_size=1)
         self.human_cmd_sub = rospy.Subscriber(
             '/experiment_control/human_cmd', TwistStamped, self._human_cmd_cb, queue_size=1)
+        self.policy_cmd_sub = rospy.Subscriber(
+            '/tunnel_nav/policy_cmd', TwistStamped, self._policy_cmd_cb, queue_size=1)
+        self.z_policy_active_sub = rospy.Subscriber(
+            '/tunnel_nav/z_policy_active', Bool, self._z_policy_active_cb, queue_size=1)
         self.collision_sub = None
         if self.collision_topic:
             self.collision_sub = rospy.Subscriber(
@@ -112,6 +133,8 @@ class FlightRecorder:
             'timestamps': [], 'position': [], 'orientation': [],
             'velocity': [], 'cmd_vel': [], 'cmd_vel_world': [],
             'human_cmd_body': [], 'human_cmd_world': [],
+            'policy_cmd_world': [], 'policy_cmd_body': [], 'policy_cmd_valid': [],
+            'z_policy_active': [],
             'angular_vel': [], 'yaw': [],
             'min_obstacle_dist': [], 'min_obstacle_dist_monitored': [],
             'collision_flags': [],
@@ -171,6 +194,12 @@ class FlightRecorder:
     def _human_cmd_cb(self, msg):
         self.latest_human_cmd = msg
 
+    def _policy_cmd_cb(self, msg):
+        self.latest_policy_cmd = msg
+
+    def _z_policy_active_cb(self, msg):
+        self.latest_z_policy_active = bool(msg.data)
+
     def _collision_cb(self, msg):
         self.external_collision = bool(msg.data)
         if not self.external_collision or not self.recording or self.termination_reason:
@@ -229,6 +258,16 @@ class FlightRecorder:
             cos_yaw * cmd_local[0] - sin_yaw * cmd_local[1],
             sin_yaw * cmd_local[0] + cos_yaw * cmd_local[1],
             cmd_local[2],
+        ], dtype=np.float32)
+
+    @staticmethod
+    def _world_to_local(cmd_world, yaw):
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        return np.array([
+            cos_yaw * cmd_world[0] + sin_yaw * cmd_world[1],
+            -sin_yaw * cmd_world[0] + cos_yaw * cmd_world[1],
+            cmd_world[2],
         ], dtype=np.float32)
 
     def _request_termination(self, reason, t, min_dist):
@@ -303,6 +342,16 @@ class FlightRecorder:
             human_cmd_body[:] = (h.x, h.y, h.z)
         human_cmd_world = self._local_to_world(human_cmd_body, yaw)
 
+        policy_cmd_world = np.zeros(3, dtype=np.float32)
+        policy_cmd_valid = False
+        if self.latest_policy_cmd is not None:
+            age = (rospy.Time.now() - self.latest_policy_cmd.header.stamp).to_sec()
+            policy_cmd_valid = age <= 0.25
+            if policy_cmd_valid:
+                pc = self.latest_policy_cmd.twist.linear
+                policy_cmd_world[:] = (pc.x, pc.y, pc.z)
+        policy_cmd_body = self._world_to_local(policy_cmd_world, yaw)
+
         min_dist = float('inf')
         monitored_min_dist = float('inf')
         collision_flag = False
@@ -320,6 +369,10 @@ class FlightRecorder:
         self.buffers['cmd_vel_world'].append(cmd_world.tolist())
         self.buffers['human_cmd_body'].append(human_cmd_body.tolist())
         self.buffers['human_cmd_world'].append(human_cmd_world.tolist())
+        self.buffers['policy_cmd_world'].append(policy_cmd_world.tolist())
+        self.buffers['policy_cmd_body'].append(policy_cmd_body.tolist())
+        self.buffers['policy_cmd_valid'].append(policy_cmd_valid)
+        self.buffers['z_policy_active'].append(bool(self.latest_z_policy_active))
         self.buffers['angular_vel'].append([w.x, w.y, w.z])
         self.buffers['yaw'].append(yaw)
         self.buffers['min_obstacle_dist'].append(min_dist)
@@ -358,7 +411,24 @@ class FlightRecorder:
         position = np.array(self.buffers['position'], dtype=np.float32)
         cmd_world = np.array(self.buffers['cmd_vel_world'], dtype=np.float32)
         human_world = np.array(self.buffers['human_cmd_world'], dtype=np.float32)
+        policy_world = np.array(self.buffers['policy_cmd_world'], dtype=np.float32)
+        policy_valid = np.array(self.buffers['policy_cmd_valid'], dtype=bool)
+        z_policy_active = np.array(self.buffers['z_policy_active'], dtype=bool)
         collision_flags = np.array(self.buffers['collision_flags'], dtype=bool)
+        if cmd_world.size and policy_world.size and np.any(policy_valid):
+            vz_delta = policy_world[policy_valid, 2] - cmd_world[policy_valid, 2]
+            mean_abs_policy_exec_vz_delta = float(np.mean(np.abs(vz_delta)))
+            max_abs_policy_exec_vz_delta = float(np.max(np.abs(vz_delta)))
+            mean_policy_vz = float(np.mean(policy_world[policy_valid, 2]))
+            mean_executed_vz = float(np.mean(cmd_world[policy_valid, 2]))
+        else:
+            mean_abs_policy_exec_vz_delta = 0.0
+            max_abs_policy_exec_vz_delta = 0.0
+            mean_policy_vz = 0.0
+            mean_executed_vz = 0.0
+        z_policy_active_fraction = (
+            float(np.mean(z_policy_active)) if z_policy_active.size else 0.0
+        )
 
         save_dict = {
             'method': self.method,
@@ -379,6 +449,12 @@ class FlightRecorder:
             'user_model_vx_amp': self.user_model_vx_amp,
             'user_model_vy_amp': self.user_model_vy_amp,
             'user_model_vz_amp': self.user_model_vz_amp,
+            'gazebo_z_mode': self.gazebo_z_mode,
+            'gazebo_policy_z_max': self.gazebo_policy_z_max,
+            'gazebo_z_blend_alpha': self.gazebo_z_blend_alpha,
+            'gazebo_policy_z_takeoff_gate': self.gazebo_policy_z_takeoff_gate,
+            'gazebo_policy_z_gate_tolerance': self.gazebo_policy_z_gate_tolerance,
+            'z_policy_active_fraction': z_policy_active_fraction,
             'goal_x': self.goal_x,
             'collision_dist': self.collision_dist,
             'termination_reason': self.termination_reason,
@@ -389,6 +465,7 @@ class FlightRecorder:
             'controller_type': str(self.method).upper(),
             'positions': position,
             'human_vels_w': human_world,
+            'policy_vels_w': policy_world,
             'ctrl_vels_w': cmd_world,
             'collisions': collision_flags,
         }
@@ -414,6 +491,16 @@ class FlightRecorder:
             'user_model_vx_amp': float(self.user_model_vx_amp),
             'user_model_vy_amp': float(self.user_model_vy_amp),
             'user_model_vz_amp': float(self.user_model_vz_amp),
+            'gazebo_z_mode': self.gazebo_z_mode,
+            'gazebo_policy_z_max': float(self.gazebo_policy_z_max),
+            'gazebo_z_blend_alpha': float(self.gazebo_z_blend_alpha),
+            'gazebo_policy_z_takeoff_gate': bool(self.gazebo_policy_z_takeoff_gate),
+            'gazebo_policy_z_gate_tolerance': float(self.gazebo_policy_z_gate_tolerance),
+            'z_policy_active_fraction': z_policy_active_fraction,
+            'mean_abs_policy_exec_vz_delta': mean_abs_policy_exec_vz_delta,
+            'max_abs_policy_exec_vz_delta': max_abs_policy_exec_vz_delta,
+            'mean_policy_vz': mean_policy_vz,
+            'mean_executed_vz': mean_executed_vz,
             'goal_reached': bool(self.reached_goal),
             'collision': bool(self.collision),
             'termination_reason': self.termination_reason or 'manual_stop',

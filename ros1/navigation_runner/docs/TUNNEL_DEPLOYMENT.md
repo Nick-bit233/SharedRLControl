@@ -118,6 +118,8 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 | `rviz` | `true` | 启动 RViz |
 | `record` | `true` | 记录飞行数据 |
 | `output_dir` | `/root/results` | 数据输出目录 |
+| `gazebo_z_mode` | `alt_hold` | RL z 速度执行模式：`alt_hold`、`policy`、`policy_clamped` 或 `blend` |
+| `gazebo_policy_z_takeoff_gate` | `true` | `policy`/`policy_clamped`/`blend` 下先用高度保持起飞，接近 `takeoff_height` 后再执行 policy z |
 
 ### 1.5 键盘控制模式
 
@@ -260,6 +262,8 @@ ros1/uav_simulator/worlds/                          → /root/catkin_ws/src/uav_
 | 话题 | 类型 | 频率 | 说明 |
 |------|------|------|------|
 | `/CERLAB/quadcopter/cmd_vel` | `geometry_msgs/TwistStamped` | 20 Hz | 速度指令（body frame） |
+| `/tunnel_nav/policy_cmd` | `geometry_msgs/TwistStamped` | 20 Hz | RL policy 原始世界系速度输出（用于和实际 cmd_vel 对比） |
+| `/tunnel_nav/z_policy_active` | `std_msgs/Bool` | 20 Hz | policy z 是否已通过起飞门控并接管执行 |
 | `/CERLAB/quadcopter/takeoff` | `std_msgs/Empty` | 一次 | 起飞指令（CERLAB 插件） |
 | `/tunnel_nav/lidar_cloud` | `sensor_msgs/PointCloud2` | 30 Hz | LiDAR 射线命中点（RViz 红色点云） |
 | `/tunnel_nav/cmd_vel_vis` | `visualization_msgs/MarkerArray` | 20 Hz | RL 速度指令箭头（绿色） |
@@ -339,7 +343,7 @@ user_model_freq_scale: 0.2
 user_model_vx_bias: 1.5
 user_model_vx_amp: 0.5
 user_model_vy_amp: 2.0
-user_model_vz_amp: 0.0  # 主实验保持高度中性
+user_model_vz_amp: 0.2  # 对齐 M3 tunnel offline dataset 的小幅 z 输入
 user_model_smoothness_base: 0.4
 user_model_smoothness_scale: 0.5
 user_model_laziness: 0.3
@@ -356,7 +360,7 @@ collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失�
 ### UserModel 模式
 
 - **m3_diverse 模式**（默认）：对齐 `trajectory_gen_tunnel.yaml` 的 feasible-diverse pilot，
-  `vx≈1.5±0.5`、`vy` 为宽 Perlin 扰动、`vz=0`。这是 M3 ROS1 批量主实验推荐设置。
+  `vx≈1.5±0.5`、`vy` 为宽 Perlin 扰动、`vz≈±0.2` 小幅扰动。这是 M3 ROS1 批量主实验推荐设置；如需复现旧 ROS1 高度中性输入，可显式设 `user_model_vz_amp:=0.0` / `--user-model-vz-amp 0.0`。
 - **legacy_perlin 模式**：旧 ROS1 online user model，`vx=user_model_speed`、
   `vy=user_model_speed*Perlin`、`vz=0`。仅建议用于 ablation / 历史结果复现。
 - **simple 模式** (`user_model_simple: true` 或 `user_model_profile:=simple`)：
@@ -409,7 +413,7 @@ mean in (0,1) → linear map to [-action_limit, action_limit]
 - **体帧 (body)**: 前=x, 左=y, 上=z — 观测空间
 - **世界帧 (world)**: ENU — 动作输出空间
 - **四元数**: 训练使用 [w,x,y,z]（scalar-first），ROS 使用 [x,y,z,w]，导航节点内部自动转换
-- **cmd_vel**: 策略输出世界帧速度 → 用 yaw 旋转矩阵转为 body 帧 → 发布给 CERLAB 插件
+- **cmd_vel**: 策略输出世界帧速度 → 用 yaw 旋转矩阵转为 body 帧 → 发布给 CERLAB 插件；默认 `gazebo_z_mode=alt_hold` 会用高度保持覆盖 z，`policy`/`policy_clamped`/`blend` 可用于 A/B 验证完整或部分 z 速度执行。为避免起飞低空阶段偏离训练初始高度，`gazebo_policy_z_takeoff_gate=true` 时会先用高度保持，达到 `takeoff_height - gazebo_policy_z_gate_tolerance` 后再让 policy z 接管。
 
 ### 6.3.1 隧道地图坐标系
 
@@ -670,7 +674,7 @@ docker-compose.tunnel.yml             # 持久化开发容器
 | Beta min_concentration | 2.0 | 2.0 | ✅ |
 | 确定性推理 | Beta mode | Beta mode | ✅ |
 | residual_scale | 从 checkpoint | 从 checkpoint | ✅ |
-| pilot 分布 | offline diverse dataset: `vx≈1.5±0.5`, broad `vy` | `m3_diverse`: `vx≈1.5±0.5`, broad `vy`, `vz=0` | ✅ 主分布近似；非逐样本 replay |
+| pilot 分布 | offline diverse dataset: `vx≈1.5±0.5`, broad `vy`, small `vz≈±0.2` | `m3_diverse`: `vx≈1.5±0.5`, broad `vy`, `vz_amp=0.2` | ✅ 主分布近似；非逐样本 replay |
 
 ## 12. 常见问题
 
@@ -944,6 +948,8 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
     CUDA 版镜像，请保持 `--device cpu`。脚本现在会把无效的 `cuda:*` 请求自动回退到 `cpu`
   - `--launch-timeout`：批处理外层 watchdog
   - `--goal-x` / `--collision-dist`：统一终止阈值
+  - `--gazebo-z-mode`：默认 `alt_hold`；可设为 `policy`/`policy_clamped`/`blend` 评估执行完整 3D policy velocity 的影响
+  - `--disable-gazebo-policy-z-takeoff-gate`：关闭默认起飞门控，用于复现从低空立即执行 policy z 的纯 policy mode
   - `--user-model-speed` / `--user-model-freq-*`：共享 RL / IPC 输入配置
   - `--num-obstacles` / `--cuboid-ratio`：每批次地图生成参数
 

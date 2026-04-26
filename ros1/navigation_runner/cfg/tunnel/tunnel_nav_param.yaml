@@ -35,7 +35,7 @@ user_model_freq_scale: 0.2    # M3 diverse-pilot frequency scale
 user_model_vx_bias: 1.5       # M3 directional-bias forward component
 user_model_vx_amp: 0.5        # M3 vx variation: 1.5 +/- 0.5
 user_model_vy_amp: 2.0        # M3 broad lateral pilot diversity
-user_model_vz_amp: 0.0        # keep Gazebo main run altitude-neutral
+user_model_vz_amp: 0.2        # match M3 tunnel dataset z amp (max_speed_z * 0.2)
 user_model_smoothness_base: 0.4
 user_model_smoothness_scale: 0.5
 user_model_laziness: 0.3
@@ -52,6 +52,11 @@ safety_start_takeoff_delta: 0.5  # Enable safety monitor after takeoff clears gr
 gazebo_max_hvel: 2.0          # m/s max horizontal cmd_vel (match training action_limit)
 alt_hold_kp: 1.5              # P-gain for altitude hold
 alt_hold_max_vz: 2.0          # max vertical velocity for altitude hold
+gazebo_z_mode: "alt_hold"     # alt_hold|policy|policy_clamped|blend
+gazebo_policy_z_max: 2.0      # max |vz| for policy_clamped/blend modes
+gazebo_z_blend_alpha: 0.5     # blend: alpha*policy_vz + (1-alpha)*alt_hold
+gazebo_policy_z_takeoff_gate: true  # hold altitude until close to training init height
+gazebo_policy_z_gate_tolerance: 0.5 # enable policy z when z >= takeoff_height - tolerance
 tumble_deg: 45.0              # roll/pitch threshold for tumble detection (degrees)
 tumble_recover_height: 1.0    # metres above takeoff_height during tumble recovery
 tumble_recover_timeout: 10.0  # seconds before declaring tumble recovery failed

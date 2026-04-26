@@ -55,6 +55,12 @@ from tunnel_deployment.quat_utils import quat_rotate_inverse
 from tunnel_deployment.pcd_raycast import PcdRaycaster
 
 
+def _param_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 class TunnelConfig:
     """Configuration for tunnel deployment (mirrors training YAML)."""
 
@@ -90,7 +96,7 @@ class TunnelConfig:
         self.user_model_vx_bias = rospy.get_param("~user_model_vx_bias", 1.5)
         self.user_model_vx_amp = rospy.get_param("~user_model_vx_amp", 0.5)
         self.user_model_vy_amp = rospy.get_param("~user_model_vy_amp", 2.0)
-        self.user_model_vz_amp = rospy.get_param("~user_model_vz_amp", 0.0)
+        self.user_model_vz_amp = rospy.get_param("~user_model_vz_amp", 0.2)
         self.user_model_smoothness_base = rospy.get_param("~user_model_smoothness_base", 0.4)
         self.user_model_smoothness_scale = rospy.get_param("~user_model_smoothness_scale", 0.5)
         self.user_model_laziness = rospy.get_param("~user_model_laziness", 0.3)
@@ -113,6 +119,15 @@ class TunnelConfig:
         # so the drone tracks takeoff_height.
         self.alt_hold_kp = rospy.get_param("~alt_hold_kp", 1.5)
         self.alt_hold_max_vz = rospy.get_param("~alt_hold_max_vz", 2.0)
+        self.gazebo_z_mode = str(rospy.get_param("~gazebo_z_mode", "alt_hold")).lower()
+        self.gazebo_policy_z_max = float(rospy.get_param("~gazebo_policy_z_max", 2.0))
+        self.gazebo_z_blend_alpha = float(rospy.get_param("~gazebo_z_blend_alpha", 0.5))
+        self.gazebo_policy_z_takeoff_gate = _param_bool(
+            rospy.get_param("~gazebo_policy_z_takeoff_gate", True)
+        )
+        self.gazebo_policy_z_gate_tolerance = float(
+            rospy.get_param("~gazebo_policy_z_gate_tolerance", 0.5)
+        )
         # Gazebo max horizontal velocity clamp. The CERLAB velocity PID can
         # pitch excessively when the drone is physically blocked but still
         # receiving high-speed commands ("PID windup"). Clamping prevents
@@ -163,6 +178,15 @@ class TunnelNavigator:
     def __init__(self):
         rospy.init_node("tunnel_navigator", anonymous=False)
         self.cfg = TunnelConfig()
+        valid_z_modes = {"alt_hold", "policy", "policy_clamped", "blend"}
+        if self.cfg.gazebo_z_mode not in valid_z_modes:
+            rospy.logfatal(
+                "[TunnelNav] Invalid gazebo_z_mode=%s; expected one of %s",
+                self.cfg.gazebo_z_mode,
+                sorted(valid_z_modes),
+            )
+            rospy.signal_shutdown("Invalid gazebo_z_mode")
+            raise ValueError(f"Invalid gazebo_z_mode: {self.cfg.gazebo_z_mode}")
 
         # ---- Load policy ----
         rospy.loginfo(f"[TunnelNav] Loading checkpoint: {self.cfg.checkpoint_path}")
@@ -209,6 +233,13 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   lidar          : {self.cfg.lidar_hbeams}h x {self.cfg.lidar_vbeams}v, range={self.cfg.lidar_range}m")
         rospy.loginfo(f"[TunnelNav]   deterministic  : {self.cfg.deterministic}")
         rospy.loginfo(f"[TunnelNav]   height_control : {self.cfg.height_control}")
+        rospy.loginfo(
+            f"[TunnelNav]   gazebo_z_mode : {self.cfg.gazebo_z_mode} "
+            f"(policy_z_max={self.cfg.gazebo_policy_z_max}, "
+            f"blend_alpha={self.cfg.gazebo_z_blend_alpha}, "
+            f"takeoff_gate={self.cfg.gazebo_policy_z_takeoff_gate}, "
+            f"gate_tol={self.cfg.gazebo_policy_z_gate_tolerance})"
+        )
         rospy.loginfo(f"[TunnelNav] ===================")
 
         # ---- User model OR keyboard input ----
@@ -254,6 +285,7 @@ class TunnelNavigator:
         self.min_dist = float("inf")  # current minimum obstacle distance
         self.initial_z = None
         self.safety_airborne = False
+        self.z_policy_active = False
         # Tumble recovery state
         self.in_tumble_recovery = False
         self.tumble_recovery_start = None  # rospy.Time when recovery started
@@ -347,6 +379,12 @@ class TunnelNavigator:
             "/tunnel_nav/collision", Bool, queue_size=2, latch=True
         )
         self.collision_pub.publish(Bool(data=False))
+        self.policy_cmd_pub = rospy.Publisher(
+            "/tunnel_nav/policy_cmd", TwistStamped, queue_size=2
+        )
+        self.z_policy_active_pub = rospy.Publisher(
+            "/tunnel_nav/z_policy_active", Bool, queue_size=2
+        )
         self.human_cmd_pub = rospy.Publisher(
             "/experiment_control/human_cmd", TwistStamped, queue_size=2
         )
@@ -647,6 +685,7 @@ class TunnelNavigator:
             )
 
         # 3. Publish
+        self._publish_policy_cmd(cmd)
         self._publish_cmd(cmd)
 
         # 4. Visualise
@@ -784,13 +823,61 @@ class TunnelNavigator:
                 -self.cfg.alt_hold_max_vz,
                 self.cfg.alt_hold_max_vz,
             )
+            policy_vz = float(cmd_local[2])
+            policy_vz_clamped = np.clip(
+                policy_vz,
+                -self.cfg.gazebo_policy_z_max,
+                self.cfg.gazebo_policy_z_max,
+            )
+            z_mode = str(self.cfg.gazebo_z_mode).lower()
+            use_policy_z = True
+            if z_mode == "alt_hold":
+                use_policy_z = False
+                self.z_policy_active = False
+            elif not self.cfg.gazebo_policy_z_takeoff_gate:
+                self.z_policy_active = True
+            elif self.cfg.gazebo_policy_z_takeoff_gate and not self.z_policy_active:
+                gate_height = self.cfg.takeoff_height - self.cfg.gazebo_policy_z_gate_tolerance
+                if cur_z >= gate_height:
+                    self.z_policy_active = True
+                    rospy.loginfo(
+                        f"[TunnelNav] Gazebo policy z enabled at z={cur_z:.2f} "
+                        f"(gate={gate_height:.2f}, mode={z_mode})"
+                    )
+                else:
+                    use_policy_z = False
+                    rospy.loginfo_throttle(
+                        2.0,
+                        f"[TunnelNav] Holding altitude until z policy gate: "
+                        f"z={cur_z:.2f} < {gate_height:.2f} (mode={z_mode})",
+                    )
+
+            if not use_policy_z:
+                vz_cmd = vz_hold
+            elif z_mode == "policy":
+                vz_cmd = policy_vz
+            elif z_mode == "policy_clamped":
+                vz_cmd = policy_vz_clamped
+            elif z_mode == "blend":
+                alpha = float(np.clip(self.cfg.gazebo_z_blend_alpha, 0.0, 1.0))
+                vz_cmd = alpha * policy_vz_clamped + (1.0 - alpha) * vz_hold
+            elif z_mode == "alt_hold":
+                vz_cmd = vz_hold
+            else:
+                rospy.logwarn_throttle(
+                    5.0,
+                    f"[TunnelNav] Unknown gazebo_z_mode={self.cfg.gazebo_z_mode}; using alt_hold",
+                )
+                vz_cmd = vz_hold
+                self.z_policy_active = False
 
             msg = TwistStamped()
             msg.header.stamp = rospy.Time.now()
             msg.twist.linear.x = float(cmd_local[0])
             msg.twist.linear.y = float(cmd_local[1])
-            msg.twist.linear.z = float(vz_hold)
+            msg.twist.linear.z = float(vz_cmd)
             self.action_pub.publish(msg)
+            self.z_policy_active_pub.publish(Bool(data=bool(self.z_policy_active)))
 
     def _publish_stop(self):
         """Hover in place with level attitude.
@@ -800,6 +887,9 @@ class TunnelNavigator:
         position and attitude — plain zero-velocity cmd_vel doesn't
         fight attitude drift as effectively.
         """
+        self.z_policy_active = False
+        if hasattr(self, "z_policy_active_pub"):
+            self.z_policy_active_pub.publish(Bool(data=False))
         pose_msg = PoseStamped()
         pose_msg.header.stamp = rospy.Time.now()
         pose_msg.header.frame_id = "world"
@@ -818,6 +908,15 @@ class TunnelNavigator:
         msg.twist.linear.y = float(cmd_body[1])
         msg.twist.linear.z = float(cmd_body[2])
         self.human_cmd_pub.publish(msg)
+
+    def _publish_policy_cmd(self, cmd_world: np.ndarray):
+        msg = TwistStamped()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = "map"
+        msg.twist.linear.x = float(cmd_world[0])
+        msg.twist.linear.y = float(cmd_world[1])
+        msg.twist.linear.z = float(cmd_world[2])
+        self.policy_cmd_pub.publish(msg)
 
     # ==================================================================
     # Takeoff

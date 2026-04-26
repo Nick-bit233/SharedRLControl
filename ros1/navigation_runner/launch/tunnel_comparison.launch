@@ -27,7 +27,7 @@
     <arg name="user_model_vx_bias" default="1.5"/>
     <arg name="user_model_vx_amp" default="0.5"/>
     <arg name="user_model_vy_amp" default="2.0"/>
-    <arg name="user_model_vz_amp" default="0.0"/>
+    <arg name="user_model_vz_amp" default="0.2"/>
     <arg name="user_model_smoothness_base" default="0.4"/>
     <arg name="user_model_smoothness_scale" default="0.5"/>
     <arg name="user_model_laziness" default="0.3"/>
@@ -36,6 +36,11 @@
     <arg name="output_dir" default="/root/results"/>
     <arg name="goal_x" default="12.0"/>
     <arg name="collision_dist" default="0.05"/>
+    <arg name="gazebo_z_mode" default="alt_hold"/>
+    <arg name="gazebo_policy_z_max" default="2.0"/>
+    <arg name="gazebo_z_blend_alpha" default="0.5"/>
+    <arg name="gazebo_policy_z_takeoff_gate" default="true"/>
+    <arg name="gazebo_policy_z_gate_tolerance" default="0.5"/>
     <arg name="auto_terminate" default="true"/>
     <arg name="shutdown_on_complete" default="true"/>
     <arg name="timeout_sec" default="0.0"/>
@@ -122,6 +127,11 @@
             <param name="user_model_seed" value="$(arg user_model_seed)"/>
             <param name="goal_x" value="$(arg goal_x)"/>
             <param name="collision_dist" value="$(arg collision_dist)"/>
+            <param name="gazebo_z_mode" value="$(arg gazebo_z_mode)"/>
+            <param name="gazebo_policy_z_max" value="$(arg gazebo_policy_z_max)"/>
+            <param name="gazebo_z_blend_alpha" value="$(arg gazebo_z_blend_alpha)"/>
+            <param name="gazebo_policy_z_takeoff_gate" value="$(arg gazebo_policy_z_takeoff_gate)"/>
+            <param name="gazebo_policy_z_gate_tolerance" value="$(arg gazebo_policy_z_gate_tolerance)"/>
         </node>
     </group>
 
@@ -184,6 +194,11 @@
             <param name="user_model_vx_amp" value="$(arg user_model_vx_amp)"/>
             <param name="user_model_vy_amp" value="$(arg user_model_vy_amp)"/>
             <param name="user_model_vz_amp" value="$(arg user_model_vz_amp)"/>
+            <param name="gazebo_z_mode" value="$(arg gazebo_z_mode)"/>
+            <param name="gazebo_policy_z_max" value="$(arg gazebo_policy_z_max)"/>
+            <param name="gazebo_z_blend_alpha" value="$(arg gazebo_z_blend_alpha)"/>
+            <param name="gazebo_policy_z_takeoff_gate" value="$(arg gazebo_policy_z_takeoff_gate)"/>
+            <param name="gazebo_policy_z_gate_tolerance" value="$(arg gazebo_policy_z_gate_tolerance)"/>
             <param name="tunnel_world" value="$(arg tunnel_world)"/>
         </node>
     </group>

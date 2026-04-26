@@ -62,6 +62,8 @@ Gazebo 非 PX4 路径还有两层执行侧保护：
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 横向速度限幅 | `_publish_cmd()` | 将 heading-local 水平速度范数限制到 `gazebo_max_hvel`，当前为 `2.0m/s` |
+| z 速度执行模式 | `_publish_cmd()` | `gazebo_z_mode=alt_hold` 时用高度保持覆盖 policy z；`policy`/`policy_clamped`/`blend` 可用于验证完整 3D policy velocity 或折中模式 |
+| policy z 起飞门控 | `_publish_cmd()` | 默认 `gazebo_policy_z_takeoff_gate=true`，在 `z >= takeoff_height - gazebo_policy_z_gate_tolerance` 前仍使用 altitude hold，避免低空起飞阶段进入训练外分布 |
 | 姿态翻倒恢复 | `_publish_cmd()` | `roll/pitch > tumble_deg` 时切到 pose hold；超过 `tumble_recover_timeout` 仍未恢复则声明 collision 并发布 `/tunnel_nav/collision=True` |
 
 ### 2. `flight_recorder.py` 实验指标与终止
@@ -73,6 +75,8 @@ Gazebo 非 PX4 路径还有两层执行侧保护：
 | `/CERLAB/quadcopter/odom_raw` | 记录位置、速度、姿态；计算 goal/timeout |
 | `/CERLAB/quadcopter/cmd_vel` | 记录最终发给 Gazebo 插件的本体系速度命令 |
 | `/experiment_control/human_cmd` | 记录 RL/IPC 使用的 user model 输入 |
+| `/tunnel_nav/policy_cmd` | 记录 RL policy 原始世界系速度输出，用于和实际执行的 `cmd_vel` 对比 |
+| `/tunnel_nav/z_policy_active` | 记录 `policy`/`policy_clamped`/`blend` 的 z 轴是否已经通过起飞门控 |
 | `/tunnel_nav/collision` | 仅 RL 模式启用，接收 TunnelNav 外部碰撞判定 |
 
 recorder 也会加载 PCD 并建立 `cKDTree`，每帧计算真实最近障碍距离：
@@ -107,7 +111,8 @@ Gazebo world 里的障碍物有 SDF collision geometry，真实接触会影响�
 | `safety_stop` 是可恢复护栏，不是终止事件 | 可能把“非常危险但未碰撞”的 episode 变成 timeout，影响 success/collision 解读 | 分析结果时同时看 `pct_close_*`、`min_obstacle_dist` 和 `termination_reason`；如果论文指标需要“护栏介入率”，应单独记录 safety_stop 时间占比 |
 | recorder 与 TunnelNav 都能判 collision | 双通道提高安全性，但也可能出现来源不一致 | 当前两者都使用 PCD 最近距离，并共享 `collision_dist=0.05`；建议后续在 `run_summary.json` 增加 `collision_source` |
 | Gazebo contact 没有直接进入 recorder | 真实接触可能只表现为 tumble 或 timeout | 若要严格统计物理碰撞，应增加 Gazebo contact topic 或插件输出，并接入 recorder |
-| RL 的 `cmd[2]` 在 Gazebo 路径不直接执行 | Gazebo 使用 altitude hold 覆盖 z 速度，因此策略 z 输出只能作为诊断信号 | 这是有意的 sim-to-Gazebo 稳定性折中；报告中应说明 Gazebo 执行命令不是完整 3D policy velocity |
+| RL 的 `cmd[2]` 默认不直接执行 | 默认 `gazebo_z_mode=alt_hold` 仍使用高度保持覆盖 z 速度，闭环状态分布会偏离完整 3D 速度执行 | 已加入 `gazebo_z_mode=policy|policy_clamped|blend` 做 A/B；recorder 同时保存 `policy_cmd_*`、最终 `cmd_vel*` 和 `z_policy_active` |
+| 低空就执行完整 policy z | policy mode 若从 `z≈0.4m` 开始接管 z，M3 会大量输出 `±1.96m/s`，这不是 user model z 采样问题，而是起飞阶段 OOD 推理 | 已默认启用 policy z 起飞门控；如需复现纯 policy mode，可显式关闭 `gazebo_policy_z_takeoff_gate` |
 | `safety_min_dist=0.2` 小于训练碰撞半径 `0.3` | ROS1 护栏比训练终止更宽松，可能允许进入训练中已接近终止的区域 | 如果目标是保守验证，可考虑把 `safety_min_dist` 提到 `0.3` 并把它作为 safety-intervention，而不是 collision 指标 |
 
 当前推荐解读是：`goal_reached/collision/timeout` 是 batch 终止标签；`min_obstacle_dist` 和接近障碍比例描述风险暴露；`safety_stop` 是外部护栏介入，不应被混同为模型自身成功避障。
@@ -118,7 +123,7 @@ Gazebo world 里的障碍物有 SDF collision geometry，真实接触会影响�
 1. 本次没有重新完整跑一遍修正后的 Isaac Sim `compare_ipc_rl.py` 与 Gazebo 做逐帧对齐；如果后续要做论文级别对比，建议补这一组。
 2. 本次 Gazebo 通过 `docker exec` 拉起 `roslaunch` 时，需要额外设置 `ROS_HOSTNAME=127.0.0.1 ROS_IP=127.0.0.1`，否则容器里的 `HOSTNAME` 不能自回连。这是 ROS 网络配置问题，不是隧道策略逻辑问题。
 3. 当前默认起飞点 `spawn_x=-8.5` 是针对现有 Gazebo 资产的安全设计；后续如果要做 Isaac Sim / Gazebo 严格对比，应优先区分“起飞安全补偿”与“airborne 轨迹差异”这两个问题。
-4. 当前 ROS1 默认权重已切到 M3 `checkpoint_tunnel_M3_21500.pt`，默认 user model 也已切到 `m3_diverse`：`vx≈1.5±0.5`、宽 `vy` Perlin、`vz=0`。这份权重可被 ROS1 standalone loader 直接加载；`m3_diverse` 是对 M3 offline feasible-diverse pilot dataset 的在线近似，而不是逐样本 replay。
+4. 当前 ROS1 默认权重已切到 M3 `checkpoint_tunnel_M3_21500.pt`，默认 user model 也已切到 `m3_diverse`：`vx≈1.5±0.5`、宽 `vy` Perlin、`vz≈±0.2` 小幅扰动。这份权重可被 ROS1 standalone loader 直接加载；`m3_diverse` 是对 M3 offline feasible-diverse pilot dataset 的在线近似，而不是逐样本 replay。
 5. 如果后续目标是提高这张固定地图上的通过率，优先应该检查：
    - 当前 checkpoint 是否就是期望的最佳隧道权重；
    - `UserModelTunnel` 的 profile 是否是本次要验证的目标输入分布；

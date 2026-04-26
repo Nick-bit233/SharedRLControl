@@ -22,7 +22,7 @@
     <arg name="user_model_vx_bias" default="1.5" />
     <arg name="user_model_vx_amp" default="0.5" />
     <arg name="user_model_vy_amp" default="2.0" />
-    <arg name="user_model_vz_amp" default="0.0" />
+    <arg name="user_model_vz_amp" default="0.2" />
     <arg name="user_model_smoothness_base" default="0.4" />
     <arg name="user_model_smoothness_scale" default="0.5" />
     <arg name="user_model_laziness" default="0.3" />
@@ -30,6 +30,11 @@
     <arg name="spawn_x"        default="-8.5" />
     <arg name="spawn_y"        default="0.0" />
     <arg name="spawn_z"        default="0.1" />
+    <arg name="gazebo_z_mode"  default="alt_hold" />
+    <arg name="gazebo_policy_z_max" default="2.0" />
+    <arg name="gazebo_z_blend_alpha" default="0.5" />
+    <arg name="gazebo_policy_z_takeoff_gate" default="true" />
+    <arg name="gazebo_policy_z_gate_tolerance" default="0.5" />
     <arg name="start_gazebo"   default="true" />
     <arg name="gui"            default="false" doc="Gazebo GUI (disable for Docker/headless)" />
 
@@ -95,6 +100,11 @@
         <param name="user_model_smoothness_scale" value="$(arg user_model_smoothness_scale)" />
         <param name="user_model_laziness" value="$(arg user_model_laziness)" />
         <param name="user_model_seed"     value="$(arg user_model_seed)" />
+        <param name="gazebo_z_mode"       value="$(arg gazebo_z_mode)" />
+        <param name="gazebo_policy_z_max" value="$(arg gazebo_policy_z_max)" />
+        <param name="gazebo_z_blend_alpha" value="$(arg gazebo_z_blend_alpha)" />
+        <param name="gazebo_policy_z_takeoff_gate" value="$(arg gazebo_policy_z_takeoff_gate)" />
+        <param name="gazebo_policy_z_gate_tolerance" value="$(arg gazebo_policy_z_gate_tolerance)" />
     </node>
 
     <!-- ============================================================ -->

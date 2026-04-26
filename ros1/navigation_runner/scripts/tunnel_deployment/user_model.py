@@ -118,7 +118,7 @@ class UserModelTunnel:
         vx_bias: float = 1.5,
         vx_amp: float = 0.5,
         vy_amp: float = 2.0,
-        vz_amp: float = 0.0,
+        vz_amp: float = 0.2,
         smoothness_base: float = 0.4,
         smoothness_scale: float = 0.5,
         laziness: float = 0.3,

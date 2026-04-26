@@ -64,6 +64,17 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT,
                         help="RL checkpoint passed to tunnel_comparison.launch")
+    parser.add_argument("--gazebo-z-mode", default="alt_hold",
+                        choices=("alt_hold", "policy", "policy_clamped", "blend"),
+                        help="Gazebo vertical command execution mode for RL cmd_vel")
+    parser.add_argument("--gazebo-policy-z-max", type=float, default=2.0,
+                        help="Max |vz| for policy_clamped/blend modes")
+    parser.add_argument("--gazebo-z-blend-alpha", type=float, default=0.5,
+                        help="Blend mode weight: alpha*policy_vz + (1-alpha)*alt_hold")
+    parser.add_argument("--disable-gazebo-policy-z-takeoff-gate", action="store_true",
+                        help="Let policy z control start immediately, even below takeoff_height")
+    parser.add_argument("--gazebo-policy-z-gate-tolerance", type=float, default=0.5,
+                        help="Enable policy z when z >= takeoff_height - tolerance")
     parser.add_argument("--gui", action="store_true",
                         help="Show Gazebo GUI")
     parser.add_argument("--rviz", action="store_true",
@@ -82,7 +93,7 @@ def parse_args():
     parser.add_argument("--user-model-vx-bias", type=float, default=1.5)
     parser.add_argument("--user-model-vx-amp", type=float, default=0.5)
     parser.add_argument("--user-model-vy-amp", type=float, default=2.0)
-    parser.add_argument("--user-model-vz-amp", type=float, default=0.0)
+    parser.add_argument("--user-model-vz-amp", type=float, default=0.2)
     parser.add_argument("--user-model-smoothness-base", type=float, default=0.4)
     parser.add_argument("--user-model-smoothness-scale", type=float, default=0.5)
     parser.add_argument("--user-model-laziness", type=float, default=0.3)
@@ -275,6 +286,11 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"collision_dist:={args.collision_dist}",
         f"device:={args.device}",
         f"checkpoint:={args.checkpoint}",
+        f"gazebo_z_mode:={args.gazebo_z_mode}",
+        f"gazebo_policy_z_max:={args.gazebo_policy_z_max}",
+        f"gazebo_z_blend_alpha:={args.gazebo_z_blend_alpha}",
+        f"gazebo_policy_z_takeoff_gate:={bool_str(not args.disable_gazebo_policy_z_takeoff_gate)}",
+        f"gazebo_policy_z_gate_tolerance:={args.gazebo_policy_z_gate_tolerance}",
         f"user_model_simple:={bool_str(args.user_model_simple)}",
         f"user_model_profile:={args.user_model_profile}",
         f"user_model_speed:={args.user_model_speed}",
@@ -356,6 +372,11 @@ def run_batch(args, output_root):
             "collision_dist": args.collision_dist,
             "device": args.device,
             "checkpoint": args.checkpoint,
+            "gazebo_z_mode": args.gazebo_z_mode,
+            "gazebo_policy_z_max": args.gazebo_policy_z_max,
+            "gazebo_z_blend_alpha": args.gazebo_z_blend_alpha,
+            "gazebo_policy_z_takeoff_gate": not args.disable_gazebo_policy_z_takeoff_gate,
+            "gazebo_policy_z_gate_tolerance": args.gazebo_policy_z_gate_tolerance,
             "gui": args.gui,
             "rviz": args.rviz,
             "user_model_simple": args.user_model_simple,
