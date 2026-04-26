@@ -869,15 +869,19 @@ class TunnelNavigator:
                 continue
 
             ray_np = self.raypoints_np
-            if self.odom_received and ray_np.shape[0] > 0:
+            if self.odom_received and (self.pcd_raycaster is not None or ray_np.shape[0] > 0):
                 pos = np.array([
                     self.odom.pose.pose.position.x,
                     self.odom.pose.pose.position.y,
                     self.odom.pose.pose.position.z,
                 ], dtype=np.float32)
-                # Vectorised min distance
-                dists = np.linalg.norm(ray_np - pos, axis=-1)
-                min_dist = float(dists.min())
+                if self.pcd_raycaster is not None:
+                    min_dist = self.pcd_raycaster.nearest_distance(pos)
+                else:
+                    # Fallback for the C++ raycast service path. The preferred
+                    # PCD path uses true map proximity to avoid stale ray hits.
+                    dists = np.linalg.norm(ray_np - pos, axis=-1)
+                    min_dist = float(dists.min())
                 self.min_dist = min_dist
 
                 if min_dist < self.cfg.collision_dist:

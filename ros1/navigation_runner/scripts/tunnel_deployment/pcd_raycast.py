@@ -13,6 +13,12 @@ lidar beam — matching the C++ getRayCast() API exactly.
 import math
 import numpy as np
 
+try:
+    from scipy.spatial import cKDTree
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
 
 class PcdRaycaster:
     """Voxel-based raycaster built from a static PCD file.
@@ -36,6 +42,8 @@ class PcdRaycaster:
         points = self._load_pcd(pcd_path)
         if points is None or len(points) == 0:
             raise RuntimeError(f"Failed to load PCD: {pcd_path}")
+        self.points = np.asarray(points, dtype=np.float32)
+        self._tree = cKDTree(self.points) if HAS_SCIPY else None
 
         # Build voxel set (inflated)
         inflate_cells = (
@@ -56,6 +64,9 @@ class PcdRaycaster:
         print(f"[PcdRaycaster] Loaded {len(points)} points, "
               f"{len(self._occupied)} occupied voxels (res={resolution}m, "
               f"inflate={inflate})")
+        if self._tree is None:
+            print("[PcdRaycaster] scipy unavailable; nearest-distance queries "
+                  "will use vectorized NumPy fallback")
 
     @staticmethod
     def _load_pcd(filepath: str):
@@ -158,3 +169,17 @@ class PcdRaycaster:
                 idx += 1
 
         return result
+
+    def nearest_distance(self, position) -> float:
+        """Return Euclidean distance from position to the nearest PCD point.
+
+        This measures true map proximity. It intentionally does not use the
+        sparse raycast hit points because those points can be stale between
+        raycast updates and cause false collision events during fast motion.
+        """
+        pos = np.asarray(position, dtype=np.float32)
+        if self._tree is not None:
+            return float(self._tree.query(pos)[0])
+
+        diffs = self.points - pos.reshape(1, 3)
+        return float(np.sqrt(np.einsum("ij,ij->i", diffs, diffs).min()))
