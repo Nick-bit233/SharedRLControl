@@ -126,3 +126,6 @@ ros1/results/
 # paper works
 PAPER_PLAN.md
 paper/
+ros1/navigation_runner/cfg/ckpts/checkpoint_tunnel_M2_14000.pt
+ros1/navigation_runner/cfg/ckpts/checkpoint_tunnel_M3_21500.pt
+ros1/navigation_runner/cfg/ckpts/checkpoint_tunnel_raw_best.pt

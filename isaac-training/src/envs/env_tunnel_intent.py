@@ -493,12 +493,30 @@ class EnvTunnelIntent(IsaacEnv):
 
         # >>>>>>>>>>>>The relevant code starts from here<<<<<<<<<<<<
         # -----------Network Input I: LiDAR range data--------------
+        ray_dists = None
+        ray_dirs_w = None
         if self.enable_lidar:
-            self.lidar_scan = self.lidar_range - (
-                (self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1))
-                .norm(dim=-1)
-                .clamp_max(self.lidar_range)
-                .reshape(self.num_envs, 1, *self.lidar_resolution)
+            ray_vecs_w = self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1)
+            raw_ray_dists = ray_vecs_w.norm(dim=-1)
+            finite_ray_vecs = torch.isfinite(ray_vecs_w).all(dim=-1)
+            finite_ray_dists = torch.isfinite(raw_ray_dists)
+            hit_mask = (
+                finite_ray_vecs
+                & finite_ray_dists
+                & (raw_ray_dists > 1e-6)
+                & (raw_ray_dists < self.lidar_range)
+            )
+            ray_dists = torch.where(
+                hit_mask,
+                raw_ray_dists.clamp_max(self.lidar_range),
+                torch.full_like(raw_ray_dists, self.lidar_range),
+            )
+            ray_dirs_w = torch.zeros_like(ray_vecs_w)
+            ray_dirs_w[hit_mask] = ray_vecs_w[hit_mask] / raw_ray_dists[hit_mask].unsqueeze(-1)
+
+            self.lidar_scan = (
+                self.lidar_range
+                - ray_dists.reshape(self.num_envs, 1, *self.lidar_resolution)
             ) # lidar scan store the data that is range - distance and it is in lidar's local frame
             # Normalize LiDAR to [0, 1] for better CNN training stability
             self.lidar_scan = self.lidar_scan / self.lidar_range
@@ -514,14 +532,9 @@ class EnvTunnelIntent(IsaacEnv):
         drone_ang_vel_w = self.root_state[..., 10:13].squeeze(1) # (N, 3) world_angular
         drone_orientation_q = self.root_state[..., 3:7].squeeze(1) # (N, 4) orientation(quat)
 
-        ray_dists = None
-        ray_dirs_w = None
         min_dist_to_obs = torch.full((self.num_envs, 1), self.lidar_range, device=self.device)
         nearest_obstacle_normal_b = torch.zeros(self.num_envs, 3, device=self.device)
         if self.enable_lidar:
-            ray_vecs_w = self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1)
-            ray_dists = ray_vecs_w.norm(dim=-1).clamp_max(self.lidar_range)
-            ray_dirs_w = ray_vecs_w / (ray_dists.unsqueeze(-1) + 1e-6)
             min_dist_to_obs, min_idx = ray_dists.min(dim=-1, keepdim=True)
             nearest_normal_w = -ray_dirs_w[
                 torch.arange(self.num_envs, device=self.device),

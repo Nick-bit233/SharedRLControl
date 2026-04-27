@@ -200,6 +200,13 @@ class UserModelIntent:
             quat = quat.squeeze(1)
         if assistant_action is None:
             assistant_action = torch.zeros_like(self.J)
+        else:
+            assistant_action = torch.nan_to_num(
+                assistant_action.to(device=self.device),
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
 
         nearest_dist = torch.full(
             (self.num_envs,), float("inf"), device=self.device
@@ -208,6 +215,8 @@ class UserModelIntent:
         if env_geom is not None:
             nearest_dist = env_geom.get("nearest_obstacle_dist", nearest_dist)
             nearest_normal = env_geom.get("nearest_obstacle_normal", nearest_normal)
+        nearest_dist = self._sanitize_distance(nearest_dist)
+        nearest_normal = self._sanitize_normal(nearest_normal)
 
         self.perception.update(nearest_dist, nearest_normal)
         threat, perceived_dist, perceived_normal = self.perception.perceive(
@@ -216,9 +225,9 @@ class UserModelIntent:
             self.d_react,
             generator=self.rng,
         )
-        self.threat = threat
-        self.perceived_dist = perceived_dist
-        self.perceived_normal = perceived_normal
+        self.threat = torch.nan_to_num(threat, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+        self.perceived_dist = self._sanitize_distance(perceived_dist)
+        self.perceived_normal = self._sanitize_normal(perceived_normal)
 
         self._update_reactive_layer()
         self._tick_intent_layer(drone_pos_w, quat, assistant_action)
@@ -234,8 +243,22 @@ class UserModelIntent:
             self.last_pilot_action - assistant_action
         ) * (1.0 - self.alpha).unsqueeze(-1)
         pilot_action = self.J + self.I * self.cfg.i_gain
+        self._raise_if_nonfinite_pilot_action(
+            pilot_action,
+            assistant_action,
+            nearest_dist,
+            nearest_normal,
+            "pre_clamp",
+        )
         pilot_action[:, 0:2] = pilot_action[:, 0:2].clamp(-self.max_speed, self.max_speed)
         pilot_action[:, 2] = pilot_action[:, 2].clamp(-self.max_speed_z, self.max_speed_z)
+        self._raise_if_nonfinite_pilot_action(
+            pilot_action,
+            assistant_action,
+            nearest_dist,
+            nearest_normal,
+            "post_clamp",
+        )
 
         self.last_pilot_action = pilot_action
         self.step_counter += 1.0
@@ -510,7 +533,7 @@ class UserModelIntent:
         react_progress = 1.0 - (
             self.react_steps.float() / self.react_total_steps.float().clamp_min(1.0)
         )
-        normal = F.normalize(self.perceived_normal, dim=-1, eps=1e-6)
+        normal = self._sanitize_normal(self.perceived_normal)
 
         emergency_mask = self.react_mode == int(ReactMode.EMERGENCY_STOP)
         if emergency_mask.any():
@@ -579,3 +602,54 @@ class UserModelIntent:
     def _normalize_range(value: torch.Tensor, value_range: tuple[float, float]):
         low, high = value_range
         return ((value - low) / max(high - low, 1e-6)).clamp(0.0, 1.0)
+
+    @staticmethod
+    def _sanitize_distance(distance: torch.Tensor):
+        return torch.nan_to_num(
+            distance,
+            nan=float("inf"),
+            posinf=float("inf"),
+            neginf=0.0,
+        ).clamp_min(0.0)
+
+    @staticmethod
+    def _sanitize_normal(normal: torch.Tensor):
+        normal = torch.nan_to_num(normal, nan=0.0, posinf=0.0, neginf=0.0)
+        normal_norm = normal.norm(dim=-1, keepdim=True)
+        return torch.where(
+            normal_norm > 1e-6,
+            normal / normal_norm.clamp_min(1e-6),
+            torch.zeros_like(normal),
+        )
+
+    def _raise_if_nonfinite_pilot_action(
+        self,
+        pilot_action: torch.Tensor,
+        assistant_action: torch.Tensor,
+        nearest_dist: torch.Tensor,
+        nearest_normal: torch.Tensor,
+        stage: str,
+    ):
+        if torch.isfinite(pilot_action).all():
+            return
+        bad_ids = (~torch.isfinite(pilot_action)).any(dim=-1).nonzero(as_tuple=False).squeeze(-1)
+        sample_ids = bad_ids[:5]
+
+        def sample(tensor: torch.Tensor):
+            return tensor.detach()[sample_ids].cpu().tolist()
+
+        context = {
+            "stage": stage,
+            "env_ids": sample_ids.detach().cpu().tolist(),
+            "pilot_action": sample(pilot_action),
+            "assistant_action": sample(assistant_action),
+            "nearest_dist": sample(nearest_dist),
+            "nearest_normal": sample(nearest_normal),
+            "perceived_dist": sample(self.perceived_dist),
+            "perceived_normal": sample(self.perceived_normal),
+            "intent_velocity_body": sample(self.intent_velocity_body),
+            "final_velocity_body": sample(self.final_velocity_body),
+            "react_mode": sample(self.react_mode),
+            "threat": sample(self.threat),
+        }
+        raise FloatingPointError(f"Non-finite pilot_action in UserModelIntent.step: {context}")

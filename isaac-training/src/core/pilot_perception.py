@@ -31,6 +31,26 @@ class PilotPerceptionModel:
         self.normal_buffer[:, ids] = 0.0
 
     def update(self, true_distance: torch.Tensor, true_normal: torch.Tensor):
+        true_distance = torch.nan_to_num(
+            true_distance.to(device=self.device),
+            nan=float("inf"),
+            posinf=float("inf"),
+            neginf=0.0,
+        ).clamp_min(0.0)
+
+        true_normal = torch.nan_to_num(
+            true_normal.to(device=self.device),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        normal_norm = true_normal.norm(dim=-1, keepdim=True)
+        true_normal = torch.where(
+            normal_norm > 1e-6,
+            true_normal / normal_norm.clamp_min(1e-6),
+            torch.zeros_like(true_normal),
+        )
+
         self.dist_buffer[self.write_idx] = true_distance
         self.normal_buffer[self.write_idx] = true_normal
         self.write_idx = (self.write_idx + 1) % self.buffer_len
