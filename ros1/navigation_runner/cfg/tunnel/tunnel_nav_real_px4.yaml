@@ -1,0 +1,71 @@
+# Real PX4 SRLC/tunnel policy deployment parameters.
+
+# Policy.
+checkpoint_path: ""
+action_limit: 2.0
+device: "cpu"
+deterministic: true
+
+# LiDAR topic input produced by map_lidar_node.py.
+lidar_source: "topic"
+lidar_range_image_topic: "/srlc/lidar/range_image"
+lidar_min_distance_topic: "/srlc/lidar/min_distance"
+lidar_timeout: 0.3
+lidar_range: 4.0
+lidar_vfov: [-10.0, 20.0]
+lidar_vbeams: 4
+lidar_hres: 10.0
+use_pcd_raycast: false
+pcd_file: ""
+
+# RC human_action input produced by rc_input_node.py.
+human_action_source: "rc_topic"
+human_action_topic: "/srlc/human_action"
+assist_enable_topic: "/srlc/assist_enable"
+human_action_timeout: 0.3
+keyboard_mode: false
+
+# PX4 control.
+control_freq: 20.0
+use_px4: true
+height_control: true
+takeoff_height: 5.0
+auto_arm: false
+auto_offboard: false
+hold_on_stop: true
+estop_hold_mode: "AUTO.LOITER"
+estop_fallback_mode: "POSCTL"
+hold_verify_timeout: 1.0
+odom_timeout: 0.3
+
+# Conservative real-flight command limits.
+max_xy_speed_real: 1.0
+max_z_speed_real: 0.4
+min_altitude: 0.5
+max_altitude: 5.5
+geofence_x: []
+geofence_y: []
+
+# Safety.
+use_safety_shield: false
+safety_min_dist: 0.5
+collision_dist: 0.2
+safety_start_takeoff_delta: 0.3
+policy_takeoff_gate: false
+policy_takeoff_gate_tolerance: 0.5
+
+# Gazebo-only values kept for compatibility; ignored when use_px4=true.
+gazebo_max_hvel: 2.0
+alt_hold_kp: 1.5
+alt_hold_max_vz: 2.0
+gazebo_z_mode: "alt_hold"
+gazebo_policy_z_max: 2.0
+gazebo_z_blend_alpha: 0.5
+gazebo_policy_z_takeoff_gate: true
+gazebo_policy_z_gate_tolerance: 0.5
+tumble_deg: 45.0
+tumble_recover_height: 1.0
+tumble_recover_timeout: 10.0
+
+# Disable automatic goal completion in real deployment unless overridden.
+goal_x: 999.0

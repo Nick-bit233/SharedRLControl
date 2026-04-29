@@ -14,6 +14,10 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   message_generation
   geometry_msgs
+  nav_msgs
+  sensor_msgs
+  visualization_msgs
+  mavros_msgs
   onboard_detector
 )
 
@@ -112,7 +116,7 @@ generate_messages(
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES navigation_runner
-  CATKIN_DEPENDS roscpp rospy std_msgs message_generation geometry_msgs
+  CATKIN_DEPENDS roscpp rospy std_msgs message_generation geometry_msgs nav_msgs sensor_msgs visualization_msgs mavros_msgs
 #  DEPENDS system_lib
 )
 
@@ -170,6 +174,8 @@ target_link_libraries(safe_action_node ${PROJECT_NAME})
 ## Mark executable scripts (Python etc.) for installation
 catkin_install_python(PROGRAMS
   scripts/tunnel_navigation.py
+  scripts/map_lidar_node.py
+  scripts/rc_input_node.py
   scripts/rc_sim_node.py
   scripts/lidar_sim_node.py
   scripts/imu_bridge_node.py
