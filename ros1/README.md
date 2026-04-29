@@ -30,6 +30,16 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.p
      --resume-from /root/catkin_ws/results/batch_20260427_142203 \
      --master-seed 325
 
+# 100-run safety_min_dist pilot: minimal safety-margin ablation, do not overwrite baseline results
+python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
+     --num-batches 10 \
+     --runs-per-batch 10 \
+     --methods rl,ipc \
+     --master-seed 326 \
+     --safety-min-dist 0.30 \
+     --launch-timeout 100 \
+     --output-dir /root/catkin_ws/results/batch_safety030_pilot
+
 方式三：分析结果
 
  python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
@@ -37,6 +47,6 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.p
 
 注意事项
 
- - 安全停止阈值：当前 safety_min_dist=0.3m，如果触发过频，可在 launch 时降低或在 cfg/tunnel/tunnel_nav_param.yaml 中修改
+ - 安全停止阈值：默认 `safety_min_dist=0.2m`；小规模 safety pilot 可通过 batch 参数 `--safety-min-dist 0.30` 覆盖
  - 实验数据现在通过 bind mount 同步到宿主机 `ros1/results/`
  - 容器内 `/root/results` 与 `/root/catkin_ws/results` 都会映射到同一个宿主机目录

@@ -327,12 +327,15 @@ def main():
     success = 0
     for tidx in trial_indices:
         print(f"Trial {tidx}:")
-        ok = render_trial(
-            results, args.results_json, tidx, output_dir,
-            fps=args.fps, static=args.static, subsample=args.subsample,
-        )
-        if ok:
-            success += 1
+        try:
+            ok = render_trial(
+                results, args.results_json, tidx, output_dir,
+                fps=args.fps, static=args.static, subsample=args.subsample,
+            )
+            if ok:
+                success += 1
+        except Exception as e:
+            print(f"ERROR: Failed to render trial {tidx}: {e}")
 
     print(f"\nDone: {success}/{len(trial_indices)} trials rendered to {output_dir}")
 

@@ -36,6 +36,7 @@
     <arg name="output_dir" default="/root/results"/>
     <arg name="goal_x" default="12.0"/>
     <arg name="collision_dist" default="0.05"/>
+    <arg name="safety_min_dist" default="0.2"/>
     <arg name="gazebo_z_mode" default="alt_hold"/>
     <arg name="gazebo_policy_z_max" default="2.0"/>
     <arg name="gazebo_z_blend_alpha" default="0.5"/>
@@ -129,6 +130,7 @@
             <param name="user_model_seed" value="$(arg user_model_seed)"/>
             <param name="goal_x" value="$(arg goal_x)"/>
             <param name="collision_dist" value="$(arg collision_dist)"/>
+            <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
             <param name="gazebo_z_mode" value="$(arg gazebo_z_mode)"/>
             <param name="gazebo_policy_z_max" value="$(arg gazebo_policy_z_max)"/>
             <param name="gazebo_z_blend_alpha" value="$(arg gazebo_z_blend_alpha)"/>

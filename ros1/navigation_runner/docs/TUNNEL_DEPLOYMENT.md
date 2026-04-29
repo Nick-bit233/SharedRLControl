@@ -350,7 +350,7 @@ user_model_smoothness_base: 0.4
 user_model_smoothness_scale: 0.5
 user_model_laziness: 0.3
 user_model_seed: 42      # RL / IPC 共用，确保输入序列可复现
-safety_min_dist: 0.3     # 米，安全停止距离（0 = 禁用）
+safety_min_dist: 0.2     # 米，安全停止距离；pilot 可用 --safety-min-dist 0.30 覆盖
 collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失败）
 ```
 
@@ -951,6 +951,10 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
     跳过已经有 `run_summary.json` 且 `.npz` 可读取、样本数满足 `--min-complete-samples` 的 run，
     并清理后重跑缺失、损坏或样本数不足的 run。续跑时可手动指定同一个 `--master-seed`，若与
     目录中的 seed 不一致会直接报错，避免把不同实验混到同一目录。
+  - `--safety-min-dist 0.30`：覆盖 RL 在线安全停车距离，用于最小改动的 safety-margin
+    ablation。推荐先跑 10×10 pilot，并同时观察 analysis 输出的
+    `pct_close_safety_min`、`last_dx_10s` 和 `likely_safety_hold_trap`，避免只用 collision
+    降低来解释安全性提升。
   - `--device`：当前 `tunnel_comparison:20260415-ipcfix` 镜像内的 PyTorch 是 CPU-only；若未重建
     CUDA 版镜像，请保持 `--device cpu`。脚本现在会把无效的 `cuda:*` 请求自动回退到 `cpu`
   - `--launch-timeout`：批处理外层 watchdog

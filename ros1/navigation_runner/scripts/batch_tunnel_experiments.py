@@ -65,6 +65,8 @@ def parse_args():
                         help="Delay between sequential runs")
     parser.add_argument("--goal-x", type=float, default=10.0)
     parser.add_argument("--collision-dist", type=float, default=0.05)
+    parser.add_argument("--safety-min-dist", type=float, default=None,
+                        help="RL safety stop distance passed to tunnel_navigation.py (default: 0.2)")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT,
                         help="RL checkpoint passed to tunnel_comparison.launch")
@@ -236,6 +238,8 @@ def apply_default_args(args):
         args.methods = "rl,ipc"
     if args.master_seed is None:
         args.master_seed = 42
+    if args.safety_min_dist is None:
+        args.safety_min_dist = 0.2
 
 
 def apply_resume_config(args, output_root):
@@ -245,6 +249,7 @@ def apply_resume_config(args, output_root):
     requested_num_batches = args.num_batches
     requested_runs_per_batch = args.runs_per_batch
     requested_methods = args.methods
+    requested_safety_min_dist = args.safety_min_dist
 
     config_methods = ",".join(config.get("methods", []))
     if requested_seed is not None and requested_seed != int(config["master_seed"]):
@@ -269,6 +274,15 @@ def apply_resume_config(args, output_root):
         raise ValueError(
             f"--methods {requested_methods} does not match existing methods {config_methods}"
         )
+    config_safety_min_dist = float(config.get("safety_min_dist", 0.2))
+    if (
+        requested_safety_min_dist is not None
+        and abs(float(requested_safety_min_dist) - config_safety_min_dist) > 1e-9
+    ):
+        raise ValueError(
+            f"--safety-min-dist {requested_safety_min_dist} does not match existing "
+            f"safety_min_dist {config_safety_min_dist}"
+        )
 
     args.num_batches = int(config["num_batches"])
     args.runs_per_batch = int(config["runs_per_batch"])
@@ -276,6 +290,7 @@ def apply_resume_config(args, output_root):
     args.master_seed = int(config["master_seed"])
     args.goal_x = float(config.get("goal_x", args.goal_x))
     args.collision_dist = float(config.get("collision_dist", args.collision_dist))
+    args.safety_min_dist = config_safety_min_dist
     args.device = config.get("device", args.device)
     args.checkpoint = config.get("checkpoint", args.checkpoint)
     args.gazebo_z_mode = config.get("gazebo_z_mode", args.gazebo_z_mode)
@@ -465,6 +480,7 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"user_model_seed:={user_model_seed}",
         f"goal_x:={args.goal_x}",
         f"collision_dist:={args.collision_dist}",
+        f"safety_min_dist:={args.safety_min_dist}",
         f"device:={args.device}",
         f"checkpoint:={args.checkpoint}",
         f"gazebo_z_mode:={args.gazebo_z_mode}",
@@ -696,6 +712,7 @@ def run_batch(args, output_root):
             "master_seed": args.master_seed,
             "goal_x": args.goal_x,
             "collision_dist": args.collision_dist,
+            "safety_min_dist": args.safety_min_dist,
             "device": args.device,
             "checkpoint": args.checkpoint,
             "gazebo_z_mode": args.gazebo_z_mode,
