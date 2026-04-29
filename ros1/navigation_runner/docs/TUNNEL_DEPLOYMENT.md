@@ -946,6 +946,11 @@ python3 generate_tunnel_map.py -o tunnel_map.pcd -w tunnel.world --seed 42
       --output-dir /root/results/tunnel_batch_001
   ```
 - 常用参数：
+  - `--resume-from /root/catkin_ws/results/batch_xxx`：从已有结果目录原地续跑。
+    脚本会读取已有 `batch_config.json` / `batch_manifest.json`，复用原来的地图和 seed 计划，
+    跳过已经有 `run_summary.json` 且 `.npz` 可读取、样本数满足 `--min-complete-samples` 的 run，
+    并清理后重跑缺失、损坏或样本数不足的 run。续跑时可手动指定同一个 `--master-seed`，若与
+    目录中的 seed 不一致会直接报错，避免把不同实验混到同一目录。
   - `--device`：当前 `tunnel_comparison:20260415-ipcfix` 镜像内的 PyTorch 是 CPU-only；若未重建
     CUDA 版镜像，请保持 `--device cpu`。脚本现在会把无效的 `cuda:*` 请求自动回退到 `cpu`
   - `--launch-timeout`：批处理外层 watchdog

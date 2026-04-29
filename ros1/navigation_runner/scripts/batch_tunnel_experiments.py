@@ -41,16 +41,20 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run batched RL/IPC tunnel experiments on regenerated maps."
     )
-    parser.add_argument("--num-batches", type=int, default=1,
-                        help="Number of map batches to generate")
-    parser.add_argument("--runs-per-batch", type=int, default=5,
-                        help="Paired RL/IPC runs per batch")
-    parser.add_argument("--methods", default="rl,ipc",
-                        help="Comma-separated method order, e.g. rl,ipc")
-    parser.add_argument("--master-seed", type=int, default=42,
-                        help="Master RNG seed for map/user-model seeds")
+    parser.add_argument("--num-batches", type=int, default=None,
+                        help="Number of map batches to generate (default: 1)")
+    parser.add_argument("--runs-per-batch", type=int, default=None,
+                        help="Paired RL/IPC runs per batch (default: 5)")
+    parser.add_argument("--methods", default=None,
+                        help="Comma-separated method order, e.g. rl,ipc (default: rl,ipc)")
+    parser.add_argument("--master-seed", type=int, default=None,
+                        help="Master RNG seed for map/user-model seeds (default: 42)")
     parser.add_argument("--output-dir", default=None,
-                        help="Output root (default: auto timestamp under ./batch_results)")
+                        help="Output root (default: auto timestamp under /root/catkin_ws/results)")
+    parser.add_argument("--resume-from", default=None,
+                        help="Resume an existing batch result root in-place; skips complete runs")
+    parser.add_argument("--min-complete-samples", type=int, default=1,
+                        help="Minimum samples for an existing trajectory to be considered complete")
     parser.add_argument("--launch-timeout", type=float, default=80.0,
                         help="External watchdog timeout per run in seconds")
     parser.add_argument("--recorder-timeout", type=float, default=60.0,
@@ -188,13 +192,155 @@ def build_run_env(run_dir, run_slot):
 
 
 def ensure_output_dir(args):
-    if args.output_dir:
+    if args.resume_from:
+        root = os.path.abspath(args.resume_from)
+        if args.output_dir and os.path.abspath(args.output_dir) != root:
+            raise ValueError("--output-dir must match --resume-from when resuming")
+        if not os.path.isdir(root):
+            raise FileNotFoundError(f"Resume directory does not exist: {root}")
+    elif args.output_dir:
         root = os.path.abspath(args.output_dir)
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         root = os.path.join("/root/catkin_ws/results", f"batch_{timestamp}")
     os.makedirs(root, exist_ok=True)
     return root
+
+
+def load_existing_batch_config(output_root):
+    manifest_path = os.path.join(output_root, "batch_manifest.json")
+    if os.path.exists(manifest_path):
+        try:
+            manifest = load_json(manifest_path)
+            config = manifest.get("batch_config")
+            if config:
+                return config
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[Batch] WARNING: ignoring unreadable batch_manifest.json: {exc}")
+
+    config_path = os.path.join(output_root, "batch_config.json")
+    if os.path.exists(config_path):
+        return load_json(config_path)
+
+    raise FileNotFoundError(
+        f"Cannot resume without batch_manifest.json or batch_config.json in {output_root}"
+    )
+
+
+def apply_default_args(args):
+    if args.num_batches is None:
+        args.num_batches = 1
+    if args.runs_per_batch is None:
+        args.runs_per_batch = 5
+    if args.methods is None:
+        args.methods = "rl,ipc"
+    if args.master_seed is None:
+        args.master_seed = 42
+
+
+def apply_resume_config(args, output_root):
+    config = load_existing_batch_config(output_root)
+
+    requested_seed = args.master_seed
+    requested_num_batches = args.num_batches
+    requested_runs_per_batch = args.runs_per_batch
+    requested_methods = args.methods
+
+    config_methods = ",".join(config.get("methods", []))
+    if requested_seed is not None and requested_seed != int(config["master_seed"]):
+        raise ValueError(
+            f"--master-seed {requested_seed} does not match existing "
+            f"batch seed {config['master_seed']}"
+        )
+    if requested_num_batches is not None and requested_num_batches != int(config["num_batches"]):
+        raise ValueError(
+            f"--num-batches {requested_num_batches} does not match existing "
+            f"batch count {config['num_batches']}"
+        )
+    if (
+        requested_runs_per_batch is not None
+        and requested_runs_per_batch != int(config["runs_per_batch"])
+    ):
+        raise ValueError(
+            f"--runs-per-batch {requested_runs_per_batch} does not match existing "
+            f"runs-per-batch {config['runs_per_batch']}"
+        )
+    if requested_methods is not None and requested_methods != config_methods:
+        raise ValueError(
+            f"--methods {requested_methods} does not match existing methods {config_methods}"
+        )
+
+    args.num_batches = int(config["num_batches"])
+    args.runs_per_batch = int(config["runs_per_batch"])
+    args.methods = config_methods
+    args.master_seed = int(config["master_seed"])
+    args.goal_x = float(config.get("goal_x", args.goal_x))
+    args.collision_dist = float(config.get("collision_dist", args.collision_dist))
+    args.device = config.get("device", args.device)
+    args.checkpoint = config.get("checkpoint", args.checkpoint)
+    args.gazebo_z_mode = config.get("gazebo_z_mode", args.gazebo_z_mode)
+    args.gazebo_policy_z_max = float(
+        config.get("gazebo_policy_z_max", args.gazebo_policy_z_max)
+    )
+    args.gazebo_z_blend_alpha = float(
+        config.get("gazebo_z_blend_alpha", args.gazebo_z_blend_alpha)
+    )
+    args.disable_gazebo_policy_z_takeoff_gate = not bool(
+        config.get(
+            "gazebo_policy_z_takeoff_gate",
+            not args.disable_gazebo_policy_z_takeoff_gate,
+        )
+    )
+    args.gazebo_policy_z_gate_tolerance = float(
+        config.get("gazebo_policy_z_gate_tolerance", args.gazebo_policy_z_gate_tolerance)
+    )
+    args.disable_policy_takeoff_gate = not bool(
+        config.get("policy_takeoff_gate", not args.disable_policy_takeoff_gate)
+    )
+    args.policy_takeoff_gate_tolerance = float(
+        config.get("policy_takeoff_gate_tolerance", args.policy_takeoff_gate_tolerance)
+    )
+    args.gui = bool(config.get("gui", args.gui))
+    args.rviz = bool(config.get("rviz", args.rviz))
+    args.user_model_simple = bool(config.get("user_model_simple", args.user_model_simple))
+    args.user_model_profile = config.get("user_model_profile", args.user_model_profile)
+    args.user_model_speed = float(config.get("user_model_speed", args.user_model_speed))
+    args.user_model_freq_base = float(
+        config.get("user_model_freq_base", args.user_model_freq_base)
+    )
+    args.user_model_freq_scale = float(
+        config.get("user_model_freq_scale", args.user_model_freq_scale)
+    )
+    args.user_model_vx_bias = float(config.get("user_model_vx_bias", args.user_model_vx_bias))
+    args.user_model_vx_amp = float(config.get("user_model_vx_amp", args.user_model_vx_amp))
+    args.user_model_vy_amp = float(config.get("user_model_vy_amp", args.user_model_vy_amp))
+    args.user_model_vz_amp = float(config.get("user_model_vz_amp", args.user_model_vz_amp))
+    args.user_model_smoothness_base = float(
+        config.get("user_model_smoothness_base", args.user_model_smoothness_base)
+    )
+    args.user_model_smoothness_scale = float(
+        config.get("user_model_smoothness_scale", args.user_model_smoothness_scale)
+    )
+    args.user_model_laziness = float(
+        config.get("user_model_laziness", args.user_model_laziness)
+    )
+    args.num_obstacles = int(config.get("num_obstacles", args.num_obstacles))
+    args.cuboid_ratio = float(config.get("cuboid_ratio", args.cuboid_ratio))
+    args.map_resolution = float(config.get("map_resolution", args.map_resolution))
+    args.launch_timeout = float(config.get("launch_timeout", args.launch_timeout))
+    args.recorder_timeout = float(config.get("recorder_timeout", args.recorder_timeout))
+    args.completion_grace_period = float(
+        config.get("completion_grace_period", args.completion_grace_period)
+    )
+    spawn = config.get("spawn")
+    if spawn and len(spawn) == 3:
+        args.spawn_x, args.spawn_y, args.spawn_z = (
+            float(spawn[0]),
+            float(spawn[1]),
+            float(spawn[2]),
+        )
+
+    return config
 
 
 def resolve_device(requested_device):
@@ -230,6 +376,37 @@ def generate_seed_plan(args):
             "run_seeds": run_seeds,
         })
     return plan
+
+
+def seed_plan_from_config(config):
+    plan = []
+    for batch in config.get("batches", []):
+        plan.append({
+            "batch_idx": int(batch["batch_idx"]),
+            "map_seed": int(batch["map_seed"]),
+            "run_seeds": [int(seed) for seed in batch["run_seeds"]],
+        })
+    return plan
+
+
+def ensure_batch_assets(args, output_root, batch_dir, batch_idx, map_seed, resume):
+    map_dir = os.path.join(batch_dir, "map")
+    map_path = os.path.join(map_dir, "tunnel_map.pcd")
+    world_path = os.path.join(map_dir, "tunnel.world")
+    metadata_path = os.path.join(map_dir, "obstacles.json")
+    root_metadata = os.path.join(output_root, f"b{batch_idx:03d}_obstacles.json")
+
+    assets_exist = (
+        os.path.exists(map_path)
+        and os.path.exists(world_path)
+        and os.path.exists(metadata_path)
+    )
+    if resume and assets_exist:
+        if not os.path.exists(root_metadata):
+            shutil.copyfile(metadata_path, root_metadata)
+        return map_path, world_path, metadata_path
+
+    return generate_batch_assets(args, batch_dir, batch_idx, map_seed)
 
 
 def generate_batch_assets(args, batch_dir, batch_idx, map_seed):
@@ -320,6 +497,141 @@ def load_json(path):
         return json.load(handle)
 
 
+def write_json(path, data):
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+    os.replace(tmp_path, path)
+
+
+def write_manifest(output_root, manifest):
+    write_json(os.path.join(output_root, "batch_manifest.json"), manifest)
+
+
+def expected_seed_plan_matches(args, config_plan):
+    generated_plan = generate_seed_plan(args)
+    return generated_plan == config_plan
+
+
+def data_path_for_summary(run_dir, summary):
+    data_file = summary.get("data_file", "")
+    if not data_file:
+        return ""
+    if os.path.isabs(data_file):
+        return data_file
+    return os.path.join(run_dir, data_file)
+
+
+def load_existing_run_summary(run_dir):
+    summary_path = os.path.join(run_dir, "run_summary.json")
+    if not os.path.exists(summary_path):
+        return None, "missing run_summary.json"
+    try:
+        return load_json(summary_path), ""
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"invalid run_summary.json: {exc}"
+
+
+def summary_matches_expected(summary, method, trial_id, batch_idx, run_idx,
+                             map_seed, user_model_seed):
+    expected = {
+        "method": method,
+        "trial_id": int(trial_id),
+        "batch_idx": int(batch_idx),
+        "run_idx": int(run_idx),
+        "map_seed": int(map_seed),
+        "user_model_seed": int(user_model_seed),
+    }
+    actual_method = str(summary.get("method", "")).lower()
+    if actual_method != expected["method"]:
+        return False, f"method mismatch: {actual_method} != {expected['method']}"
+    for key, expected_value in expected.items():
+        if key == "method":
+            continue
+        try:
+            actual_value = int(summary.get(key))
+        except (TypeError, ValueError):
+            return False, f"{key} missing or invalid"
+        if actual_value != expected_value:
+            return False, f"{key} mismatch: {actual_value} != {expected_value}"
+    return True, ""
+
+
+def trajectory_file_is_complete(data_path, min_samples):
+    if not data_path:
+        return False, "missing data_file"
+    if not os.path.exists(data_path):
+        return False, f"missing data file: {data_path}"
+    if os.path.getsize(data_path) <= 0:
+        return False, f"empty data file: {data_path}"
+
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("numpy is required to validate resume data files") from exc
+
+    try:
+        with np.load(data_path) as data:
+            if "timestamps" not in data:
+                return False, "data file has no timestamps array"
+            sample_count = len(data["timestamps"])
+    except Exception as exc:
+        return False, f"unreadable data file: {exc}"
+
+    if sample_count < min_samples:
+        return False, f"data file samples {sample_count} < {min_samples}"
+    return True, ""
+
+
+def existing_run_is_complete(run_dir, method, trial_id, batch_idx, run_idx,
+                             map_seed, user_model_seed, min_samples):
+    summary, reason = load_existing_run_summary(run_dir)
+    if summary is None:
+        return None, reason
+
+    matches, reason = summary_matches_expected(
+        summary, method, trial_id, batch_idx, run_idx, map_seed, user_model_seed
+    )
+    if not matches:
+        return None, reason
+
+    try:
+        summary_samples = int(summary.get("samples", 0))
+    except (TypeError, ValueError):
+        summary_samples = 0
+    if summary_samples < min_samples:
+        return None, f"summary samples {summary_samples} < {min_samples}"
+
+    complete, reason = trajectory_file_is_complete(
+        data_path_for_summary(run_dir, summary),
+        min_samples,
+    )
+    if not complete:
+        return None, reason
+
+    return summary, ""
+
+
+def normalize_existing_summary(summary, run_dir, method, trial_id, run_id, batch_idx,
+                               run_idx, map_seed, user_model_seed, log_path,
+                               map_path, world_path, checkpoint):
+    summary = dict(summary)
+    summary["method"] = method
+    summary["trial_id"] = trial_id
+    summary["run_id"] = run_id
+    summary["batch_idx"] = batch_idx
+    summary["run_idx"] = run_idx
+    summary["map_seed"] = map_seed
+    summary["user_model_seed"] = user_model_seed
+    summary["log_file"] = os.path.relpath(log_path, os.path.dirname(run_dir))
+    summary["pcd_file"] = map_path
+    summary["tunnel_world"] = world_path
+    summary["checkpoint"] = checkpoint
+    summary["run_dir"] = run_dir
+    write_json(os.path.join(run_dir, "run_summary.json"), summary)
+    return summary
+
+
 def collect_run_summary(run_dir, method, trial_id, run_id, batch_idx, run_idx,
                          map_seed, user_model_seed, timed_out, exit_code, log_path,
                          map_path, world_path, checkpoint):
@@ -358,13 +670,21 @@ def collect_run_summary(run_dir, method, trial_id, run_id, batch_idx, run_idx,
     summary["checkpoint"] = checkpoint
     summary["run_dir"] = run_dir
 
-    with open(summary_path, "w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
+    write_json(summary_path, summary)
     return summary
 
 
 def run_batch(args, output_root):
-    seed_plan = generate_seed_plan(args)
+    resume = bool(args.resume_from)
+    resume_config = load_existing_batch_config(output_root) if resume else None
+    if resume:
+        seed_plan = seed_plan_from_config(resume_config)
+        if not expected_seed_plan_matches(args, seed_plan):
+            raise ValueError(
+                "Existing batch seed plan does not match the requested resume configuration"
+            )
+    else:
+        seed_plan = generate_seed_plan(args)
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
     cleanup_experiment_processes("batch start")
     manifest = {
@@ -410,12 +730,18 @@ def run_batch(args, output_root):
         },
         "runs": [],
     }
+    if resume:
+        manifest["resume"] = {
+            "resumed_from": output_root,
+            "min_complete_samples": args.min_complete_samples,
+        }
 
-    with open(os.path.join(output_root, "batch_config.json"), "w", encoding="utf-8") as handle:
-        json.dump(manifest["batch_config"], handle, indent=2)
+    write_json(os.path.join(output_root, "batch_config.json"), manifest["batch_config"])
 
     total_runs = args.num_batches * args.runs_per_batch * len(methods)
     completed_runs = 0
+    skipped_runs = 0
+    rerun_runs = 0
 
     for batch_info in seed_plan:
         batch_idx = batch_info["batch_idx"]
@@ -423,8 +749,8 @@ def run_batch(args, output_root):
         runs_dir = os.path.join(batch_dir, "runs")
         os.makedirs(runs_dir, exist_ok=True)
 
-        map_path, world_path, metadata_path = generate_batch_assets(
-            args, batch_dir, batch_idx, batch_info["map_seed"]
+        map_path, world_path, metadata_path = ensure_batch_assets(
+            args, output_root, batch_dir, batch_idx, batch_info["map_seed"], resume
         )
         batch_info["map_path"] = map_path
         batch_info["world_path"] = world_path
@@ -437,6 +763,53 @@ def run_batch(args, output_root):
                 os.makedirs(run_dir, exist_ok=True)
                 run_id = f"b{batch_idx:03d}_{method}_r{run_idx:03d}_seed{user_model_seed}"
                 log_path = os.path.join(run_dir, "launch.log")
+
+                if resume:
+                    existing_summary, incomplete_reason = existing_run_is_complete(
+                        run_dir=run_dir,
+                        method=method,
+                        trial_id=trial_id,
+                        batch_idx=batch_idx,
+                        run_idx=run_idx,
+                        map_seed=batch_info["map_seed"],
+                        user_model_seed=user_model_seed,
+                        min_samples=args.min_complete_samples,
+                    )
+                    if existing_summary is not None:
+                        summary = normalize_existing_summary(
+                            summary=existing_summary,
+                            run_dir=run_dir,
+                            method=method,
+                            trial_id=trial_id,
+                            run_id=run_id,
+                            batch_idx=batch_idx,
+                            run_idx=run_idx,
+                            map_seed=batch_info["map_seed"],
+                            user_model_seed=user_model_seed,
+                            log_path=log_path,
+                            map_path=map_path,
+                            world_path=world_path,
+                            checkpoint=args.checkpoint,
+                        )
+                        manifest["runs"].append(summary)
+                        skipped_runs += 1
+                        completed_runs += 1
+                        print(
+                            f"[Batch] Skip complete {completed_runs}/{total_runs} "
+                            f"batch={batch_idx} run={run_idx} method={method}"
+                        )
+                        continue
+
+                    print(
+                        f"[Batch] Re-run incomplete batch={batch_idx} run={run_idx} "
+                        f"method={method}: {incomplete_reason}"
+                    )
+                    if os.path.isdir(run_dir):
+                        shutil.rmtree(run_dir)
+                    os.makedirs(run_dir, exist_ok=True)
+                    log_path = os.path.join(run_dir, "launch.log")
+                    rerun_runs += 1
+
                 cleanup_experiment_processes(f"before {run_id}")
                 run_env = build_run_env(run_dir, completed_runs)
                 cmd = build_roslaunch_cmd(
@@ -493,13 +866,15 @@ def run_batch(args, output_root):
                     checkpoint=args.checkpoint,
                 )
                 manifest["runs"].append(summary)
-                with open(os.path.join(output_root, "batch_manifest.json"), "w", encoding="utf-8") as handle:
-                    json.dump(manifest, handle, indent=2)
+                write_manifest(output_root, manifest)
 
                 cleanup_experiment_processes(f"after {run_id}")
                 completed_runs += 1
                 time.sleep(args.inter_run_delay)
 
+    write_manifest(output_root, manifest)
+    if resume:
+        print(f"[Batch] Resume summary: skipped={skipped_runs} rerun={rerun_runs}")
     return manifest
 
 
@@ -519,10 +894,14 @@ def maybe_run_analysis(args, output_root):
 
 def main():
     args = parse_args()
+    output_root = ensure_output_dir(args)
+    if args.resume_from:
+        apply_resume_config(args, output_root)
+    else:
+        apply_default_args(args)
     if args.user_model_simple:
         args.user_model_profile = "simple"
     args.device = resolve_device(args.device)
-    output_root = ensure_output_dir(args)
     manifest = run_batch(args, output_root)
     maybe_run_analysis(args, output_root)
     print(f"[Batch] Finished. Output root: {output_root}")

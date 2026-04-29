@@ -25,6 +25,11 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.p
      --num-batches 1 \
      --runs-per-batch 1 
 
+# 从中断的批量结果原地续跑；会复用已有 batch_config/地图/seed，跳过完整轨迹并重跑缺失或损坏的 run
+python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
+     --resume-from /root/catkin_ws/results/batch_20260427_142203 \
+     --master-seed 325
+
 方式三：分析结果
 
  python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
