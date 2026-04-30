@@ -131,8 +131,12 @@ class EnvTunnelLagrangian(IsaacEnv):
 
         # Reward Function Params
         self.enable_task_reward = cfg.env.get("enable_task_reward", True)
-        self.safety_cost_radius = cfg.env.get("safety_cost_radius", 1.5)
-        self.safety_cost_alpha = cfg.env.get("safety_cost_alpha", 2.0)
+        self.safety_collision_radius = cfg.env.get("safety_collision_radius", 0.3)
+        self.safety_cost_radius = cfg.env.get("safety_cost_radius", 0.8)
+        if self.safety_cost_radius <= self.safety_collision_radius:
+            raise ValueError(
+                "env.safety_cost_radius must be larger than env.safety_collision_radius"
+            )
 
         # User Model Initialization
         # Check for offline mode configuration
@@ -563,9 +567,11 @@ class EnvTunnelLagrangian(IsaacEnv):
             ray_vecs_w = self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1)
             ray_dists = ray_vecs_w.norm(dim=-1).clamp_max(self.lidar_range)
             min_dist_to_obs, _ = ray_dists.min(dim=-1, keepdim=True)
-            cost_violation = (min_dist_to_obs < self.safety_cost_radius).float()
-            cost_depth = (self.safety_cost_radius - min_dist_to_obs).clamp(min=0.0)
-            self.safety_cost = cost_violation + self.safety_cost_alpha * cost_depth
+            soft_margin = self.safety_cost_radius - self.safety_collision_radius
+            self.safety_cost = (
+                (self.safety_cost_radius - min_dist_to_obs).clamp(min=0.0, max=soft_margin)
+                / soft_margin
+            )
             self.min_dist_to_obs = min_dist_to_obs
         else:
             self.safety_cost = torch.zeros(self.num_envs, 1, device=self.device)

@@ -24,17 +24,8 @@ algo:
 max_iterations: 20010
 save_interval: 1000
 
-# Keep reg_coeff fixed so the adaptive Lagrangian is the main balancing mechanism.
 curriculum:
   enable: False
-  check_interval: 50
-  ema_alpha: 0.1
-  promotion_threshold: 0.82
-  demotion_threshold: 0.70
-  patience: 5
-  initial_reg_coeff: 0.01
-  max_reg_coeff: 0.05
-  reg_step: 0.005
 
 early_stopping:
   enable: True

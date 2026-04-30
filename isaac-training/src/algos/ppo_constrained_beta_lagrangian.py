@@ -271,14 +271,15 @@ class ConstrainedResidualPPO_BetaLagrangian(TensorDictModuleBase):
         self.using_rnn = cfg.rnn.enable
         
         # Residual regularization coefficient
-        self.reg_coeff = cfg.get("reg_coeff", 0.01)
+        self.reg_coeff = cfg.get("reg_coeff", 0.0)
 
         # Lagrangian safety-cost constraint
         self.use_lagrangian = cfg.get("use_lagrangian", True)
         self.cost_limit = cfg.get("cost_limit", 0.05)
         self.fixed_cost_coeff = cfg.get("fixed_cost_coeff", 0.0)
         lambda_init = cfg.get("lambda_init", 1.0)
-        lambda_lr = cfg.get("lambda_lr", 1e-2)
+        self.lambda_max = cfg.get("lambda_max", 10.0)
+        lambda_lr = cfg.get("lambda_lr", 1e-3)
         self.lambda_lag = nn.Parameter(torch.tensor(lambda_init, device=device, dtype=torch.float32))
         self.lambda_optimizer = torch.optim.Adam([self.lambda_lag], lr=lambda_lr)
         
@@ -532,6 +533,8 @@ class ConstrainedResidualPPO_BetaLagrangian(TensorDictModuleBase):
 
             tensordict.set("adv", adv)
             tensordict.set("ret", ret)
+            rollout_mean_cost = tensordict["next", "agents", "cost"].mean()
+            lambda_update_loss = self._update_lambda(rollout_mean_cost)
 
         infos = []
         with profiler.timer("ppo/training_epochs"):
@@ -557,7 +560,22 @@ class ConstrainedResidualPPO_BetaLagrangian(TensorDictModuleBase):
 
         infos = torch.stack(infos).to_tensordict()
         infos = infos.apply(torch.mean, batch_size=[])
+        infos.set("rollout_mean_cost", rollout_mean_cost.detach())
+        infos.set("lambda_update_loss", lambda_update_loss.detach())
+        infos.set("lambda_lag_after_update", self.lambda_lag.detach())
         return {k: v.item() for k, v in infos.items()}    
+
+    def _update_lambda(self, mean_cost):
+        if not self.use_lagrangian:
+            return torch.zeros((), device=self.device)
+
+        lambda_loss = -self.lambda_lag * (mean_cost.detach() - self.cost_limit)
+        self.lambda_optimizer.zero_grad()
+        lambda_loss.backward()
+        self.lambda_optimizer.step()
+        with torch.no_grad():
+            self.lambda_lag.clamp_(min=0.0, max=self.lambda_max)
+        return lambda_loss
 
     def _update(self, minibatch): 
         profiler = get_profiler()
@@ -608,7 +626,7 @@ class ConstrainedResidualPPO_BetaLagrangian(TensorDictModuleBase):
             if self.use_lagrangian:
                 cost_coeff = self.lambda_lag.detach()
                 safety_loss = cost_coeff * cost_policy_objective
-                lambda_loss = -self.lambda_lag * (mean_cost.detach() - self.cost_limit)
+                lambda_loss = -(cost_coeff * (mean_cost.detach() - self.cost_limit))
             else:
                 cost_coeff = torch.as_tensor(self.fixed_cost_coeff, device=self.device)
                 safety_loss = cost_coeff * cost_policy_objective
@@ -654,13 +672,6 @@ class ConstrainedResidualPPO_BetaLagrangian(TensorDictModuleBase):
             self.feature_extractor_optim.step()
             self.actor_optim.step()
             self.critic_optim.step()
-
-            if self.use_lagrangian:
-                self.lambda_optimizer.zero_grad()
-                lambda_loss.backward()
-                self.lambda_optimizer.step()
-                with torch.no_grad():
-                    self.lambda_lag.clamp_(min=0.0)
 
             explained_var = 1 - F.mse_loss(value, ret) / ret.var()
             

@@ -6,7 +6,7 @@ defaults:
   - tunnel_lagrangian
 
 env:
-  num_obstacles: 65
+  num_obstacles: 60
   obstacle_width_range: [0.4, 0.8]
   obstacle_height_range: [8.0, 18.0]
 
