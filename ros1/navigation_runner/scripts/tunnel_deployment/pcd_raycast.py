@@ -170,6 +170,18 @@ class PcdRaycaster:
 
         return result
 
+    def nearest_point(self, position):
+        """Return the nearest PCD point and its Euclidean distance."""
+        pos = np.asarray(position, dtype=np.float32)
+        if self._tree is not None:
+            dist, idx = self._tree.query(pos)
+            return self.points[int(idx)].copy(), float(dist)
+
+        diffs = self.points - pos.reshape(1, 3)
+        dists_sq = np.einsum("ij,ij->i", diffs, diffs)
+        idx = int(np.argmin(dists_sq))
+        return self.points[idx].copy(), float(math.sqrt(dists_sq[idx]))
+
     def nearest_distance(self, position) -> float:
         """Return Euclidean distance from position to the nearest PCD point.
 
@@ -177,9 +189,4 @@ class PcdRaycaster:
         sparse raycast hit points because those points can be stale between
         raycast updates and cause false collision events during fast motion.
         """
-        pos = np.asarray(position, dtype=np.float32)
-        if self._tree is not None:
-            return float(self._tree.query(pos)[0])
-
-        diffs = self.points - pos.reshape(1, 3)
-        return float(np.sqrt(np.einsum("ij,ij->i", diffs, diffs).min()))
+        return self.nearest_point(position)[1]

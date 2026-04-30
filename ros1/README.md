@@ -40,6 +40,19 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.p
      --launch-timeout 100 \
      --output-dir /root/catkin_ws/results/batch_safety030_pilot
 
+# 100-run recovery-shield pilot: same safety distance, active escape instead of hold-only stop
+python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
+     --num-batches 10 \
+     --runs-per-batch 10 \
+     --methods rl,ipc \
+     --master-seed 327 \
+     --safety-min-dist 0.30 \
+     --safety-mode recover \
+     --safety-recover-speed 0.35 \
+     --safety-recover-forward-speed 0.15 \
+     --launch-timeout 100 \
+     --output-dir /root/catkin_ws/results/batch_safety030_recover_pilot
+
 方式三：分析结果
 
  python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
@@ -48,5 +61,6 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.p
 注意事项
 
  - 安全停止阈值：默认 `safety_min_dist=0.2m`；小规模 safety pilot 可通过 batch 参数 `--safety-min-dist 0.30` 覆盖
+ - 安全介入模式：默认 `--safety-mode hold` 保持旧行为；`--safety-mode recover` 会在触发安全距离时发布低速脱困命令，用于验证 stop-only trap 是否可减少
  - 实验数据现在通过 bind mount 同步到宿主机 `ros1/results/`
  - 容器内 `/root/results` 与 `/root/catkin_ws/results` 都会映射到同一个宿主机目录

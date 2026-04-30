@@ -37,6 +37,10 @@
     <arg name="goal_x" default="12.0"/>
     <arg name="collision_dist" default="0.05"/>
     <arg name="safety_min_dist" default="0.2"/>
+    <arg name="safety_mode" default="hold"/>
+    <arg name="safety_recover_speed" default="0.35"/>
+    <arg name="safety_recover_forward_speed" default="0.15"/>
+    <arg name="safety_recover_centerline_gain" default="0.4"/>
     <arg name="gazebo_z_mode" default="alt_hold"/>
     <arg name="gazebo_policy_z_max" default="2.0"/>
     <arg name="gazebo_z_blend_alpha" default="0.5"/>
@@ -131,6 +135,10 @@
             <param name="goal_x" value="$(arg goal_x)"/>
             <param name="collision_dist" value="$(arg collision_dist)"/>
             <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
+            <param name="safety_mode" value="$(arg safety_mode)"/>
+            <param name="safety_recover_speed" value="$(arg safety_recover_speed)"/>
+            <param name="safety_recover_forward_speed" value="$(arg safety_recover_forward_speed)"/>
+            <param name="safety_recover_centerline_gain" value="$(arg safety_recover_centerline_gain)"/>
             <param name="gazebo_z_mode" value="$(arg gazebo_z_mode)"/>
             <param name="gazebo_policy_z_max" value="$(arg gazebo_policy_z_max)"/>
             <param name="gazebo_z_blend_alpha" value="$(arg gazebo_z_blend_alpha)"/>

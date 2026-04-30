@@ -121,6 +121,7 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 | `gazebo_z_mode` | `alt_hold` | RL z 速度执行模式：`alt_hold`、`policy`、`policy_clamped` 或 `blend` |
 | `gazebo_policy_z_takeoff_gate` | `true` | `policy`/`policy_clamped`/`blend` 下先用高度保持起飞，接近 `takeoff_height` 后再执行 policy z |
 | `policy_takeoff_gate` | `true` | 起飞接近训练高度前不运行 policy，不执行 policy x/y/z |
+| `safety_mode` | `hold` | 安全距离触发后的介入模式：`hold` 原地悬停，`recover` 低速远离障碍并回中心线 |
 
 ### 1.5 键盘控制模式
 
@@ -352,12 +353,17 @@ user_model_laziness: 0.3
 user_model_seed: 42      # RL / IPC 共用，确保输入序列可复现
 safety_min_dist: 0.2     # 米，安全停止距离；pilot 可用 --safety-min-dist 0.30 覆盖
 collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失败）
+safety_mode: "hold"      # hold|recover；recover 用低速脱困替代原地 hold
 ```
 
 **安全机制说明：**
 - `min_dist > safety_min_dist`：正常控制
-- `collision_dist < min_dist < safety_min_dist`：安全停止（零速指令），距离恢复后自动继续
+- `collision_dist < min_dist < safety_min_dist`：
+  - `safety_mode=hold`：安全停止（原地 pose hold），距离恢复后自动继续
+  - `safety_mode=recover`：发布限幅低速恢复命令，方向由最近障碍物远离方向 + 隧道中心线方向组成，距离恢复后自动继续 RL 推理
 - `min_dist < collision_dist`：碰撞！发布 `/tunnel_nav/collision` (True)，永久停止。对比实验中视为任务失败
+
+推荐将 `recover` 作为 stop-only safety shield 之后的 paired ablation：保持相同地图和 user-model seeds，比较 `hold` 与 `recover` 对 success、collision、safety-hold trap、TCR@1/2/5 和成功 runs 完成时间的影响。
 
 ### UserModel 模式
 

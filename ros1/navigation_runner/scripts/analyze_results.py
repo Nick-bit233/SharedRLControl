@@ -219,6 +219,77 @@ class ExperimentAnalyzer:
         finite = values[np.isfinite(values)]
         return float(np.mean(finite)) if finite.size else float('nan')
 
+    @staticmethod
+    def _resample_by_arclength(traj, spacing):
+        traj = np.asarray(traj, dtype=np.float32)
+        if len(traj) == 0:
+            return traj
+        if len(traj) == 1:
+            return traj.copy()
+
+        seg_lens = np.linalg.norm(np.diff(traj, axis=0), axis=1)
+        arc = np.concatenate([[0.0], np.cumsum(seg_lens)])
+        total_len = float(arc[-1])
+        if total_len <= 1e-6:
+            return traj[:1].copy()
+
+        sample_d = np.arange(0.0, total_len + spacing * 0.5, spacing)
+        sample_d[-1] = min(sample_d[-1], total_len)
+        sampled = np.empty((len(sample_d), traj.shape[1]), dtype=np.float32)
+        for dim in range(traj.shape[1]):
+            sampled[:, dim] = np.interp(sample_d, arc, traj[:, dim])
+        return sampled
+
+    @staticmethod
+    def _point_to_polyline_dist(points, polyline):
+        points = np.asarray(points, dtype=np.float32)
+        polyline = np.asarray(polyline, dtype=np.float32)
+        if len(points) == 0 or len(polyline) == 0:
+            return np.full(len(points), np.nan, dtype=np.float32)
+        if len(polyline) == 1:
+            return np.linalg.norm(points - polyline[0], axis=1)
+
+        seg_starts = polyline[:-1]
+        seg_ends = polyline[1:]
+        seg_vecs = seg_ends - seg_starts
+        seg_len_sq = np.sum(seg_vecs * seg_vecs, axis=1)
+        seg_len_sq[seg_len_sq == 0.0] = 1e-12
+
+        min_dists = np.full(len(points), np.inf, dtype=np.float32)
+        for start, vec, length_sq in zip(seg_starts, seg_vecs, seg_len_sq):
+            rel = points - start
+            t = np.clip(np.sum(rel * vec, axis=1) / length_sq, 0.0, 1.0)
+            closest = start + t[:, None] * vec
+            min_dists = np.minimum(min_dists, np.linalg.norm(points - closest, axis=1))
+        return min_dists
+
+    def _compute_tcr_metrics(self, pos, ts, human_cmd_world, spacing=0.5):
+        if human_cmd_world is None or len(human_cmd_world) != len(pos):
+            return {1: float('nan'), 2: float('nan'), 5: float('nan')}
+        if len(pos) < 2 or len(ts) != len(pos):
+            return {1: float('nan'), 2: float('nan'), 5: float('nan')}
+
+        dt = np.diff(ts, prepend=ts[0])
+        if len(dt) > 1:
+            fallback_dt = float(np.nanmedian(dt[1:]))
+        else:
+            fallback_dt = 0.02
+        if not np.isfinite(fallback_dt) or fallback_dt <= 0.0:
+            fallback_dt = 0.02
+        dt[dt <= 0.0] = fallback_dt
+
+        reference = np.empty_like(pos, dtype=np.float32)
+        reference[0] = pos[0]
+        for idx in range(1, len(pos)):
+            reference[idx] = reference[idx - 1] + human_cmd_world[idx - 1] * dt[idx]
+
+        reference_sampled = self._resample_by_arclength(reference, spacing)
+        dists = self._point_to_polyline_dist(reference_sampled, pos)
+        return {
+            threshold: float(np.nanmean(dists < threshold))
+            for threshold in (1, 2, 5)
+        }
+
     def compute_metrics(self, run):
         npz_path = run['npz_path']
         if not npz_path or not os.path.exists(npz_path):
@@ -240,6 +311,7 @@ class ExperimentAnalyzer:
         cmd_world = self._first_present(data, ['cmd_vel_world', 'ctrl_vels_w', 'cmd_vel'])
         if cmd_world is None or len(cmd_world) != len(pos):
             cmd_world = np.zeros_like(pos)
+        human_cmd_world = self._first_present(data, ['human_cmd_world', 'human_vels_w'])
         collision_flags = self._first_present(data, ['collision_flags', 'collisions'])
         if collision_flags is None or len(collision_flags) != len(pos):
             collision_flags = np.zeros(len(pos), dtype=bool)
@@ -283,6 +355,10 @@ class ExperimentAnalyzer:
             )
         else:
             metric['cmd_smoothness'] = 0.0
+        tcr_metrics = self._compute_tcr_metrics(pos, ts, human_cmd_world)
+        metric['tcr_at_1'] = tcr_metrics[1]
+        metric['tcr_at_2'] = tcr_metrics[2]
+        metric['tcr_at_5'] = tcr_metrics[5]
 
         min_dist_series = self._first_present(data, ['min_obstacle_dist'])
         if min_dist_series is None or len(min_dist_series) != len(pos):
@@ -369,6 +445,9 @@ class ExperimentAnalyzer:
             ('total_time', 'Completion Time (s)', np.mean),
             ('avg_speed', 'Avg Speed (m/s)', np.mean),
             ('forward_speed', 'Forward Speed (m/s)', np.mean),
+            ('tcr_at_1', 'TCR@1', np.nanmean),
+            ('tcr_at_2', 'TCR@2', np.nanmean),
+            ('tcr_at_5', 'TCR@5', np.nanmean),
             ('accel_variance', 'Accel Variance', np.mean),
             ('cmd_smoothness', 'Cmd Smoothness', np.mean),
             ('lateral_std', 'Lateral StdDev (m)', np.mean),
@@ -436,6 +515,73 @@ class ExperimentAnalyzer:
             ax.set_ylabel(ylabel)
             ax.grid(True, alpha=0.3, axis='y')
 
+        def draw_summary_table(ax):
+            row_defs = [
+                (
+                    'Success Rate',
+                    lambda rows: np.mean([item['goal_reached'] for item in rows]) * 100.0,
+                    '{:.1f}%',
+                ),
+                (
+                    'Collision Rate',
+                    lambda rows: np.mean([item['collision'] for item in rows]) * 100.0,
+                    '{:.1f}%',
+                ),
+                (
+                    'TCR@1',
+                    lambda rows: np.nanmean([item.get('tcr_at_1', np.nan) for item in rows]),
+                    '{:.3f}',
+                ),
+                (
+                    'TCR@2',
+                    lambda rows: np.nanmean([item.get('tcr_at_2', np.nan) for item in rows]),
+                    '{:.3f}',
+                ),
+                (
+                    'TCR@5',
+                    lambda rows: np.nanmean([item.get('tcr_at_5', np.nan) for item in rows]),
+                    '{:.3f}',
+                ),
+                (
+                    'Completion Time',
+                    lambda rows: np.mean([
+                        item['total_time'] for item in rows if item['goal_reached']
+                    ]),
+                    '{:.2f}s',
+                ),
+            ]
+            table_rows = []
+            for label, getter, fmt in row_defs:
+                row = [label]
+                for method in methods_present:
+                    rows = results.get(method, [])
+                    try:
+                        value = getter(rows)
+                    except (FloatingPointError, ZeroDivisionError, ValueError):
+                        value = np.nan
+                    row.append(fmt.format(value) if np.isfinite(value) else 'N/A')
+                table_rows.append(row)
+
+            ax.axis('off')
+            table = ax.table(
+                cellText=table_rows,
+                colLabels=['Metric'] + [self.LABELS[m] for m in methods_present],
+                cellLoc='center',
+                colLoc='center',
+                loc='center',
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(10)
+            table.scale(1.0, 1.7)
+            for (row_idx, col_idx), cell in table.get_celld().items():
+                if row_idx == 0:
+                    cell.set_text_props(weight='bold')
+                    cell.set_facecolor('#EAEAEA')
+                elif col_idx == 0:
+                    cell.set_text_props(weight='bold')
+                    cell.set_facecolor('#F7F7F7')
+            ax.set_title('Key Metrics (TCR@k = trajectory coverage rate within k meters)')
+
         ax = fig.add_subplot(gs[0, :2])
         for method, tlist in trajectories.items():
             for idx, traj in enumerate(tlist):
@@ -456,31 +602,40 @@ class ExperimentAnalyzer:
             ax.legend()
 
         ax = fig.add_subplot(gs[0, 2])
-        for method, tlist in trajectories.items():
-            for traj in tlist:
-                speed = np.linalg.norm(np.array(traj['velocity']), axis=1)
-                ax.plot(
-                    np.array(traj['timestamps']),
-                    speed,
-                    color=self.COLORS[method],
-                    alpha=0.25,
-                    linewidth=0.8,
-                )
-        ax.set_title('Speed Profiles')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Speed (m/s)')
+        speed_series = []
+        speed_labels = []
+        speed_colors = []
+        for method in methods_present:
+            speeds = [
+                np.linalg.norm(np.array(traj['velocity']), axis=1)
+                for traj in trajectories.get(method, [])
+                if len(traj.get('velocity', []))
+            ]
+            if speeds:
+                speed_series.append(np.concatenate(speeds))
+                speed_labels.append(self.LABELS[method])
+                speed_colors.append(self.COLORS[method])
+        if speed_series:
+            ax.hist(
+                speed_series,
+                bins=30,
+                density=True,
+                alpha=0.55,
+                label=speed_labels,
+                color=speed_colors,
+            )
+        else:
+            ax.text(0.5, 0.5, 'No speed data', ha='center', va='center',
+                    transform=ax.transAxes)
+        ax.set_title('Speed Distribution')
+        ax.set_xlabel('Speed (m/s)')
+        ax.set_ylabel('Density')
         ax.grid(True, alpha=0.3)
+        if speed_series:
+            ax.legend()
 
         ax = fig.add_subplot(gs[1, 0])
-        rates = [np.mean([item['goal_reached'] for item in results[m]]) * 100 for m in methods_present]
-        bars = ax.bar([self.LABELS[m] for m in methods_present], rates,
-                      color=[self.COLORS[m] for m in methods_present])
-        for bar, rate in zip(bars, rates):
-            ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height() + 1.0,
-                    f"{rate:.0f}%", ha='center')
-        ax.set_title('Success Rate')
-        ax.set_ylabel('%')
-        ax.set_ylim(0, 110)
+        draw_summary_table(ax)
 
         ax = fig.add_subplot(gs[1, 1])
         draw_metric_boxplot(ax, 'max_x', 'Forward Distance', 'm')
@@ -550,6 +705,9 @@ class ExperimentAnalyzer:
                     np.mean([row.get('likely_safety_hold_trap', False) for row in rows])
                 ),
                 'max_x_mean': float(np.mean([row['max_x'] for row in rows])),
+                'tcr_at_1_mean': float(np.nanmean([row.get('tcr_at_1', np.nan) for row in rows])),
+                'tcr_at_2_mean': float(np.nanmean([row.get('tcr_at_2', np.nan) for row in rows])),
+                'tcr_at_5_mean': float(np.nanmean([row.get('tcr_at_5', np.nan) for row in rows])),
                 'min_obstacle_dist_mean': float(np.mean([row['min_obstacle_dist'] for row in rows])),
                 'monitored_min_obstacle_dist_mean': float(
                     np.nanmean([row.get('monitored_min_obstacle_dist', np.nan) for row in rows])

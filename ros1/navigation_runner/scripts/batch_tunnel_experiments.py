@@ -67,6 +67,14 @@ def parse_args():
     parser.add_argument("--collision-dist", type=float, default=0.05)
     parser.add_argument("--safety-min-dist", type=float, default=None,
                         help="RL safety stop distance passed to tunnel_navigation.py (default: 0.2)")
+    parser.add_argument("--safety-mode", default=None, choices=("hold", "recover"),
+                        help="RL safety intervention mode: hold or recover (default: hold)")
+    parser.add_argument("--safety-recover-speed", type=float, default=None,
+                        help="Max horizontal escape speed for safety_mode=recover")
+    parser.add_argument("--safety-recover-forward-speed", type=float, default=None,
+                        help="Small forward bias for safety_mode=recover")
+    parser.add_argument("--safety-recover-centerline-gain", type=float, default=None,
+                        help="Centerline-return weight for safety_mode=recover")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT,
                         help="RL checkpoint passed to tunnel_comparison.launch")
@@ -240,6 +248,14 @@ def apply_default_args(args):
         args.master_seed = 42
     if args.safety_min_dist is None:
         args.safety_min_dist = 0.2
+    if args.safety_mode is None:
+        args.safety_mode = "hold"
+    if args.safety_recover_speed is None:
+        args.safety_recover_speed = 0.35
+    if args.safety_recover_forward_speed is None:
+        args.safety_recover_forward_speed = 0.15
+    if args.safety_recover_centerline_gain is None:
+        args.safety_recover_centerline_gain = 0.4
 
 
 def apply_resume_config(args, output_root):
@@ -250,6 +266,10 @@ def apply_resume_config(args, output_root):
     requested_runs_per_batch = args.runs_per_batch
     requested_methods = args.methods
     requested_safety_min_dist = args.safety_min_dist
+    requested_safety_mode = args.safety_mode
+    requested_safety_recover_speed = args.safety_recover_speed
+    requested_safety_recover_forward_speed = args.safety_recover_forward_speed
+    requested_safety_recover_centerline_gain = args.safety_recover_centerline_gain
 
     config_methods = ",".join(config.get("methods", []))
     if requested_seed is not None and requested_seed != int(config["master_seed"]):
@@ -275,6 +295,14 @@ def apply_resume_config(args, output_root):
             f"--methods {requested_methods} does not match existing methods {config_methods}"
         )
     config_safety_min_dist = float(config.get("safety_min_dist", 0.2))
+    config_safety_mode = str(config.get("safety_mode", "hold"))
+    config_safety_recover_speed = float(config.get("safety_recover_speed", 0.35))
+    config_safety_recover_forward_speed = float(
+        config.get("safety_recover_forward_speed", 0.15)
+    )
+    config_safety_recover_centerline_gain = float(
+        config.get("safety_recover_centerline_gain", 0.4)
+    )
     if (
         requested_safety_min_dist is not None
         and abs(float(requested_safety_min_dist) - config_safety_min_dist) > 1e-9
@@ -283,6 +311,28 @@ def apply_resume_config(args, output_root):
             f"--safety-min-dist {requested_safety_min_dist} does not match existing "
             f"safety_min_dist {config_safety_min_dist}"
         )
+    if requested_safety_mode is not None and requested_safety_mode != config_safety_mode:
+        raise ValueError(
+            f"--safety-mode {requested_safety_mode} does not match existing "
+            f"safety_mode {config_safety_mode}"
+        )
+    for flag, requested_value, config_value in (
+        ("--safety-recover-speed", requested_safety_recover_speed, config_safety_recover_speed),
+        (
+            "--safety-recover-forward-speed",
+            requested_safety_recover_forward_speed,
+            config_safety_recover_forward_speed,
+        ),
+        (
+            "--safety-recover-centerline-gain",
+            requested_safety_recover_centerline_gain,
+            config_safety_recover_centerline_gain,
+        ),
+    ):
+        if requested_value is not None and abs(float(requested_value) - config_value) > 1e-9:
+            raise ValueError(
+                f"{flag} {requested_value} does not match existing value {config_value}"
+            )
 
     args.num_batches = int(config["num_batches"])
     args.runs_per_batch = int(config["runs_per_batch"])
@@ -291,6 +341,10 @@ def apply_resume_config(args, output_root):
     args.goal_x = float(config.get("goal_x", args.goal_x))
     args.collision_dist = float(config.get("collision_dist", args.collision_dist))
     args.safety_min_dist = config_safety_min_dist
+    args.safety_mode = config_safety_mode
+    args.safety_recover_speed = config_safety_recover_speed
+    args.safety_recover_forward_speed = config_safety_recover_forward_speed
+    args.safety_recover_centerline_gain = config_safety_recover_centerline_gain
     args.device = config.get("device", args.device)
     args.checkpoint = config.get("checkpoint", args.checkpoint)
     args.gazebo_z_mode = config.get("gazebo_z_mode", args.gazebo_z_mode)
@@ -481,6 +535,10 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"goal_x:={args.goal_x}",
         f"collision_dist:={args.collision_dist}",
         f"safety_min_dist:={args.safety_min_dist}",
+        f"safety_mode:={args.safety_mode}",
+        f"safety_recover_speed:={args.safety_recover_speed}",
+        f"safety_recover_forward_speed:={args.safety_recover_forward_speed}",
+        f"safety_recover_centerline_gain:={args.safety_recover_centerline_gain}",
         f"device:={args.device}",
         f"checkpoint:={args.checkpoint}",
         f"gazebo_z_mode:={args.gazebo_z_mode}",
@@ -713,6 +771,10 @@ def run_batch(args, output_root):
             "goal_x": args.goal_x,
             "collision_dist": args.collision_dist,
             "safety_min_dist": args.safety_min_dist,
+            "safety_mode": args.safety_mode,
+            "safety_recover_speed": args.safety_recover_speed,
+            "safety_recover_forward_speed": args.safety_recover_forward_speed,
+            "safety_recover_centerline_gain": args.safety_recover_centerline_gain,
             "device": args.device,
             "checkpoint": args.checkpoint,
             "gazebo_z_mode": args.gazebo_z_mode,

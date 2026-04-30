@@ -44,7 +44,7 @@
 | 状态/阈值 | 默认值 | 行为 |
 | --- | ---: | --- |
 | `safety_start_takeoff_delta` | `0.5m` | 起飞前不启用安全/碰撞检测，避免 PCD 地面点被误判为碰撞；超过初始高度 `+0.5m` 后永久启用 |
-| `safety_min_dist` | `0.2m` | 可恢复安全停车：设置 `safety_stop=True`，控制循环发布 `_publish_stop()`，即当前位置 XY + `takeoff_height` 姿态保持 |
+| `safety_min_dist` | `0.2m` | 可恢复安全介入阈值：默认 `safety_mode=hold` 时发布 `_publish_stop()`；`safety_mode=recover` 时发布低速远离障碍/回中心线命令 |
 | `collision_dist` | `0.05m` | 不可恢复碰撞：设置 `collision=True`，发布 `/tunnel_nav/collision=True`，控制循环永久停止本 run 的 RL 推理 |
 
 距离来源优先使用 Python `PcdRaycaster.nearest_distance()` 对同一份 PCD 地图做全图最近点查询；只有未启用 Python PCD raycaster 时，才 fallback 到稀疏 raycast hit 点距离。这个设计是为了避免“上一帧 raycast 命中点 + 当前高速位姿”产生 stale-hit 假碰撞。
@@ -54,7 +54,7 @@
 1. `external_stop`：由 recorder 或其他实验控制节点请求停止。
 2. `goal_reached`：到达 `goal_x` 后发布 stop。
 3. `collision`：永久停止，并保持悬停。
-4. `safety_stop`：可恢复悬停；距离恢复到 `safety_min_dist` 以上后继续模型推理。
+4. `safety_stop`：可恢复安全介入；默认悬停，或在 `safety_mode=recover` 下执行低速脱困；距离恢复到 `safety_min_dist` 以上后继续模型推理。
 5. 正常路径：构造观测、发布 human command、M3 推理、发布速度命令。
 
 Gazebo 非 PX4 路径还有两层执行侧保护：
