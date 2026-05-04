@@ -101,6 +101,13 @@ class TunnelConfig:
         self.user_model_smoothness_scale = rospy.get_param("~user_model_smoothness_scale", 0.5)
         self.user_model_laziness = rospy.get_param("~user_model_laziness", 0.3)
         self.user_model_seed = int(rospy.get_param("~user_model_seed", 42))
+        self.input_source = str(rospy.get_param("~input_source", "online")).lower()
+        self.replay_dataset_path = rospy.get_param("~replay_dataset_path", "")
+        self.replay_dataset_format = rospy.get_param("~replay_dataset_format", "hdf5")
+        self.replay_sampling_mode = rospy.get_param("~replay_sampling_mode", "raw")
+        self.replay_trajectory_index = int(rospy.get_param("~replay_trajectory_index", -1))
+        self.replay_start_offset = int(rospy.get_param("~replay_start_offset", -1))
+        self.replay_loop = _param_bool(rospy.get_param("~replay_loop", True))
         # Keyboard RL-assist scaling target (fraction of action_limit).
         # Training always used ha_x = action_limit; below ~0.877 * limit the
         # learned residual bias reverses the forward direction.  1.0 = full
@@ -210,6 +217,13 @@ class TunnelNavigator:
             )
             rospy.signal_shutdown("Invalid safety_mode")
             raise ValueError(f"Invalid safety_mode: {self.cfg.safety_mode}")
+        if self.cfg.input_source not in {"online", "offline"}:
+            rospy.logfatal(
+                "[TunnelNav] Invalid input_source=%s; expected online or offline",
+                self.cfg.input_source,
+            )
+            rospy.signal_shutdown("Invalid input_source")
+            raise ValueError(f"Invalid input_source: {self.cfg.input_source}")
 
         # ---- Load policy ----
         rospy.loginfo(f"[TunnelNav] Loading checkpoint: {self.cfg.checkpoint_path}")
@@ -253,6 +267,11 @@ class TunnelNavigator:
                 f"[TunnelNav]   user_model     : "
                 f"{'simple' if self.cfg.user_model_simple else self.cfg.user_model_profile} "
                 f"@ {self.cfg.user_model_speed} m/s (seed={self.cfg.user_model_seed})"
+            )
+            rospy.loginfo(
+                f"[TunnelNav]   input_source   : {self.cfg.input_source} "
+                f"(dataset={self.cfg.replay_dataset_path or 'n/a'}, "
+                f"mode={self.cfg.replay_sampling_mode})"
             )
         rospy.loginfo(f"[TunnelNav]   lidar          : {self.cfg.lidar_hbeams}h x {self.cfg.lidar_vbeams}v, range={self.cfg.lidar_range}m")
         rospy.loginfo(f"[TunnelNav]   deterministic  : {self.cfg.deterministic}")
@@ -298,6 +317,13 @@ class TunnelNavigator:
                 smoothness_base=self.cfg.user_model_smoothness_base,
                 smoothness_scale=self.cfg.user_model_smoothness_scale,
                 laziness=self.cfg.user_model_laziness,
+                input_source=self.cfg.input_source,
+                replay_dataset_path=self.cfg.replay_dataset_path,
+                replay_dataset_format=self.cfg.replay_dataset_format,
+                replay_sampling_mode=self.cfg.replay_sampling_mode,
+                replay_trajectory_index=self.cfg.replay_trajectory_index,
+                replay_start_offset=self.cfg.replay_start_offset,
+                replay_loop=self.cfg.replay_loop,
                 device=self.cfg.device,
             )
             self.user_model.reset(seed=self.cfg.user_model_seed)

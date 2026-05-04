@@ -115,9 +115,41 @@ def parse_args():
     parser.add_argument("--user-model-smoothness-base", type=float, default=0.4)
     parser.add_argument("--user-model-smoothness-scale", type=float, default=0.5)
     parser.add_argument("--user-model-laziness", type=float, default=0.3)
+    parser.add_argument("--input-source", default=None, choices=("online", "offline"),
+                        help="Pilot input source for RL and IPC (default: online)")
+    parser.add_argument("--replay-dataset-path", default=None,
+                        help="Offline replay dataset path, e.g. trajectories_tunnel.h5")
+    parser.add_argument("--replay-dataset-format", default=None, choices=("hdf5", "h5"),
+                        help="Offline replay dataset format (default: hdf5)")
+    parser.add_argument("--replay-sampling-mode", default=None, choices=("raw",),
+                        help="Replay sampling mode (default: raw)")
+    parser.add_argument("--replay-trajectory-index", type=int, default=None,
+                        help="Fixed replay trajectory index; -1 derives it from user_model_seed")
+    parser.add_argument("--replay-start-offset", type=int, default=None,
+                        help="Fixed replay start offset; -1 derives it from user_model_seed")
+    parser.add_argument("--no-replay-loop", dest="replay_loop", action="store_false",
+                        help="Hold the last replay command instead of looping at dataset end")
+    parser.set_defaults(replay_loop=None)
     parser.add_argument("--num-obstacles", type=int, default=15)
     parser.add_argument("--cuboid-ratio", type=float, default=0.5)
     parser.add_argument("--map-resolution", type=float, default=0.1)
+    parser.add_argument("--map-sampling-mode", default=None,
+                        choices=("uniform", "constrained"),
+                        help="Obstacle center sampler for generated PCD maps")
+    parser.add_argument("--min-obstacle-spacing", type=float, default=None,
+                        help="Minimum XY footprint spacing for constrained map sampling")
+    parser.add_argument("--local-density-window", type=float, default=None,
+                        help="Square XY window size for local density checks")
+    parser.add_argument("--max-obstacles-per-window", type=int, default=None,
+                        help="Maximum obstacle centers in any local density window")
+    parser.add_argument("--max-local-area-fraction", type=float, default=None,
+                        help="Maximum obstacle footprint area fraction per local density window")
+    parser.add_argument("--require-connectivity", action="store_true", default=None,
+                        help="Reject maps without approximate start-to-goal free-space connectivity")
+    parser.add_argument("--min-bottleneck-width", type=float, default=None,
+                        help="Approximate minimum required clearance along connected free-space")
+    parser.add_argument("--max-resample-attempts", type=int, default=None,
+                        help="Maximum deterministic resampling attempts for constrained maps")
     parser.add_argument("--analyze", dest="analyze", action="store_true")
     parser.add_argument("--no-analyze", dest="analyze", action="store_false")
     parser.set_defaults(analyze=True)
@@ -256,6 +288,36 @@ def apply_default_args(args):
         args.safety_recover_forward_speed = 0.15
     if args.safety_recover_centerline_gain is None:
         args.safety_recover_centerline_gain = 0.4
+    if args.input_source is None:
+        args.input_source = "online"
+    if args.replay_dataset_path is None:
+        args.replay_dataset_path = ""
+    if args.replay_dataset_format is None:
+        args.replay_dataset_format = "hdf5"
+    if args.replay_sampling_mode is None:
+        args.replay_sampling_mode = "raw"
+    if args.replay_trajectory_index is None:
+        args.replay_trajectory_index = -1
+    if args.replay_start_offset is None:
+        args.replay_start_offset = -1
+    if args.replay_loop is None:
+        args.replay_loop = True
+    if args.map_sampling_mode is None:
+        args.map_sampling_mode = "uniform"
+    if args.min_obstacle_spacing is None:
+        args.min_obstacle_spacing = 0.0
+    if args.local_density_window is None:
+        args.local_density_window = 3.0
+    if args.max_obstacles_per_window is None:
+        args.max_obstacles_per_window = 4
+    if args.max_local_area_fraction is None:
+        args.max_local_area_fraction = 0.45
+    if args.require_connectivity is None:
+        args.require_connectivity = False
+    if args.min_bottleneck_width is None:
+        args.min_bottleneck_width = 0.4
+    if args.max_resample_attempts is None:
+        args.max_resample_attempts = 2000
 
 
 def apply_resume_config(args, output_root):
@@ -270,6 +332,21 @@ def apply_resume_config(args, output_root):
     requested_safety_recover_speed = args.safety_recover_speed
     requested_safety_recover_forward_speed = args.safety_recover_forward_speed
     requested_safety_recover_centerline_gain = args.safety_recover_centerline_gain
+    requested_input_source = args.input_source
+    requested_replay_dataset_path = args.replay_dataset_path
+    requested_replay_dataset_format = args.replay_dataset_format
+    requested_replay_sampling_mode = args.replay_sampling_mode
+    requested_replay_trajectory_index = args.replay_trajectory_index
+    requested_replay_start_offset = args.replay_start_offset
+    requested_replay_loop = args.replay_loop
+    requested_map_sampling_mode = args.map_sampling_mode
+    requested_min_obstacle_spacing = args.min_obstacle_spacing
+    requested_local_density_window = args.local_density_window
+    requested_max_obstacles_per_window = args.max_obstacles_per_window
+    requested_max_local_area_fraction = args.max_local_area_fraction
+    requested_require_connectivity = args.require_connectivity
+    requested_min_bottleneck_width = args.min_bottleneck_width
+    requested_max_resample_attempts = args.max_resample_attempts
 
     config_methods = ",".join(config.get("methods", []))
     if requested_seed is not None and requested_seed != int(config["master_seed"]):
@@ -334,6 +411,58 @@ def apply_resume_config(args, output_root):
                 f"{flag} {requested_value} does not match existing value {config_value}"
             )
 
+    replay_defaults = {
+        "input_source": "online",
+        "replay_dataset_path": "",
+        "replay_dataset_format": "hdf5",
+        "replay_sampling_mode": "raw",
+        "replay_trajectory_index": -1,
+        "replay_start_offset": -1,
+        "replay_loop": True,
+    }
+    for key, requested_value in (
+        ("input_source", requested_input_source),
+        ("replay_dataset_path", requested_replay_dataset_path),
+        ("replay_dataset_format", requested_replay_dataset_format),
+        ("replay_sampling_mode", requested_replay_sampling_mode),
+        ("replay_trajectory_index", requested_replay_trajectory_index),
+        ("replay_start_offset", requested_replay_start_offset),
+        ("replay_loop", requested_replay_loop),
+    ):
+        config_value = config.get(key, replay_defaults[key])
+        if requested_value is not None and requested_value != config_value:
+            raise ValueError(
+                f"--{key.replace('_', '-')} {requested_value} does not match "
+                f"existing value {config_value}"
+            )
+
+    map_defaults = {
+        "map_sampling_mode": "uniform",
+        "min_obstacle_spacing": 0.0,
+        "local_density_window": 3.0,
+        "max_obstacles_per_window": 4,
+        "max_local_area_fraction": 0.45,
+        "require_connectivity": False,
+        "min_bottleneck_width": 0.4,
+        "max_resample_attempts": 2000,
+    }
+    for key, requested_value in (
+        ("map_sampling_mode", requested_map_sampling_mode),
+        ("min_obstacle_spacing", requested_min_obstacle_spacing),
+        ("local_density_window", requested_local_density_window),
+        ("max_obstacles_per_window", requested_max_obstacles_per_window),
+        ("max_local_area_fraction", requested_max_local_area_fraction),
+        ("require_connectivity", requested_require_connectivity),
+        ("min_bottleneck_width", requested_min_bottleneck_width),
+        ("max_resample_attempts", requested_max_resample_attempts),
+    ):
+        config_value = config.get(key, map_defaults[key])
+        if requested_value is not None and requested_value != config_value:
+            raise ValueError(
+                f"--{key.replace('_', '-')} {requested_value} does not match "
+                f"existing value {config_value}"
+            )
+
     args.num_batches = int(config["num_batches"])
     args.runs_per_batch = int(config["runs_per_batch"])
     args.methods = config_methods
@@ -393,9 +522,48 @@ def apply_resume_config(args, output_root):
     args.user_model_laziness = float(
         config.get("user_model_laziness", args.user_model_laziness)
     )
+    args.input_source = config.get("input_source", replay_defaults["input_source"])
+    args.replay_dataset_path = config.get(
+        "replay_dataset_path", replay_defaults["replay_dataset_path"]
+    )
+    args.replay_dataset_format = config.get(
+        "replay_dataset_format", replay_defaults["replay_dataset_format"]
+    )
+    args.replay_sampling_mode = config.get(
+        "replay_sampling_mode", replay_defaults["replay_sampling_mode"]
+    )
+    args.replay_trajectory_index = int(
+        config.get("replay_trajectory_index", replay_defaults["replay_trajectory_index"])
+    )
+    args.replay_start_offset = int(
+        config.get("replay_start_offset", replay_defaults["replay_start_offset"])
+    )
+    args.replay_loop = bool(config.get("replay_loop", replay_defaults["replay_loop"]))
     args.num_obstacles = int(config.get("num_obstacles", args.num_obstacles))
     args.cuboid_ratio = float(config.get("cuboid_ratio", args.cuboid_ratio))
     args.map_resolution = float(config.get("map_resolution", args.map_resolution))
+    args.map_sampling_mode = config.get("map_sampling_mode", map_defaults["map_sampling_mode"])
+    args.min_obstacle_spacing = float(
+        config.get("min_obstacle_spacing", map_defaults["min_obstacle_spacing"])
+    )
+    args.local_density_window = float(
+        config.get("local_density_window", map_defaults["local_density_window"])
+    )
+    args.max_obstacles_per_window = int(
+        config.get("max_obstacles_per_window", map_defaults["max_obstacles_per_window"])
+    )
+    args.max_local_area_fraction = float(
+        config.get("max_local_area_fraction", map_defaults["max_local_area_fraction"])
+    )
+    args.require_connectivity = bool(
+        config.get("require_connectivity", map_defaults["require_connectivity"])
+    )
+    args.min_bottleneck_width = float(
+        config.get("min_bottleneck_width", map_defaults["min_bottleneck_width"])
+    )
+    args.max_resample_attempts = int(
+        config.get("max_resample_attempts", map_defaults["max_resample_attempts"])
+    )
     args.launch_timeout = float(config.get("launch_timeout", args.launch_timeout))
     args.recorder_timeout = float(config.get("recorder_timeout", args.recorder_timeout))
     args.completion_grace_period = float(
@@ -500,7 +668,16 @@ def generate_batch_assets(args, batch_dir, batch_idx, map_seed):
         "--num-obstacles", str(args.num_obstacles),
         "--cuboid-ratio", str(args.cuboid_ratio),
         "--resolution", str(args.map_resolution),
+        "--sampling-mode", str(args.map_sampling_mode),
+        "--min-obstacle-spacing", str(args.min_obstacle_spacing),
+        "--local-density-window", str(args.local_density_window),
+        "--max-obstacles-per-window", str(args.max_obstacles_per_window),
+        "--max-local-area-fraction", str(args.max_local_area_fraction),
+        "--min-bottleneck-width", str(args.min_bottleneck_width),
+        "--max-resample-attempts", str(args.max_resample_attempts),
     ]
+    if args.require_connectivity:
+        cmd.append("--require-connectivity")
     subprocess.run(cmd, check=True)
 
     root_metadata = os.path.join(os.path.dirname(batch_dir), f"b{batch_idx:03d}_obstacles.json")
@@ -560,6 +737,13 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"user_model_smoothness_base:={args.user_model_smoothness_base}",
         f"user_model_smoothness_scale:={args.user_model_smoothness_scale}",
         f"user_model_laziness:={args.user_model_laziness}",
+        f"input_source:={args.input_source}",
+        f"replay_dataset_path:={args.replay_dataset_path}",
+        f"replay_dataset_format:={args.replay_dataset_format}",
+        f"replay_sampling_mode:={args.replay_sampling_mode}",
+        f"replay_trajectory_index:={args.replay_trajectory_index}",
+        f"replay_start_offset:={args.replay_start_offset}",
+        f"replay_loop:={bool_str(args.replay_loop)}",
         f"spawn_x:={args.spawn_x}",
         f"spawn_y:={args.spawn_y}",
         f"spawn_z:={args.spawn_z}",
@@ -798,9 +982,24 @@ def run_batch(args, output_root):
             "user_model_smoothness_base": args.user_model_smoothness_base,
             "user_model_smoothness_scale": args.user_model_smoothness_scale,
             "user_model_laziness": args.user_model_laziness,
+            "input_source": args.input_source,
+            "replay_dataset_path": args.replay_dataset_path,
+            "replay_dataset_format": args.replay_dataset_format,
+            "replay_sampling_mode": args.replay_sampling_mode,
+            "replay_trajectory_index": args.replay_trajectory_index,
+            "replay_start_offset": args.replay_start_offset,
+            "replay_loop": args.replay_loop,
             "num_obstacles": args.num_obstacles,
             "cuboid_ratio": args.cuboid_ratio,
             "map_resolution": args.map_resolution,
+            "map_sampling_mode": args.map_sampling_mode,
+            "min_obstacle_spacing": args.min_obstacle_spacing,
+            "local_density_window": args.local_density_window,
+            "max_obstacles_per_window": args.max_obstacles_per_window,
+            "max_local_area_fraction": args.max_local_area_fraction,
+            "require_connectivity": args.require_connectivity,
+            "min_bottleneck_width": args.min_bottleneck_width,
+            "max_resample_attempts": args.max_resample_attempts,
             "launch_timeout": args.launch_timeout,
             "recorder_timeout": args.recorder_timeout,
             "completion_grace_period": args.completion_grace_period,

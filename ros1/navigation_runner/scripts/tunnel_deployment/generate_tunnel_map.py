@@ -34,7 +34,7 @@ Usage:
 import argparse
 import json
 import numpy as np
-from typing import List, NamedTuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 
 class Obstacle(NamedTuple):
@@ -63,6 +63,212 @@ def _in_protection_zone(cx: float, cy: float, half_size: float) -> bool:
     return dist < (SPAWN_PROTECT_RADIUS + half_size)
 
 
+def _footprint_radius(obs: Obstacle) -> float:
+    return max(obs.size_x, obs.size_y) / 2.0
+
+
+def _footprint_area(obs: Obstacle) -> float:
+    if obs.shape == "cylinder":
+        radius = obs.size_x / 2.0
+        return float(np.pi * radius * radius)
+    return float(obs.size_x * obs.size_y)
+
+
+def _footprint_gap(a: Obstacle, b: Obstacle) -> float:
+    center_dist = float(np.hypot(a.cx - b.cx, a.cy - b.cy))
+    return center_dist - _footprint_radius(a) - _footprint_radius(b)
+
+
+def _local_density_stats(
+    obstacles: List[Obstacle],
+    window: float,
+) -> Tuple[int, float]:
+    if not obstacles or window <= 0.0:
+        return 0, 0.0
+
+    max_count = 0
+    max_area_fraction = 0.0
+    half_window = window / 2.0
+    area = window * window
+    for center in obstacles:
+        included = [
+            obs for obs in obstacles
+            if abs(obs.cx - center.cx) <= half_window
+            and abs(obs.cy - center.cy) <= half_window
+        ]
+        max_count = max(max_count, len(included))
+        max_area_fraction = max(
+            max_area_fraction,
+            sum(_footprint_area(obs) for obs in included) / area,
+        )
+    return int(max_count), float(max_area_fraction)
+
+
+def _candidate_rejection_reason(
+    candidate: Obstacle,
+    obstacles: List[Obstacle],
+    min_obstacle_spacing: float,
+    local_density_window: float,
+    max_obstacles_per_window: int,
+    max_local_area_fraction: float,
+) -> Optional[str]:
+    radius = _footprint_radius(candidate)
+    if _in_protection_zone(candidate.cx, candidate.cy, radius):
+        return "spawn_protection"
+
+    if min_obstacle_spacing > 0.0:
+        for obs in obstacles:
+            if _footprint_gap(candidate, obs) < min_obstacle_spacing:
+                return "min_spacing"
+
+    trial = obstacles + [candidate]
+    max_count, max_area_fraction = _local_density_stats(trial, local_density_window)
+    if max_obstacles_per_window > 0 and max_count > max_obstacles_per_window:
+        return "local_count"
+    if max_local_area_fraction > 0.0 and max_area_fraction > max_local_area_fraction:
+        return "local_area_fraction"
+    return None
+
+
+def _sample_obstacle(
+    rng: np.random.RandomState,
+    x_half: float,
+    y_half: float,
+    z_max: float,
+    obstacle_width_range: tuple,
+    obstacle_height_range: tuple,
+    obstacle_zone_x_min: float,
+    cuboid_ratio: float,
+) -> Obstacle:
+    margin = 1.0
+    cx = rng.uniform(obstacle_zone_x_min + margin, x_half - margin)
+    cy = rng.uniform(-y_half + margin, y_half - margin)
+    height = min(rng.uniform(*obstacle_height_range), z_max)
+
+    if rng.random() < cuboid_ratio:
+        sx = rng.uniform(*obstacle_width_range)
+        sy = rng.uniform(*obstacle_width_range)
+        return Obstacle(cx, cy, "cuboid", sx, sy, height)
+
+    diameter = rng.uniform(*obstacle_width_range)
+    return Obstacle(cx, cy, "cylinder", diameter, diameter, height)
+
+
+def _connectivity_metrics(
+    obstacles: List[Obstacle],
+    x_half: float,
+    y_half: float,
+    clearance: float = 0.2,
+    grid_resolution: float = 0.25,
+) -> Dict[str, object]:
+    """Approximate 2-D traversability through obstacle footprints."""
+    xs = np.arange(-x_half + grid_resolution / 2.0, x_half, grid_resolution)
+    ys = np.arange(-y_half + grid_resolution / 2.0, y_half, grid_resolution)
+    nx, ny = len(xs), len(ys)
+    occupied = np.zeros((nx, ny), dtype=bool)
+    clearance = max(0.0, float(clearance))
+
+    for obs in obstacles:
+        radius = _footprint_radius(obs) + clearance
+        if obs.shape == "cylinder":
+            dx = xs[:, None] - obs.cx
+            dy = ys[None, :] - obs.cy
+            occupied |= (dx * dx + dy * dy) <= radius * radius
+        else:
+            hx = obs.size_x / 2.0 + clearance
+            hy = obs.size_y / 2.0 + clearance
+            occupied |= (
+                (np.abs(xs[:, None] - obs.cx) <= hx)
+                & (np.abs(ys[None, :] - obs.cy) <= hy)
+            )
+
+    def nearest_cell(x: float, y: float) -> Tuple[int, int]:
+        ix = int(np.clip(np.argmin(np.abs(xs - x)), 0, nx - 1))
+        iy = int(np.clip(np.argmin(np.abs(ys - y)), 0, ny - 1))
+        return ix, iy
+
+    start = nearest_cell(SPAWN_X, SPAWN_Y)
+    goal_cells = [(nx - 1, iy) for iy in range(ny) if not occupied[nx - 1, iy]]
+    if occupied[start] or not goal_cells:
+        return {
+            "connected": False,
+            "grid_resolution": float(grid_resolution),
+            "clearance": float(clearance),
+            "free_fraction": float(1.0 - np.mean(occupied)),
+            "visited_cells": 0,
+        }
+
+    from collections import deque
+
+    visited = np.zeros_like(occupied, dtype=bool)
+    parent = {}
+    queue = deque([start])
+    visited[start] = True
+    goal_set = set(goal_cells)
+    reached = None
+    while queue:
+        cell = queue.popleft()
+        if cell in goal_set:
+            reached = cell
+            break
+        ix, iy = cell
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nxt = (ix + dx, iy + dy)
+            if (
+                0 <= nxt[0] < nx
+                and 0 <= nxt[1] < ny
+                and not occupied[nxt]
+                and not visited[nxt]
+            ):
+                visited[nxt] = True
+                parent[nxt] = cell
+                queue.append(nxt)
+
+    path_length = 0
+    if reached is not None:
+        cell = reached
+        while cell != start:
+            path_length += 1
+            cell = parent[cell]
+
+    return {
+        "connected": reached is not None,
+        "grid_resolution": float(grid_resolution),
+        "clearance": float(clearance),
+        "free_fraction": float(1.0 - np.mean(occupied)),
+        "visited_cells": int(np.sum(visited)),
+        "path_length_m": float(path_length * grid_resolution) if reached is not None else 0.0,
+    }
+
+
+def compute_feasibility_metrics(
+    obstacles: List[Obstacle],
+    x_half: float,
+    y_half: float,
+    local_density_window: float,
+    min_bottleneck_width: float,
+) -> Dict[str, object]:
+    gaps = [
+        _footprint_gap(a, b)
+        for idx, a in enumerate(obstacles)
+        for b in obstacles[idx + 1:]
+    ]
+    max_count, max_area_fraction = _local_density_stats(obstacles, local_density_window)
+    connectivity = _connectivity_metrics(
+        obstacles,
+        x_half=x_half,
+        y_half=y_half,
+        clearance=max(0.0, min_bottleneck_width / 2.0),
+    )
+    return {
+        "min_footprint_gap": float(np.min(gaps)) if gaps else float("inf"),
+        "mean_footprint_gap": float(np.mean(gaps)) if gaps else float("inf"),
+        "max_obstacles_per_local_window": int(max_count),
+        "max_local_area_fraction": float(max_area_fraction),
+        "connectivity": connectivity,
+    }
+
+
 def generate_obstacle_params(
     num_obstacles: int = 60,
     x_half: float = 12.0,
@@ -73,6 +279,15 @@ def generate_obstacle_params(
     obstacle_zone_x_min: float = -6.0,
     cuboid_ratio: float = 0.5,
     seed: int = 42,
+    sampling_mode: str = "uniform",
+    min_obstacle_spacing: float = 0.0,
+    local_density_window: float = 3.0,
+    max_obstacles_per_window: int = 4,
+    max_local_area_fraction: float = 0.45,
+    require_connectivity: bool = False,
+    min_bottleneck_width: float = 0.4,
+    max_resample_attempts: int = 2000,
+    return_stats: bool = False,
 ) -> List[Obstacle]:
     """
     Generate a mixed list of cylinder and cuboid obstacle parameters.
@@ -81,34 +296,91 @@ def generate_obstacle_params(
     Deterministic given the seed.
     """
     rng = np.random.RandomState(seed)
-    margin = 1.0  # keep obstacles 1m from walls
-
     obstacles: List[Obstacle] = []
     attempts = 0
-    max_attempts = num_obstacles * 10
+    max_attempts = (
+        num_obstacles * 10
+        if sampling_mode == "uniform"
+        else max(int(max_resample_attempts), num_obstacles)
+    )
+    rejections = {
+        "spawn_protection": 0,
+        "min_spacing": 0,
+        "local_count": 0,
+        "local_area_fraction": 0,
+        "connectivity": 0,
+    }
 
     while len(obstacles) < num_obstacles and attempts < max_attempts:
         attempts += 1
-        cx = rng.uniform(obstacle_zone_x_min + margin, x_half - margin)
-        cy = rng.uniform(-y_half + margin, y_half - margin)
-        height = min(rng.uniform(*obstacle_height_range), z_max)
+        candidate = _sample_obstacle(
+            rng,
+            x_half,
+            y_half,
+            z_max,
+            obstacle_width_range,
+            obstacle_height_range,
+            obstacle_zone_x_min,
+            cuboid_ratio,
+        )
 
-        if rng.random() < cuboid_ratio:
-            # Cuboid: independent X/Y side lengths
-            sx = rng.uniform(*obstacle_width_range)
-            sy = rng.uniform(*obstacle_width_range)
-            half = max(sx, sy) / 2.0
-            if _in_protection_zone(cx, cy, half):
+        if sampling_mode == "uniform":
+            if _in_protection_zone(candidate.cx, candidate.cy, _footprint_radius(candidate)):
+                rejections["spawn_protection"] += 1
                 continue
-            obstacles.append(Obstacle(cx, cy, 'cuboid', sx, sy, height))
+            obstacles.append(candidate)
         else:
-            # Cylinder
-            diameter = rng.uniform(*obstacle_width_range)
-            radius = diameter / 2.0
-            if _in_protection_zone(cx, cy, radius):
+            reason = _candidate_rejection_reason(
+                candidate,
+                obstacles,
+                min_obstacle_spacing=min_obstacle_spacing,
+                local_density_window=local_density_window,
+                max_obstacles_per_window=max_obstacles_per_window,
+                max_local_area_fraction=max_local_area_fraction,
+            )
+            if reason:
+                rejections[reason] += 1
                 continue
-            obstacles.append(Obstacle(cx, cy, 'cylinder', diameter, diameter, height))
+            obstacles.append(candidate)
 
+    if len(obstacles) < num_obstacles:
+        raise RuntimeError(
+            f"Only sampled {len(obstacles)}/{num_obstacles} obstacles after "
+            f"{attempts} attempts with sampling_mode={sampling_mode}"
+        )
+
+    feasibility = compute_feasibility_metrics(
+        obstacles,
+        x_half=x_half,
+        y_half=y_half,
+        local_density_window=local_density_window,
+        min_bottleneck_width=min_bottleneck_width,
+    )
+    if require_connectivity and not feasibility["connectivity"]["connected"]:
+        rejections["connectivity"] += 1
+        raise RuntimeError(
+            "Generated map failed approximate connectivity check; increase "
+            "--max-resample-attempts or relax density/spacing constraints"
+        )
+
+    stats = {
+        "sampling_mode": sampling_mode,
+        "attempts": int(attempts),
+        "rejections": rejections,
+        "constraints": {
+            "min_obstacle_spacing": float(min_obstacle_spacing),
+            "local_density_window": float(local_density_window),
+            "max_obstacles_per_window": int(max_obstacles_per_window),
+            "max_local_area_fraction": float(max_local_area_fraction),
+            "require_connectivity": bool(require_connectivity),
+            "min_bottleneck_width": float(min_bottleneck_width),
+            "max_resample_attempts": int(max_resample_attempts),
+        },
+        "feasibility": feasibility,
+    }
+
+    if return_stats:
+        return obstacles, stats
     return obstacles
 
 
@@ -123,6 +395,14 @@ def generate_tunnel_map(
     obstacle_zone_x_min: float = -6.0,
     cuboid_ratio: float = 0.5,
     seed: int = 42,
+    sampling_mode: str = "uniform",
+    min_obstacle_spacing: float = 0.0,
+    local_density_window: float = 3.0,
+    max_obstacles_per_window: int = 4,
+    max_local_area_fraction: float = 0.45,
+    require_connectivity: bool = False,
+    min_bottleneck_width: float = 0.4,
+    max_resample_attempts: int = 2000,
 ) -> np.ndarray:
     """
     Generate obstacle points as (N, 3) array.
@@ -169,7 +449,15 @@ def generate_tunnel_map(
     obstacles = generate_obstacle_params(
         num_obstacles, x_half, y_half, z_max,
         obstacle_width_range, obstacle_height_range,
-        obstacle_zone_x_min, cuboid_ratio, seed)
+        obstacle_zone_x_min, cuboid_ratio, seed,
+        sampling_mode=sampling_mode,
+        min_obstacle_spacing=min_obstacle_spacing,
+        local_density_window=local_density_window,
+        max_obstacles_per_window=max_obstacles_per_window,
+        max_local_area_fraction=max_local_area_fraction,
+        require_connectivity=require_connectivity,
+        min_bottleneck_width=min_bottleneck_width,
+        max_resample_attempts=max_resample_attempts)
 
     for obs in obstacles:
         if obs.shape == 'cylinder':
@@ -419,6 +707,7 @@ def write_metadata(
     y_half: float,
     z_max: float,
     obstacle_zone_x_min: float,
+    sampling_stats: Optional[Dict[str, object]] = None,
 ):
     payload = {
         "seed": int(seed),
@@ -433,6 +722,7 @@ def write_metadata(
             "protect_radius": float(SPAWN_PROTECT_RADIUS),
         },
         "obstacle_zone_x_min": float(obstacle_zone_x_min),
+        "sampling": sampling_stats or {},
         "obstacles": [
             {
                 "center": [float(obs.cx), float(obs.cy)],
@@ -465,6 +755,23 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resolution", type=float, default=0.1,
                         help="Point spacing (metres)")
+    parser.add_argument("--sampling-mode", choices=("uniform", "constrained"),
+                        default="uniform",
+                        help="Obstacle sampling mode")
+    parser.add_argument("--min-obstacle-spacing", type=float, default=0.0,
+                        help="Minimum XY footprint gap for constrained sampling")
+    parser.add_argument("--local-density-window", type=float, default=3.0,
+                        help="Square XY window size for local density checks")
+    parser.add_argument("--max-obstacles-per-window", type=int, default=4,
+                        help="Max obstacle centers in any local density window")
+    parser.add_argument("--max-local-area-fraction", type=float, default=0.45,
+                        help="Max footprint area fraction in any local density window")
+    parser.add_argument("--require-connectivity", action="store_true",
+                        help="Require approximate start-to-goal 2-D connectivity")
+    parser.add_argument("--min-bottleneck-width", type=float, default=0.4,
+                        help="Connectivity clearance width proxy in metres")
+    parser.add_argument("--max-resample-attempts", type=int, default=2000,
+                        help="Max candidate samples for constrained obstacle placement")
     args = parser.parse_args()
 
     # Fixed dimensions matching IsaacSim training environment
@@ -484,6 +791,11 @@ def main():
           f"({SPAWN_X}, {SPAWN_Y})")
     print(f"Obstacles: {args.num_obstacles} (cuboid ratio={args.cuboid_ratio}), "
           f"seed={args.seed}")
+    print(
+        f"Sampling: {args.sampling_mode} "
+        f"(spacing={args.min_obstacle_spacing}, window={args.local_density_window}, "
+        f"max_count={args.max_obstacles_per_window})"
+    )
 
     # Generate PCD
     pts = generate_tunnel_map(
@@ -493,6 +805,14 @@ def main():
         obstacle_zone_x_min=obstacle_zone_x_min,
         cuboid_ratio=args.cuboid_ratio,
         seed=args.seed,
+        sampling_mode=args.sampling_mode,
+        min_obstacle_spacing=args.min_obstacle_spacing,
+        local_density_window=args.local_density_window,
+        max_obstacles_per_window=args.max_obstacles_per_window,
+        max_local_area_fraction=args.max_local_area_fraction,
+        require_connectivity=args.require_connectivity,
+        min_bottleneck_width=args.min_bottleneck_width,
+        max_resample_attempts=args.max_resample_attempts,
     )
     print(f"  Total points: {pts.shape[0]:,}")
     write_pcd(args.output, pts)
@@ -506,6 +826,14 @@ def main():
             obstacle_zone_x_min=obstacle_zone_x_min,
             cuboid_ratio=args.cuboid_ratio,
             seed=args.seed,
+            sampling_mode=args.sampling_mode,
+            min_obstacle_spacing=args.min_obstacle_spacing,
+            local_density_window=args.local_density_window,
+            max_obstacles_per_window=args.max_obstacles_per_window,
+            max_local_area_fraction=args.max_local_area_fraction,
+            require_connectivity=args.require_connectivity,
+            min_bottleneck_width=args.min_bottleneck_width,
+            max_resample_attempts=args.max_resample_attempts,
         )
         n_cyl, n_box = write_gazebo_world(
             args.world_output, obstacles,
@@ -514,12 +842,21 @@ def main():
               f"({n_cyl} cylinders + {n_box} cuboids + 3 walls)")
 
     if args.metadata_output:
-        obstacles = generate_obstacle_params(
+        obstacles, sampling_stats = generate_obstacle_params(
             num_obstacles=args.num_obstacles,
             x_half=x_half, y_half=y_half, z_max=z_max,
             obstacle_zone_x_min=obstacle_zone_x_min,
             cuboid_ratio=args.cuboid_ratio,
             seed=args.seed,
+            sampling_mode=args.sampling_mode,
+            min_obstacle_spacing=args.min_obstacle_spacing,
+            local_density_window=args.local_density_window,
+            max_obstacles_per_window=args.max_obstacles_per_window,
+            max_local_area_fraction=args.max_local_area_fraction,
+            require_connectivity=args.require_connectivity,
+            min_bottleneck_width=args.min_bottleneck_width,
+            max_resample_attempts=args.max_resample_attempts,
+            return_stats=True,
         )
         write_metadata(
             args.metadata_output,
@@ -532,6 +869,7 @@ def main():
             y_half=y_half,
             z_max=z_max,
             obstacle_zone_x_min=obstacle_zone_x_min,
+            sampling_stats=sampling_stats,
         )
         print(f"  Metadata written to: {args.metadata_output}")
 

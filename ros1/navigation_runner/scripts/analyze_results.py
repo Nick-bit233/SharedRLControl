@@ -70,6 +70,60 @@ class ExperimentAnalyzer:
             self.tree_cache[pcd_file] = cKDTree(pts) if pts is not None else None
         return self.tree_cache[pcd_file]
 
+    def _collect_map_feasibility(self):
+        rows = []
+        for obstacle_json in glob.glob(os.path.join(self.data_dir, 'b*_obstacles.json')):
+            try:
+                payload = self._load_json(obstacle_json)
+            except (OSError, json.JSONDecodeError):
+                continue
+            sampling = payload.get('sampling') or {}
+            feasibility = sampling.get('feasibility') or {}
+            connectivity = feasibility.get('connectivity') or {}
+            rows.append({
+                'file': os.path.basename(obstacle_json),
+                'seed': payload.get('seed'),
+                'sampling_mode': sampling.get('sampling_mode', 'uniform'),
+                'attempts': sampling.get('attempts'),
+                'min_footprint_gap': feasibility.get('min_footprint_gap'),
+                'mean_footprint_gap': feasibility.get('mean_footprint_gap'),
+                'max_obstacles_per_local_window': feasibility.get(
+                    'max_obstacles_per_local_window'
+                ),
+                'max_local_area_fraction': feasibility.get('max_local_area_fraction'),
+                'connected': connectivity.get('connected'),
+                'free_fraction': connectivity.get('free_fraction'),
+                'path_length_m': connectivity.get('path_length_m'),
+            })
+
+        if not rows:
+            return {}
+
+        numeric_keys = [
+            'attempts',
+            'min_footprint_gap',
+            'mean_footprint_gap',
+            'max_obstacles_per_local_window',
+            'max_local_area_fraction',
+            'free_fraction',
+            'path_length_m',
+        ]
+        aggregate = {'count': len(rows)}
+        for key in numeric_keys:
+            vals = [row[key] for row in rows if row.get(key) is not None]
+            if vals:
+                aggregate[f'{key}_mean'] = float(np.mean(vals))
+                aggregate[f'{key}_min'] = float(np.min(vals))
+                aggregate[f'{key}_max'] = float(np.max(vals))
+        connected_vals = [row.get('connected') for row in rows if row.get('connected') is not None]
+        if connected_vals:
+            aggregate['connected_rate'] = float(np.mean(connected_vals))
+        modes = defaultdict(int)
+        for row in rows:
+            modes[row.get('sampling_mode', 'unknown')] += 1
+        aggregate['sampling_modes'] = dict(modes)
+        return {'aggregate': aggregate, 'maps': rows}
+
     def _resolve_run_dir(self, run_dir):
         if not run_dir:
             return ''
@@ -687,6 +741,7 @@ class ExperimentAnalyzer:
         summary = {
             'batch_config': batch_config,
             'methods': {},
+            'map_feasibility': self._collect_map_feasibility(),
         }
         for method, rows in results.items():
             if not rows:

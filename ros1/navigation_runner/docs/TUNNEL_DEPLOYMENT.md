@@ -122,6 +122,9 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 | `gazebo_policy_z_takeoff_gate` | `true` | `policy`/`policy_clamped`/`blend` 下先用高度保持起飞，接近 `takeoff_height` 后再执行 policy z |
 | `policy_takeoff_gate` | `true` | 起飞接近训练高度前不运行 policy，不执行 policy x/y/z |
 | `safety_mode` | `hold` | 安全距离触发后的介入模式：`hold` 原地悬停，`recover` 低速远离障碍并回中心线 |
+| `input_source` | `online` | pilot 输入源：`online` 使用 ROS1 生成器，`offline` 回放 HDF5 dataset |
+| `replay_dataset_path` | 空 | `input_source:=offline` 时的 HDF5 路径，例如 `isaac-training/data/trajectories_tunnel.h5` |
+| `replay_start_offset` | `-1` | `-1` 按 seed 确定窗口；设为 `0` 可从轨迹起点回放 |
 
 ### 1.5 键盘控制模式
 
@@ -375,12 +378,40 @@ safety_mode: "hold"      # hold|recover；recover 用低速脱困替代原地 ho
   `vx=user_model_speed`，`vy=vz=0`，用于 sanity check。
 - `user_model_seed` 现在同时传给 RL 与 IPC；两种方法在相同 seed 下会复用同一条
   `UserModelTunnel` 指令序列
+- **offline replay 模式**：设置 `input_source:=offline replay_dataset_path:=...` 后，
+  `UserModelTunnel` 会从 HDF5 的 `velocities` 中按 `user_model_seed` 确定轨迹并输出
+  `(vx, vy, vz)` body-frame 指令。当前首版只支持 `replay_sampling_mode:=raw`，不隐式做
+  IsaacSim `sample_scaled`，以避免未验证的坐标/边界缩放差异影响实验解释。
 
 **M3 注意事项**：`checkpoint_tunnel_M3_21500.pt` 的训练主线继承了
 `tunnel_m2_diverse_pilot`，训练时使用 offline feasible-diverse pilot dataset。
-当前 ROS1 批量实验默认使用 `m3_diverse` online 近似，而不是旧 `legacy_perlin`。
-它用于验证 M3 模型在 ROS1/Gazebo 中面对 M3-aligned pilot 分布的表现；若需要严格复现
-M3 offline dataset 的逐样本输入，需要另行接入 offline pilot replay。
+当前 ROS1 批量实验默认仍使用 `m3_diverse` online 近似；如需减少 ROS1 online 近似与
+M3 offline dataset 的 gap，可用 `input_source:=offline` 或 batch 参数
+`--input-source offline --replay-dataset-path <h5>` 启用回放。建议先用
+`--replay-start-offset 0` 做小规模 pilot，因为现有 HDF5 若随机截取窗口，部分旧轨迹段
+可能包含低前进速度段。
+
+### 约束 PCD 地图采样
+
+`generate_tunnel_map.py` 与 `batch_tunnel_experiments.py` 支持 `uniform|constrained`
+两类采样。`constrained` 不降低障碍物数量，而是在保留随机形状/位置的同时拒绝局部不可通过的病态聚集：
+
+```bash
+python3 scripts/batch_tunnel_experiments.py \
+  --num-batches 10 --runs-per-batch 10 --methods rl,ipc \
+  --master-seed 5716 \
+  --map-sampling-mode constrained \
+  --min-obstacle-spacing 0.6 \
+  --local-density-window 3.0 \
+  --max-obstacles-per-window 3 \
+  --max-local-area-fraction 0.35 \
+  --require-connectivity \
+  --min-bottleneck-width 0.4
+```
+
+每张图的 `obstacles.json` 会记录 sampling attempts、拒绝原因、footprint spacing、
+local density、近似 start-to-goal connectivity 和 free-space fraction；`analyze_results.py`
+会把 batch-level feasibility 聚合到 `analysis/summary.json`。
 
 ## 6. 架构说明
 

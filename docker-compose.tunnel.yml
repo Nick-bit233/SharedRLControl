@@ -31,6 +31,7 @@ services:
       - ./ros1/navigation_runner/cfg:/root/catkin_ws/src/navigation_runner/cfg:rw
       - ./ros1/navigation_runner/launch:/root/catkin_ws/src/navigation_runner/launch:rw
       - ./ros1/navigation_runner/docs:/root/catkin_ws/src/navigation_runner/docs:rw
+      - ./isaac-training/data/trajectories_tunnel.h5:/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5:ro
 
       # RL checkpoints (read-only, large files)
       - ./isaac-training/outputs:/root/catkin_ws/src/navigation_runner/checkpoints:ro

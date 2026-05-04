@@ -40,6 +40,13 @@ user_model_smoothness_base: 0.4
 user_model_smoothness_scale: 0.5
 user_model_laziness: 0.3
 user_model_seed: 288           # deterministic seed shared with IPC comparison input
+input_source: "online"         # online|offline; offline replays HDF5 velocities
+replay_dataset_path: ""        # set to trajectories_tunnel.h5 for offline replay
+replay_dataset_format: "hdf5"
+replay_sampling_mode: "raw"    # first ROS1 replay provider supports raw only
+replay_trajectory_index: -1    # -1 derives trajectory from user_model_seed
+replay_start_offset: -1        # -1 derives offset from user_model_seed; 0 starts at trajectory origin
+replay_loop: true
 
 # --- Safety ---
 use_safety_shield: false      # Use ORCA safe_action_node

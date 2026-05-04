@@ -25,6 +25,13 @@
     <arg name="user_model_laziness" default="0.3"/>
     <arg name="user_model_seed" default="42"/>
     <arg name="user_model_rate" default="20.0"/>
+    <arg name="input_source" default="online" doc="online or offline"/>
+    <arg name="replay_dataset_path" default=""/>
+    <arg name="replay_dataset_format" default="hdf5"/>
+    <arg name="replay_sampling_mode" default="raw"/>
+    <arg name="replay_trajectory_index" default="-1"/>
+    <arg name="replay_start_offset" default="-1"/>
+    <arg name="replay_loop" default="true"/>
     <arg name="output_dir" default="/root/results"/>
     <arg name="goal_x" default="12.0"/>
     <arg name="collision_dist" default="0.05"/>
@@ -102,6 +109,13 @@
         <param name="user_model_laziness" value="$(arg user_model_laziness)"/>
         <param name="user_model_seed" value="$(arg user_model_seed)"/>
         <param name="user_model_rate" value="$(arg user_model_rate)"/>
+        <param name="input_source" value="$(arg input_source)"/>
+        <param name="replay_dataset_path" value="$(arg replay_dataset_path)"/>
+        <param name="replay_dataset_format" value="$(arg replay_dataset_format)"/>
+        <param name="replay_sampling_mode" value="$(arg replay_sampling_mode)"/>
+        <param name="replay_trajectory_index" value="$(arg replay_trajectory_index)"/>
+        <param name="replay_start_offset" value="$(arg replay_start_offset)"/>
+        <param name="replay_loop" value="$(arg replay_loop)"/>
         <param name="forward_stick" value="0.8"/>
         <param name="auto_takeoff" value="true"/>
         <param name="takeoff_wait" value="0.6"/>
@@ -175,6 +189,13 @@
             <param name="user_model_vx_amp" value="$(arg user_model_vx_amp)"/>
             <param name="user_model_vy_amp" value="$(arg user_model_vy_amp)"/>
             <param name="user_model_vz_amp" value="$(arg user_model_vz_amp)"/>
+            <param name="input_source" value="$(arg input_source)"/>
+            <param name="replay_dataset_path" value="$(arg replay_dataset_path)"/>
+            <param name="replay_dataset_format" value="$(arg replay_dataset_format)"/>
+            <param name="replay_sampling_mode" value="$(arg replay_sampling_mode)"/>
+            <param name="replay_trajectory_index" value="$(arg replay_trajectory_index)"/>
+            <param name="replay_start_offset" value="$(arg replay_start_offset)"/>
+            <param name="replay_loop" value="$(arg replay_loop)"/>
             <param name="tunnel_world" value="$(arg tunnel_world)"/>
         </node>
     </group>
