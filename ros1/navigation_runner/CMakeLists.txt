@@ -179,6 +179,9 @@ catkin_install_python(PROGRAMS
   scripts/run_comparison.py
   scripts/batch_tunnel_experiments.py
   scripts/analyze_results.py
+  scripts/run_iteration1_screening.py
+  scripts/run_iteration2_targeted.py
+  scripts/run_iteration3_targeted.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

@@ -538,27 +538,19 @@ class TunnelNavigator:
         quat_np = np.array([[q_ros.w, q_ros.x, q_ros.y, q_ros.z]], dtype=np.float32)
         quat = torch.from_numpy(quat_np).to(device=dev)
 
-        # --- World-frame velocity ---
-        rot = self._quat_to_rot(q_ros)
-        vel_body_np = np.array([
+        # Gazebo odometry twist is already expressed in base_link/body frame.
+        vel_b_np = np.array([
             odom.twist.twist.linear.x,
             odom.twist.twist.linear.y,
             odom.twist.twist.linear.z,
-        ], dtype=np.float64)
-        vel_world_np = (rot @ vel_body_np).astype(np.float32)
-        vel_w = torch.from_numpy(vel_world_np).unsqueeze(0).to(device=dev)  # (1,3)
-
-        ang_vel_np = np.array([
+        ], dtype=np.float32)
+        ang_vel_b_np = np.array([
             odom.twist.twist.angular.x,
             odom.twist.twist.angular.y,
             odom.twist.twist.angular.z,
-        ], dtype=np.float64)
-        ang_vel_world_np = (rot @ ang_vel_np).astype(np.float32)
-        ang_vel_w = torch.from_numpy(ang_vel_world_np).unsqueeze(0).to(device=dev)
-
-        # Body-frame velocities
-        vel_b = quat_rotate_inverse(quat, vel_w)        # (1, 3)
-        ang_vel_b = quat_rotate_inverse(quat, ang_vel_w)  # (1, 3)
+        ], dtype=np.float32)
+        vel_b = torch.from_numpy(vel_b_np).unsqueeze(0).to(device=dev)
+        ang_vel_b = torch.from_numpy(ang_vel_b_np).unsqueeze(0).to(device=dev)
 
         # State: [vel_b(3), ang_vel_b(3), quat(4)]
         state = torch.cat([vel_b, ang_vel_b, quat], dim=-1)  # (1, 10)
