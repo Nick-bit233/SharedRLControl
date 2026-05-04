@@ -46,6 +46,9 @@ dmypy.json
 # VS Code
 .vscode/
 
+# GitHub workflows
+.github/
+
 # PyCharm
 .idea/
 *.iml

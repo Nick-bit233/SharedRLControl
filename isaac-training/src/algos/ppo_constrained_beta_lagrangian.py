@@ -278,7 +278,12 @@ class ConstrainedResidualPPO_BetaLagrangian(TensorDictModuleBase):
         self.cost_limit = cfg.get("cost_limit", 0.05)
         self.fixed_cost_coeff = cfg.get("fixed_cost_coeff", 0.0)
         lambda_init = cfg.get("lambda_init", 1.0)
+        self.lambda_min = cfg.get("lambda_min", 0.0)
         self.lambda_max = cfg.get("lambda_max", 10.0)
+        if self.lambda_min < 0.0:
+            raise ValueError("algo.lambda_min must be >= 0.0")
+        if self.lambda_min > self.lambda_max:
+            raise ValueError("algo.lambda_min must be <= algo.lambda_max")
         lambda_lr = cfg.get("lambda_lr", 1e-3)
         self.lambda_lag = nn.Parameter(torch.tensor(lambda_init, device=device, dtype=torch.float32))
         self.lambda_optimizer = torch.optim.Adam([self.lambda_lag], lr=lambda_lr)
@@ -563,6 +568,7 @@ class ConstrainedResidualPPO_BetaLagrangian(TensorDictModuleBase):
         infos.set("rollout_mean_cost", rollout_mean_cost.detach())
         infos.set("lambda_update_loss", lambda_update_loss.detach())
         infos.set("lambda_lag_after_update", self.lambda_lag.detach())
+        infos.set("lambda_min", torch.as_tensor(self.lambda_min, device=self.device))
         return {k: v.item() for k, v in infos.items()}    
 
     def _update_lambda(self, mean_cost):
@@ -574,7 +580,7 @@ class ConstrainedResidualPPO_BetaLagrangian(TensorDictModuleBase):
         lambda_loss.backward()
         self.lambda_optimizer.step()
         with torch.no_grad():
-            self.lambda_lag.clamp_(min=0.0, max=self.lambda_max)
+            self.lambda_lag.clamp_(min=self.lambda_min, max=self.lambda_max)
         return lambda_loss
 
     def _update(self, minibatch): 

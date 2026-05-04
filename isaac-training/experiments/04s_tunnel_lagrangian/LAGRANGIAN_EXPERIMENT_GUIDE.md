@@ -91,6 +91,32 @@ Current default config:
 | `algo.lambda_max` | `10.0` | Prevents another lambda explosion |
 | `algo.reg_coeff` | `0.0` in current run | Tests whether reward plus Lagrangian is sufficient |
 
+### 2.5 M2 diverse-pilot input alignment
+
+The earlier 04s runs used the default online `UserModelTunnel` path. The current
+04s config now aligns with experiment 04 M2 by default:
+
+```yaml
+user_model:
+  offline_mode: true
+  dataset_path: ${hydra:runtime.cwd}/data/trajectories_tunnel.h5
+  sampling_mode: scaled
+```
+
+This means "M2-aligned input" refers to the existing M2 implementation:
+`trajectory_gen_tunnel.yaml` generates `data/trajectories_tunnel.h5`, and
+`UserModelTunnel(offline_mode=True)` samples from that dataset. It does **not**
+mean directly replacing the environment's input model with
+`src/core/user_model_diverse.py`, which is a separate online multi-modal input
+model and should be treated as a distinct experiment if used later.
+
+Use the 04s curriculum runner to create/reuse the dataset automatically:
+
+```bash
+cd isaac-training
+python experiments/04s_tunnel_lagrangian/run_curriculum.py --end-stage 1
+```
+
 ## 3. Current run analysis
 
 Run path:
@@ -129,7 +155,7 @@ Metric key convention used in this guide:
 
 `eval/*` values are deterministic evaluation-rollout summaries produced by the training script. `episode/stats_*` values are on-policy training episode statistics and should be used for trend monitoring, not final checkpoint claims.
 
-Known logging bug to fix before relying on automatic best-checkpoint selection: `experiments/04s_tunnel_lagrangian/train.py` currently looks up `eval/stats_success`, but the evaluation dictionary contains `eval/success`. Until this is fixed, `checkpoint_best.pt` may not reflect the true best evaluation checkpoint.
+Checkpoint selection now reads `eval/success` while remaining compatible with older `eval/stats_success` logs, so new `checkpoint_best.pt` files are selected from deterministic eval metrics rather than on-policy training-window stats.
 
 | iter | success | collision | terminated | episode_len | return | task_reward | safety_cost | min_dist | height_penalty |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -239,7 +265,11 @@ Current candidates:
 | `checkpoint_10000.pt` | Better return/task reward and latest training window looks strong | Eval collision slightly worse than 6000 |
 | Final checkpoint | Preferred if final eval stays good | Must verify final eval and held-out metrics |
 
-Important implementation note: current training code intends to write `checkpoint_best.pt` by highest eval success, and `run_curriculum.py` prefers that best-checkpoint marker automatically. However, the current lookup key mismatch (`eval/stats_success` vs `eval/success`) means the marker may be missing or may fall back to final. Before starting stage2, manually compute the constrained score for saved checkpoints or update the best-checkpoint logic; do not blindly assume `checkpoint_best.pt` is the safest checkpoint.
+Implementation note: checkpoint selection has been updated to consume the actual
+`eval/success` key (while remaining compatible with historical
+`eval/stats_success`) and to select by the constrained score above. New rich
+checkpoints include `best_eval_score`, `best_eval_success`,
+`best_eval_collision`, and `best_eval_info` metadata for curriculum handoff.
 
 ## 6. Next training plan
 
@@ -284,6 +314,14 @@ python experiments/04s_tunnel_lagrangian/eval_video.py \
 ```
 
 `eval_video.py` defaults to reducing `env.num_envs` to 4 when rendering if `keep_num_envs` is not set. For metric validation, set `+keep_num_envs=true`; otherwise the result is useful for qualitative video inspection but too small for stable rate estimates. Use `+eval_seed=...` for rollout/user-command seeding; plain `seed=...` is not the parameter consumed by `eval_video.py`.
+
+Or run the default validation grid:
+
+```bash
+cd isaac-training
+python experiments/04s_tunnel_lagrangian/run_heldout_eval.py \
+    --checkpoint /path/to/checkpoint_best.pt
+```
 
 Terrain/obstacle-layout caveat: `EnvTunnelLagrangian` currently constructs the terrain generator with a hardcoded `seed=0`. Therefore the validation grid above varies obstacle count and rollout/user-command seed, but not true terrain-layout seed. To claim layout generalization, first expose the terrain generator seed as a config parameter and then run a real terrain-seed sweep.
 

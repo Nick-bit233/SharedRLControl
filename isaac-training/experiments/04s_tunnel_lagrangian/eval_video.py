@@ -115,6 +115,7 @@ def main(cfg):
             raise FileNotFoundError(
                 f"offline_mode=True but dataset missing: {dataset_path}")
         print(f"[EvalVideo] Loading trajectory dataset: {dataset_path}")
+        print("[EvalVideo] User model source: M2 offline tunnel dataset via UserModelTunnel")
         trajectory_dataset = TrajectoryDataset(
             dataset_path=dataset_path,
             device=torch.device(cfg.device),
@@ -122,6 +123,8 @@ def main(cfg):
             min_scale_factor=cfg.user_model.get("min_scale_factor", 0.5),
             preload_data=cfg.user_model.get("preload_data", True),
         )
+    else:
+        print("[EvalVideo] User model source: legacy online UserModelTunnel")
 
     # ---------------- env + policy ----------------
     env = EnvTunnelLagrangian(cfg, trajectory_dataset=trajectory_dataset)

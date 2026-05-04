@@ -3,7 +3,8 @@
 Multi-stage curriculum training pipeline.
 
 Sequentially launches training runs with increasing obstacle difficulty,
-passing the final checkpoint from each stage to the next.
+passing the selected best checkpoint from each stage to the next. By default,
+the curriculum uses the experiment 04 M2 offline tunnel trajectory dataset.
 
 Usage:
     # Run all 5 stages from scratch
@@ -25,11 +26,51 @@ import subprocess
 import sys
 
 
+DEFAULT_DATASET = "./data/trajectories_tunnel.h5"
+DEFAULT_GEN_CONFIG = "trajectory_gen_tunnel"
+
 STAGE_CONFIGS = [
     "tunnel_lagrangian_stage1",
     "tunnel_lagrangian_stage2",
     "tunnel_lagrangian_stage3",
 ]
+
+
+def maybe_generate_dataset(
+    dataset_path: str,
+    gen_config: str,
+    regenerate: bool,
+    skip: bool,
+) -> None:
+    if skip:
+        if not os.path.exists(dataset_path):
+            raise FileNotFoundError(
+                f"--skip-dataset was set but dataset does not exist: {dataset_path}"
+            )
+        print(f"[Pipeline] Reusing existing dataset: {dataset_path}")
+        return
+
+    if os.path.exists(dataset_path) and not regenerate:
+        print(f"[Pipeline] Dataset already exists, skipping generation: {dataset_path}")
+        return
+
+    if regenerate and os.path.exists(dataset_path):
+        print(f"[Pipeline] --regenerate-dataset set; removing {dataset_path}")
+        os.remove(dataset_path)
+
+    cmd = [
+        sys.executable,
+        "src/datasets/trajectory_generator.py",
+        f"--config-name={gen_config}",
+        f"output_path={dataset_path}",
+    ]
+    print("[Pipeline] Generating M2 offline tunnel trajectory dataset")
+    print(f"[Pipeline] Command: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=os.getcwd())
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"trajectory generation failed with exit code {result.returncode}"
+        )
 
 
 def find_final_checkpoint(output_dir: str) -> str:
@@ -141,6 +182,22 @@ def main():
         "--group", type=str, default=None,
         help="WandB group name (default: auto-generated timestamp)",
     )
+    parser.add_argument(
+        "--dataset-path", type=str, default=DEFAULT_DATASET,
+        help=f"M2 offline tunnel trajectory dataset path (default: {DEFAULT_DATASET})",
+    )
+    parser.add_argument(
+        "--gen-config", type=str, default=DEFAULT_GEN_CONFIG,
+        help=f"Hydra config for trajectory generation (default: {DEFAULT_GEN_CONFIG})",
+    )
+    parser.add_argument(
+        "--regenerate-dataset", action="store_true",
+        help="Delete and regenerate the offline tunnel trajectory dataset before training.",
+    )
+    parser.add_argument(
+        "--skip-dataset", action="store_true",
+        help="Skip dataset generation and require --dataset-path to already exist.",
+    )
     args, extra = parser.parse_known_args()
 
     if args.start_stage < 1 or args.start_stage > 3:
@@ -150,6 +207,15 @@ def main():
 
     group = args.group or f"curriculum_{datetime.datetime.now():%Y%m%d_%H%M%S}"
     checkpoint = args.checkpoint
+
+    maybe_generate_dataset(
+        args.dataset_path,
+        args.gen_config,
+        args.regenerate_dataset,
+        args.skip_dataset,
+    )
+    if args.dataset_path != DEFAULT_DATASET:
+        extra.append(f"user_model.dataset_path={args.dataset_path}")
 
     print(f"[Pipeline] Curriculum Training Pipeline")
     print(f"[Pipeline] Stages: {args.start_stage} -> {args.end_stage}")

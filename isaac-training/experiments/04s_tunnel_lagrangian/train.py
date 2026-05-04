@@ -42,6 +42,48 @@ from torchrl.envs.utils import set_exploration_type, ExplorationType
 from omni_drones.utils.torchrl import RenderCallback
 from torchrl.data import Unbounded
 
+
+def get_eval_metric(eval_info, name: str, default=None):
+    """Read current eval keys while remaining compatible with older stats-prefixed logs."""
+    for key in (f"eval/{name}", f"eval/stats_{name}"):
+        if key in eval_info:
+            return eval_info[key]
+    return default
+
+
+def serializable_eval_info(eval_info):
+    clean = {}
+    for key, value in eval_info.items():
+        if hasattr(value, "item"):
+            value = value.item()
+        if isinstance(value, (int, float, str, bool)) or value is None:
+            clean[key] = value
+    return clean
+
+
+def eval_summary(eval_info):
+    success = float(get_eval_metric(eval_info, "success", 0.0))
+    collision = float(get_eval_metric(eval_info, "collision", 1.0))
+    above_bound = float(get_eval_metric(eval_info, "above_bound", 0.0))
+    below_bound = float(get_eval_metric(eval_info, "below_bound", 0.0))
+    safety_cost = float(get_eval_metric(eval_info, "diag_safety_cost", 1.0))
+    task_reward = float(get_eval_metric(eval_info, "diag_reward_task", 0.0))
+    eval_return = float(get_eval_metric(eval_info, "return", 0.0))
+    score = success - 0.5 * collision - 0.2 * above_bound - 0.2 * below_bound
+    rank = (score, success, -collision, -safety_cost, task_reward, eval_return)
+    return {
+        "score": score,
+        "success": success,
+        "collision": collision,
+        "above_bound": above_bound,
+        "below_bound": below_bound,
+        "safety_cost": safety_cost,
+        "task_reward": task_reward,
+        "return": eval_return,
+        "rank": rank,
+    }
+
+
 # Configs are now in the 'configs' directory
 @hydra.main(config_path="../../configs", config_name="train", version_base=None)
 def main(cfg):
@@ -152,6 +194,7 @@ def main(cfg):
             raise FileNotFoundError(f"Trajectory dataset not found: {dataset_path}")
         
         print(f"[Train] Loading trajectory dataset from: {dataset_path}")
+        print("[Train] User model source: M2 offline tunnel dataset via UserModelTunnel")
         trajectory_dataset = TrajectoryDataset(
             dataset_path=dataset_path,
             device=torch.device(cfg.device),
@@ -160,6 +203,8 @@ def main(cfg):
             preload_data=cfg.user_model.get("preload_data", True)
         )
         print(f"[Train] Trajectory dataset loaded successfully")
+    else:
+        print("[Train] User model source: legacy online UserModelTunnel")
 
     # === 初始化环境 ===
     env = EnvTunnelLagrangian(cfg, trajectory_dataset=trajectory_dataset)
@@ -196,9 +241,7 @@ def main(cfg):
     if resume_ckpt is not None:
         print(f"[Train] Loading checkpoint: {resume_ckpt}")
         loaded = torch.load(resume_ckpt, map_location=cfg.device)
-        if isinstance(loaded, dict) and "policy" in loaded and any(
-            k in loaded for k in ("actor_optim", "critic_optim", "iter")
-        ):
+        if isinstance(loaded, dict) and "policy" in loaded:
             print("[Train] Detected RICH checkpoint format (weights + optimizer + state).")
             load_policy_state_dict(loaded["policy"])
             resume_state = loaded
@@ -438,8 +481,13 @@ def main(cfg):
               f"{cfg.curriculum.initial_reg_coeff} to {cfg.curriculum.max_reg_coeff}")
 
     # === Best Checkpoint Tracking ===
+    best_eval_score = -float("inf")
     best_eval_success = -1.0
+    best_eval_collision = 1.0
+    best_eval_info = None
+    best_eval_rank = None
     best_policy_state = None
+    best_checkpoint_path = None
     latest_eval_success = None  # Cached eval success for curriculum scheduler
 
     # Restore curriculum + best tracking from rich checkpoint
@@ -453,9 +501,26 @@ def main(cfg):
                 policy.set_reg_coeff(reg_scheduler.current_reg_coeff)
             except Exception as e:
                 print(f"[Train] WARNING: curriculum restore failed: {e}")
+        if "best_eval_score" in resume_state:
+            best_eval_score = float(resume_state["best_eval_score"])
+            print(f"[Train] best_eval_score carried over: {best_eval_score:.3f}")
         if "best_eval_success" in resume_state:
             best_eval_success = float(resume_state["best_eval_success"])
             print(f"[Train] best_eval_success carried over: {best_eval_success:.3f}")
+        if "best_eval_collision" in resume_state:
+            best_eval_collision = float(resume_state["best_eval_collision"])
+            print(f"[Train] best_eval_collision carried over: {best_eval_collision:.3f}")
+        if "best_eval_info" in resume_state:
+            best_eval_info = resume_state["best_eval_info"]
+        if best_eval_score > -float("inf"):
+            best_eval_rank = (
+                best_eval_score,
+                best_eval_success,
+                -best_eval_collision,
+                -float(get_eval_metric(best_eval_info or {}, "diag_safety_cost", 1.0)),
+                float(get_eval_metric(best_eval_info or {}, "diag_reward_task", 0.0)),
+                float(get_eval_metric(best_eval_info or {}, "return", 0.0)),
+            )
 
     # === Early Stopping ===
     es_cfg = cfg.get("early_stopping", {})
@@ -465,6 +530,30 @@ def main(cfg):
     es_degradation_count = 0
     if early_stopping_enabled:
         print(f"[Train] Early stopping ENABLED: patience={es_patience}, min_delta={es_min_delta}")
+
+    def build_rich_checkpoint(iter_value: int, env_frames_value: int, policy_state=None):
+        rich = {
+            "policy": policy.state_dict() if policy_state is None else policy_state,
+            "iter": iter_value,
+            "env_frames": env_frames_value,
+            "best_eval_score": best_eval_score,
+            "best_eval_success": best_eval_success,
+            "best_eval_collision": best_eval_collision,
+        }
+        if best_eval_info is not None:
+            rich["best_eval_info"] = best_eval_info
+        try:
+            rich["actor_optim"] = policy.actor_optim.state_dict()
+            rich["critic_optim"] = policy.critic_optim.state_dict()
+            if hasattr(policy, "feature_extractor_optim"):
+                rich["feature_extractor_optim"] = policy.feature_extractor_optim.state_dict()
+            if hasattr(policy, "lambda_optimizer"):
+                rich["lambda_optimizer"] = policy.lambda_optimizer.state_dict()
+        except Exception as e:
+            print(f"[Train] WARNING: failed to snapshot optimizer state: {e}")
+        if reg_scheduler is not None:
+            rich["reg_scheduler"] = reg_scheduler.state_dict()
+        return rich
 
     print("[Sanity Check] Running Zero-Shot Verification...")
     env.eval() 
@@ -552,9 +641,11 @@ def main(cfg):
             print(f"[Train] Eval info at iter {global_iter} ({collector._frames} steps): DONE")
 
             # Cache latest eval success rate for curriculum scheduler
-            _latest_eval_success = eval_info.get("eval/stats_success", None)
+            current_eval = eval_summary(eval_info)
+            info["eval/constrained_score"] = current_eval["score"]
+            _latest_eval_success = get_eval_metric(eval_info, "success", None)
             if _latest_eval_success is not None:
-                latest_eval_success = _latest_eval_success
+                latest_eval_success = float(_latest_eval_success)
 
             if env_test_mode:
                 save_env_image(i)
@@ -562,17 +653,34 @@ def main(cfg):
                 break
 
             # === Best Checkpoint Tracking ===
-            current_success = eval_info.get("eval/stats_success", -1.0)
-            if current_success > best_eval_success:
+            current_success = current_eval["success"]
+            current_rank = current_eval["rank"]
+            if best_eval_rank is None or current_rank > best_eval_rank:
+                best_eval_rank = current_rank
+                best_eval_score = current_eval["score"]
                 best_eval_success = current_success
+                best_eval_collision = current_eval["collision"]
+                best_eval_info = serializable_eval_info(eval_info)
                 best_policy_state = {k: v.clone() for k, v in policy.state_dict().items()}
                 # Save best checkpoint to disk
                 best_save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
                 os.makedirs(best_save_dir, exist_ok=True)
                 best_ckpt_path = os.path.join(best_save_dir, "checkpoint_best.pt")
-                torch.save(best_policy_state, best_ckpt_path)
+                best_checkpoint_path = best_ckpt_path
+                torch.save(
+                    build_rich_checkpoint(
+                        global_iter,
+                        collector._frames + start_env_frames,
+                        policy_state=best_policy_state,
+                    ),
+                    best_ckpt_path,
+                )
                 es_degradation_count = 0
-                print(f"[Train] 🏆 New best model! success={current_success:.3f} at iter {global_iter}")
+                print(
+                    f"[Train] 🏆 New best model! score={best_eval_score:.3f} "
+                    f"success={best_eval_success:.3f} collision={best_eval_collision:.3f} "
+                    f"at iter {global_iter}"
+                )
             elif early_stopping_enabled and best_eval_success > 0:
                 # Check for performance degradation
                 if current_success < best_eval_success - es_min_delta:
@@ -581,7 +689,8 @@ def main(cfg):
                           f"(degradation {es_degradation_count}/{es_patience})")
                     if es_degradation_count >= es_patience:
                         print(f"[Train] 🛑 Early stopping triggered! Restoring best model (success={best_eval_success:.3f})")
-                        policy.load_state_dict(best_policy_state)
+                        if best_policy_state is not None:
+                            policy.load_state_dict(best_policy_state)
                         break
                 else:
                     es_degradation_count = 0
@@ -606,23 +715,10 @@ def main(cfg):
             save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
             os.makedirs(save_dir, exist_ok=True)
             ckpt_path = os.path.join(save_dir, f"checkpoint_{global_iter}.pt")
-            rich_ckpt = {
-                "policy": policy.state_dict(),
-                "iter": global_iter,
-                "env_frames": collector._frames + start_env_frames,
-                "best_eval_success": best_eval_success,
-            }
-            try:
-                rich_ckpt["actor_optim"] = policy.actor_optim.state_dict()
-                rich_ckpt["critic_optim"] = policy.critic_optim.state_dict()
-                if hasattr(policy, "feature_extractor_optim"):
-                    rich_ckpt["feature_extractor_optim"] = policy.feature_extractor_optim.state_dict()
-                if hasattr(policy, "lambda_optimizer"):
-                    rich_ckpt["lambda_optimizer"] = policy.lambda_optimizer.state_dict()
-            except Exception as e:
-                print(f"[Train] WARNING: failed to snapshot optimizer state: {e}")
-            if reg_scheduler is not None:
-                rich_ckpt["reg_scheduler"] = reg_scheduler.state_dict()
+            rich_ckpt = build_rich_checkpoint(
+                global_iter,
+                collector._frames + start_env_frames,
+            )
             torch.save(rich_ckpt, ckpt_path)
             print("[RunnerSimple]: model saved at training step: ", global_iter)
 
@@ -631,23 +727,10 @@ def main(cfg):
         save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
         os.makedirs(save_dir, exist_ok=True)
         final_ckpt_path = os.path.join(save_dir, "checkpoint_final.pt")
-        final_rich = {
-            "policy": policy.state_dict(),
-            "iter": start_iter + max(i, 0),
-            "env_frames": collector._frames + start_env_frames,
-            "best_eval_success": best_eval_success,
-        }
-        try:
-            final_rich["actor_optim"] = policy.actor_optim.state_dict()
-            final_rich["critic_optim"] = policy.critic_optim.state_dict()
-            if hasattr(policy, "feature_extractor_optim"):
-                final_rich["feature_extractor_optim"] = policy.feature_extractor_optim.state_dict()
-            if hasattr(policy, "lambda_optimizer"):
-                final_rich["lambda_optimizer"] = policy.lambda_optimizer.state_dict()
-        except Exception as e:
-            print(f"[Train] WARNING: failed to snapshot optimizer state for final ckpt: {e}")
-        if reg_scheduler is not None:
-            final_rich["reg_scheduler"] = reg_scheduler.state_dict()
+        final_rich = build_rich_checkpoint(
+            start_iter + max(i, 0),
+            collector._frames + start_env_frames,
+        )
         torch.save(final_rich, final_ckpt_path)
         print(f"[Train] Final checkpoint saved: {final_ckpt_path}")
         # Write path to a marker file so pipeline scripts can find it
@@ -658,12 +741,24 @@ def main(cfg):
         # Write best checkpoint marker (preferred by curriculum pipeline)
         best_marker_path = os.path.join(cfg.log_output_dir, "best_checkpoint_path.txt")
         if best_policy_state is not None:
-            best_save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
-            best_ckpt_path = os.path.join(best_save_dir, "checkpoint_best.pt")
-            torch.save(best_policy_state, best_ckpt_path)
+            if best_checkpoint_path is None:
+                best_save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
+                best_checkpoint_path = os.path.join(best_save_dir, "checkpoint_best.pt")
+                torch.save(
+                    build_rich_checkpoint(
+                        final_rich["iter"],
+                        final_rich["env_frames"],
+                        policy_state=best_policy_state,
+                    ),
+                    best_checkpoint_path,
+                )
             with open(best_marker_path, "w") as f:
-                f.write(best_ckpt_path)
-            print(f"[Train] Best checkpoint saved: {best_ckpt_path} (success={best_eval_success:.3f})")
+                f.write(best_checkpoint_path)
+            print(
+                f"[Train] Best checkpoint saved: {best_checkpoint_path} "
+                f"(score={best_eval_score:.3f}, success={best_eval_success:.3f}, "
+                f"collision={best_eval_collision:.3f})"
+            )
         else:
             # No eval was run; fall back to final
             with open(best_marker_path, "w") as f:
