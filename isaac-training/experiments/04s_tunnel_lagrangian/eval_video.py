@@ -60,6 +60,12 @@ from omni_drones.utils.torchrl import RenderCallback
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 
 
+def resolve_runtime_path(path, hydra_cfg):
+    if path is None or os.path.isabs(path):
+        return path
+    return os.path.abspath(os.path.join(hydra_cfg.runtime.cwd, path))
+
+
 @hydra.main(config_path="../../configs", config_name="train", version_base=None)
 def main(cfg):
     # ---------------- force eval-friendly defaults ----------------
@@ -79,6 +85,9 @@ def main(cfg):
     OmegaConf.set_struct(cfg, True)
 
     resume_ckpt = cfg.get("resume_checkpoint", None)
+    from hydra.core.hydra_config import HydraConfig
+    hydra_cfg = HydraConfig.get()
+    resume_ckpt = resolve_runtime_path(resume_ckpt, hydra_cfg)
     if resume_ckpt is None:
         raise ValueError("eval_video.py requires +resume_checkpoint=PATH")
     if not os.path.exists(resume_ckpt):
@@ -97,9 +106,8 @@ def main(cfg):
     )
 
     # ---------------- output dir ----------------
-    from hydra.core.hydra_config import HydraConfig
-    hydra_run_dir = HydraConfig.get().runtime.output_dir
-    video_dir = cfg.get("video_dir", None) or hydra_run_dir
+    hydra_run_dir = hydra_cfg.runtime.output_dir
+    video_dir = resolve_runtime_path(cfg.get("video_dir", None), hydra_cfg) or hydra_run_dir
     os.makedirs(video_dir, exist_ok=True)
     print(f"[EvalVideo] Output dir: {video_dir}")
     print(f"[EvalVideo] Checkpoint: {resume_ckpt}")
@@ -110,7 +118,7 @@ def main(cfg):
     trajectory_dataset = None
     if cfg.user_model.get("offline_mode", False):
         from src.datasets.trajectory_dataset import TrajectoryDataset
-        dataset_path = cfg.user_model.get("dataset_path", None)
+        dataset_path = resolve_runtime_path(cfg.user_model.get("dataset_path", None), hydra_cfg)
         if dataset_path is None or not os.path.exists(dataset_path):
             raise FileNotFoundError(
                 f"offline_mode=True but dataset missing: {dataset_path}")

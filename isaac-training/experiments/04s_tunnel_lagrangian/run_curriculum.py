@@ -206,16 +206,16 @@ def main():
         parser.error("--end-stage must be >= start-stage and <= 3")
 
     group = args.group or f"curriculum_{datetime.datetime.now():%Y%m%d_%H%M%S}"
-    checkpoint = args.checkpoint
+    checkpoint = os.path.abspath(args.checkpoint) if args.checkpoint else None
+    dataset_path = os.path.abspath(args.dataset_path)
 
     maybe_generate_dataset(
-        args.dataset_path,
+        dataset_path,
         args.gen_config,
         args.regenerate_dataset,
         args.skip_dataset,
     )
-    if args.dataset_path != DEFAULT_DATASET:
-        extra.append(f"user_model.dataset_path={args.dataset_path}")
+    extra.append(f"user_model.dataset_path={dataset_path}")
 
     print(f"[Pipeline] Curriculum Training Pipeline")
     print(f"[Pipeline] Stages: {args.start_stage} -> {args.end_stage}")

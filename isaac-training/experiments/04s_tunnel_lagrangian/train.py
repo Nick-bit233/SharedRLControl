@@ -84,6 +84,12 @@ def eval_summary(eval_info):
     }
 
 
+def resolve_runtime_path(path, hydra_cfg):
+    if path is None or os.path.isabs(path):
+        return path
+    return os.path.abspath(os.path.join(hydra_cfg.runtime.cwd, path))
+
+
 # Configs are now in the 'configs' directory
 @hydra.main(config_path="../../configs", config_name="train", version_base=None)
 def main(cfg):
@@ -186,7 +192,7 @@ def main(cfg):
     if cfg.user_model.get("offline_mode", False):
         from src.datasets.trajectory_dataset import TrajectoryDataset
         
-        dataset_path = cfg.user_model.get("dataset_path", None)
+        dataset_path = resolve_runtime_path(cfg.user_model.get("dataset_path", None), hydra_cfg)
         if dataset_path is None:
             raise ValueError("user_model.dataset_path must be set when offline_mode=True")
         
@@ -237,6 +243,7 @@ def main(cfg):
     #         lambda_optimizer,
     #         iter, env_frames, reg_scheduler (optional), best_eval_success
     resume_ckpt = cfg.get("resume_checkpoint", None)
+    resume_ckpt = resolve_runtime_path(resume_ckpt, hydra_cfg)
     resume_state = None
     if resume_ckpt is not None:
         print(f"[Train] Loading checkpoint: {resume_ckpt}")
