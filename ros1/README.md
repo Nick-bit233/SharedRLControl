@@ -88,7 +88,8 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.p
 
  - 安全停止阈值：默认 `safety_min_dist=0.2m`；小规模 safety pilot 可通过 batch 参数 `--safety-min-dist 0.30` 覆盖
  - 安全介入模式：默认 `--safety-mode hold` 保持旧行为；`--safety-mode recover` 会在触发安全距离时发布低速脱困命令，用于验证 stop-only trap 是否可减少
- - 离线输入回放：`docker compose -f docker-compose.tunnel.yml up -d` 后，容器内默认可通过 `/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5` 访问 HDF5；不要依赖指向宿主机绝对路径的软链接，因为该目标路径默认不在容器挂载范围内
+ - 离线输入回放：`docker compose -f docker-compose.tunnel.yml build tunnel_debug && docker compose -f docker-compose.tunnel.yml up -d --force-recreate` 后，容器镜像内才会包含 `h5py`；否则 offline replay 节点会在启动时直接报错退出
+ - 离线输入回放：容器内默认可通过 `/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5` 访问 HDF5；不要依赖指向宿主机绝对路径的软链接，因为该目标路径默认不在容器挂载范围内
  - 离线输入回放：`--input-source offline --replay-dataset-path <h5>` 会让 RL/IPC 复用同一条 HDF5 pilot velocity 序列；`--replay-start-offset 0` 可避免随机窗口落在旧数据集的低前进速度段
  - 约束地图采样：`--map-sampling-mode constrained` 会记录 spacing、local density、connectivity 等 feasibility 指标到每个 batch 的 `obstacles.json` 和分析 `summary.json`
  - 实验数据现在通过 bind mount 同步到宿主机 `ros1/results/`

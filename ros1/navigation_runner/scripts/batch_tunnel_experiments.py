@@ -3,6 +3,7 @@
 
 import argparse
 import glob
+import importlib.util
 import json
 import os
 import random
@@ -578,6 +579,43 @@ def apply_resume_config(args, output_root):
         )
 
     return config
+
+
+def validate_offline_replay_config(args):
+    if args.input_source != "offline":
+        return
+
+    dataset_path = str(args.replay_dataset_path or "").strip()
+    if not dataset_path:
+        raise ValueError(
+            "--input-source offline requires --replay-dataset-path to be set"
+        )
+    if not os.path.exists(dataset_path):
+        raise FileNotFoundError(
+            f"Offline replay dataset not found: {dataset_path}"
+        )
+    if importlib.util.find_spec("h5py") is None:
+        raise RuntimeError(
+            "Offline replay requires the Python package 'h5py', but it is not "
+            "installed in this runtime. Rebuild the tunnel comparison image after "
+            "adding h5py, or install it in the container before launching the batch."
+        )
+
+    try:
+        import h5py
+    except ImportError as exc:
+        raise RuntimeError(
+            "Offline replay requires the Python package 'h5py', but it failed to import."
+        ) from exc
+
+    try:
+        with h5py.File(dataset_path, "r") as handle:
+            if "velocities" not in handle:
+                raise KeyError(f"HDF5 dataset has no 'velocities': {dataset_path}")
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to open offline replay dataset: {dataset_path}"
+        ) from exc
 
 
 def resolve_device(requested_device):
@@ -1180,6 +1218,7 @@ def main():
     if args.user_model_simple:
         args.user_model_profile = "simple"
     args.device = resolve_device(args.device)
+    validate_offline_replay_config(args)
     manifest = run_batch(args, output_root)
     maybe_run_analysis(args, output_root)
     print(f"[Batch] Finished. Output root: {output_root}")

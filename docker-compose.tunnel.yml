@@ -8,6 +8,9 @@
 
 services:
   tunnel_debug:
+    build:
+      context: .
+      dockerfile: Dockerfile.tunnel_comparison
     image: tunnel_comparison:20260415-ipcfix
     container_name: tunnel_debug
     runtime: nvidia            # GPU passthrough for Gazebo rendering

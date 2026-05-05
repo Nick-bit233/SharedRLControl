@@ -1110,7 +1110,10 @@ class TunnelNavigator:
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             if self.collision:
-                rate.sleep()
+                try:
+                    rate.sleep()
+                except rospy.exceptions.ROSInterruptException:
+                    break
                 continue
 
             ray_np = self.raypoints_np
@@ -1132,7 +1135,10 @@ class TunnelNavigator:
                     else:
                         self.min_dist = float("inf")
                         self.safety_stop = False
-                        rate.sleep()
+                        try:
+                            rate.sleep()
+                        except rospy.exceptions.ROSInterruptException:
+                            break
                         continue
                 nearest_point = None
                 if self.pcd_raycaster is not None:
@@ -1168,7 +1174,10 @@ class TunnelNavigator:
                             f"[TunnelNav] Safety cleared, min_dist={min_dist:.2f} m"
                         )
                     self.safety_stop = False
-            rate.sleep()
+            try:
+                rate.sleep()
+            except rospy.exceptions.ROSInterruptException:
+                break
 
     # ==================================================================
     # Helpers
