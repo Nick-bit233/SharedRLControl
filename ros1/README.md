@@ -1,64 +1,26 @@
-运行ros1对比实验
+运行 ROS1 隧道对比实验
+======================
 
-进入容器终端：
+默认推荐从宿主机启动 **headless batch-by-batch** 工作流。长时间批量实验不要再用
+`docker exec tunnel_debug ...` 或默认挂载宿主 X11 显示器；手动可视化调试时再显式启动
+`tunnel_debug`。
 
- docker exec -it tunnel_debug bash
+## 方式一：宿主机长时间批量实验（推荐）
 
-生成地图
+以下命令会为每个 batch 启动一个一次性 `tunnel_batch` 容器，默认不挂载宿主显示器，
+由容器内 Xvfb + software rendering 支撑 Gazebo headless 运行。日志写入结果目录下的
+`host_logs/`。
 
-python3 generate_tunnel_map.py \
--o ../../cfg/tunnel/tunnel_map_default.pcd \
--w ../../../uav_simulator/worlds/generated_env/tunnel_pcd_match_static.world \
---seed <多次实验随机生成> -n 15 --cuboid-ratio 0.5
+```bash
+cd /home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl
 
-方式一：手动单独测试
-
- # RL 策略（带 GUI）
- roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=true
- 
- # IPC 算法（带 GUI）
- roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
-
-方式二：自动化多轮对比
-
-python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
-     --num-batches 1 \
-     --runs-per-batch 1 
-
-# 从中断的批量结果原地续跑；会复用已有 batch_config/地图/seed，跳过完整轨迹并重跑缺失或损坏的 run
-python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
-     --resume-from /root/catkin_ws/results/batch_20260427_142203 \
-     --master-seed 325
-
-# 100-run safety_min_dist pilot: minimal safety-margin ablation, do not overwrite baseline results
-python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+     --run \
      --num-batches 10 \
-     --runs-per-batch 10 \
-     --methods rl,ipc \
-     --master-seed 326 \
-     --safety-min-dist 0.30 \
-     --launch-timeout 100 \
-     --output-dir /root/catkin_ws/results/batch_safety030_pilot
-
-# 100-run recovery-shield pilot: same safety distance, active escape instead of hold-only stop
-python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
-     --num-batches 10 \
-     --runs-per-batch 10 \
-     --methods rl,ipc \
-     --master-seed 327 \
-     --safety-min-dist 0.30 \
-     --safety-mode recover \
-     --safety-recover-speed 0.35 \
-     --safety-recover-forward-speed 0.15 \
-     --launch-timeout 100 \
-     --output-dir /root/catkin_ws/results/batch_safety030_recover_pilot
-
-# Offline HDF5 replay + constrained feasible-map pilot
-python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
-     --num-batches 10 \
-     --runs-per-batch 10 \
+     --output-dir /root/results/replay_h5_mapconstrained_seed5716 \
      --methods rl,ipc \
      --master-seed 5716 \
+     --runs-per-batch 10 \
      --input-source offline \
      --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
      --replay-start-offset 0 \
@@ -72,25 +34,104 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.p
      --gazebo-policy-z-max 0.50 \
      --safety-min-dist 0.20 \
      --launch-timeout 100 \
-     --output-dir /root/catkin_ws/results/replay_h5_mapconstrained_seed5716
+     --run-retries 1
+```
 
-# 上述 offline replay batch 从断点续跑示例
+如果输出目录已经存在，runner 会自动让后续 batch 使用 `--resume-from`，复用
+`batch_config.json`、地图和 seed plan，并跳过完整 run。
+
+只恢复某个 batch：
+
+```bash
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+     --run \
+     --resume-from /root/results/replay_h5_mapconstrained_seed5716 \
+     --num-batches 10 \
+     --batch-index 1 \
+     --methods rl,ipc \
+     --master-seed 5716 \
+     --runs-per-batch 10 \
+     --run-retries 1
+```
+
+先检查 Docker 命令但不运行：
+
+```bash
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+     --num-batches 10 \
+     --output-dir /root/results/dryrun_example \
+     --methods rl,ipc \
+     --master-seed 5716 \
+     --runs-per-batch 10
+```
+
+## 方式二：容器内单次/小规模 headless 测试
+
+```bash
+docker compose -f docker-compose.tunnel.yml run --rm tunnel_batch bash
+
 python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
-     --resume-from /root/catkin_ws/results/replay_h5_mapconstrained_seed5716 \
-     --master-seed 5716
+     --num-batches 1 \
+     --runs-per-batch 1 \
+     --methods rl,ipc \
+     --output-dir /root/results/smoke_headless
+```
 
-方式三：分析结果
+`batch_tunnel_experiments.py` 支持只运行完整 seed plan 中的某个 batch：
 
- python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
-     --data-dir /root/results
+```bash
+python3 /root/catkin_ws/src/navigation_runner/scripts/batch_tunnel_experiments.py \
+     --resume-from /root/results/replay_h5_mapconstrained_seed5716 \
+     --batch-index 1 \
+     --run-retries 1
+```
 
-注意事项
+## 方式三：手动可视化调试（显式 X11）
 
- - 安全停止阈值：默认 `safety_min_dist=0.2m`；小规模 safety pilot 可通过 batch 参数 `--safety-min-dist 0.30` 覆盖
- - 安全介入模式：默认 `--safety-mode hold` 保持旧行为；`--safety-mode recover` 会在触发安全距离时发布低速脱困命令，用于验证 stop-only trap 是否可减少
- - 离线输入回放：`docker compose -f docker-compose.tunnel.yml build tunnel_debug && docker compose -f docker-compose.tunnel.yml up -d --force-recreate` 后，容器镜像内才会包含 `h5py`；否则 offline replay 节点会在启动时直接报错退出
- - 离线输入回放：容器内默认可通过 `/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5` 访问 HDF5；不要依赖指向宿主机绝对路径的软链接，因为该目标路径默认不在容器挂载范围内
- - 离线输入回放：`--input-source offline --replay-dataset-path <h5>` 会让 RL/IPC 复用同一条 HDF5 pilot velocity 序列；`--replay-start-offset 0` 可避免随机窗口落在旧数据集的低前进速度段
- - 约束地图采样：`--map-sampling-mode constrained` 会记录 spacing、local density、connectivity 等 feasibility 指标到每个 batch 的 `obstacles.json` 和分析 `summary.json`
- - 实验数据现在通过 bind mount 同步到宿主机 `ros1/results/`
- - 容器内 `/root/results` 与 `/root/catkin_ws/results` 都会映射到同一个宿主机目录
+只有需要 Gazebo GUI/RViz 时才启动 debug 容器：
+
+```bash
+cd /home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl
+xhost +local:docker
+docker compose -f docker-compose.tunnel.yml --profile debug up -d tunnel_debug
+docker exec -it tunnel_debug bash
+```
+
+容器内：
+
+```bash
+# RL 策略（带 GUI）
+roslaunch navigation_runner tunnel_comparison.launch method:=rl gui:=true rviz:=true
+
+# IPC 算法（带 GUI）
+roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true rviz:=true
+```
+
+## 结果分析
+
+```bash
+python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
+     --data-dir /root/results/replay_h5_mapconstrained_seed5716 \
+     --output-dir /root/results/replay_h5_mapconstrained_seed5716/analysis
+```
+
+宿主机路径与容器路径映射：
+
+- 宿主机 `ros1/results/`
+- 容器内 `/root/results`
+- 容器内 `/root/catkin_ws/results`
+
+## 注意事项
+
+- `tunnel_batch` 默认 `TUNNEL_RENDER_MODE=headless`，不会使用宿主 `DISPLAY`。
+- `tunnel_debug` 默认 `TUNNEL_RENDER_MODE=x11`，只有手动调试时使用。
+- `docker-compose.tunnel.yml` 默认挂载
+  `/home/haoming/wht/IsaacLab_drones_5.1/slope_inspection` 到 `/root/slope_ws/src`；
+  如路径不同，可设置 `SLOPE_INSPECTION_HOST_PATH=/path/to/slope_inspection`。
+- host orchestrator 默认只重编译 IPC 相关包并限制并发：
+  `catkin_make -C /root/slope_ws -j2 -l2 -DCATKIN_WHITELIST_PACKAGES=...`，
+  避免全量 workspace 高并发构建触发无关包失败或资源峰值。
+- 离线输入回放数据默认路径为
+  `/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5`。
+- 约束地图采样会记录 spacing、local density、connectivity 等指标到每个 batch 的
+  `obstacles.json` 和分析输出。

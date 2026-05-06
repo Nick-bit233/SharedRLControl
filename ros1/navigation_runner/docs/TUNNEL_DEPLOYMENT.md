@@ -54,17 +54,49 @@ cd SharedRLControl
 # 构建 Docker 镜像
 docker build -f Dockerfile.tunnel_comparison -t tunnel_comparison:latest .
 
-# 使用 docker-compose 持久化启动（支持 GPU 渲染、X11 转发、代码热编辑）
-xhost +local:docker
-docker compose -f docker-compose.tunnel.yml up -d
+# 默认 headless batch 容器，不挂载宿主 DISPLAY/X11
+docker compose -f docker-compose.tunnel.yml run --rm tunnel_batch bash
 
-# 进入容器
+# 只有手动可视化调试时才启动 X11 debug 容器
+xhost +local:docker
+docker compose -f docker-compose.tunnel.yml --profile debug up -d tunnel_debug
 docker exec -it tunnel_debug bash
 ```
 
 > 当前已验证并持久化了一个本地修复镜像：`tunnel_comparison:20260415-ipcfix`。
 > 这份 image 包含容器内重新编译后的 `slope_ws` / `ipc_node` 修复，`docker-compose.tunnel.yml`
 > 现在默认就固定到这个 tag。为了兼容旧命令，本机的 `tunnel_comparison:latest` 也已被重新标记到同一镜像。
+> 长时间对比实验请使用 `run_tunnel_batch_containers.py`，它会从宿主机启动
+> 一个 batch 一个一次性 headless 容器，并默认挂载
+> `/home/haoming/wht/IsaacLab_drones_5.1/slope_inspection` 中的 IPC 源码。
+> 自动重编译只白名单构建 IPC 相关包，并限制为 `-j2 -l2`，避免全量 workspace
+> 高并发构建触发无关包失败或资源峰值。
+
+### 1.1.1 宿主机 batch-by-batch 运行
+
+```bash
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+    --run \
+    --num-batches 10 \
+    --output-dir /root/results/replay_h5_mapconstrained_seed5716 \
+    --methods rl,ipc \
+    --master-seed 5716 \
+    --runs-per-batch 10 \
+    --input-source offline \
+    --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
+    --replay-start-offset 0 \
+    --map-sampling-mode constrained \
+    --min-obstacle-spacing 0.6 \
+    --local-density-window 3.0 \
+    --max-obstacles-per-window 3 \
+    --max-local-area-fraction 0.35 \
+    --require-connectivity \
+    --gazebo-z-mode policy_clamped \
+    --gazebo-policy-z-max 0.50 \
+    --safety-min-dist 0.20 \
+    --launch-timeout 100 \
+    --run-retries 1
+```
 
 ### 1.2 运行 RL 模式
 

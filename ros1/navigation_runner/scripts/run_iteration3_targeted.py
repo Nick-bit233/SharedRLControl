@@ -19,15 +19,20 @@ from dataclasses import dataclass
 
 
 MASTER_SEED = 5716
-DEFAULT_CONTAINER = "tunnel_debug"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+COMPOSE_FILE = os.path.join(REPO_ROOT, "docker-compose.tunnel.yml")
+DEFAULT_CONTAINER = "tunnel_batch"
 CONTAINER_SCRIPT_DIR = "/root/catkin_ws/src/navigation_runner/scripts"
 BATCH_SCRIPT = os.path.join(CONTAINER_SCRIPT_DIR, "batch_tunnel_experiments.py")
 ANALYZE_SCRIPT = os.path.join(CONTAINER_SCRIPT_DIR, "analyze_results.py")
+SLOPE_BUILD_PACKAGES = "mars_quadrotor_msgs;mars_planning_utils;mars_base;rog_map;ipc"
 
 ROS_SETUP_LINES = (
     "set -eo pipefail",
     "export ROS_MASTER_URI=${ROS_MASTER_URI:-http://127.0.0.1:11311}",
     "source /opt/ros/noetic/setup.bash",
+    f"catkin_make -C /root/slope_ws -j2 -l2 -DCATKIN_WHITELIST_PACKAGES={shlex.quote(SLOPE_BUILD_PACKAGES)}",
+    'if [ "$(readlink /root/slope_ws/src/CMakeLists.txt 2>/dev/null)" = "/opt/ros/noetic/share/catkin/cmake/toplevel.cmake" ]; then rm -f /root/slope_ws/src/CMakeLists.txt; fi',
     "source /root/slope_ws/devel/setup.bash",
     "source /root/catkin_ws/devel/setup.bash",
     "export ROS_IP=127.0.0.1",
@@ -372,7 +377,11 @@ print("-" * 160)
 
 
 def docker_argv(container, inner_command):
-    return ["docker", "exec", container, "bash", "-lc", inner_command]
+    return [
+        "docker", "compose", "-f", COMPOSE_FILE,
+        "run", "--rm", "-e", "TUNNEL_RENDER_MODE=headless",
+        container, "bash", "-lc", inner_command,
+    ]
 
 
 def run_inner(inner_command, args, label, allow_failure=False):
@@ -450,6 +459,7 @@ def main(argv=None):
 
     if not args.run and not args.print_inner_command:
         print("Dry run only. Pass --run to launch experiments.")
+    print("Compatibility wrapper: launches disposable headless compose containers; use run_tunnel_batch_containers.py for per-batch isolation.")
     print(f"Master seed: {MASTER_SEED}")
     print("Selected candidates: " + ", ".join(candidate.name for candidate in candidates))
 

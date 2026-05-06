@@ -71,9 +71,9 @@ RUN echo 'source /opt/ros/noetic/setup.bash' >> /root/.bashrc && \
 ENV GAZEBO_MODEL_PATH=/usr/share/gazebo-11/models:${CATKIN_WS}/src/uav_simulator/models
 ENV GAZEBO_PLUGIN_PATH=${CATKIN_WS}/src/uav_simulator/plugins:${GAZEBO_PLUGIN_PATH}
 
-# ---------- Rendering fallback (Xvfb when no host DISPLAY) ----------
-# When host X11 is forwarded, entrypoint.sh skips Xvfb and uses GPU directly.
-# These are defaults for fully headless (CI/batch) mode only:
+# ---------- Rendering mode defaults ----------
+# entrypoint.sh defaults to TUNNEL_RENDER_MODE=headless and starts Xvfb.
+# Host X11 rendering is available only when TUNNEL_RENDER_MODE=x11 is set.
 ENV MESA_GL_VERSION_OVERRIDE=3.3
 
 # ---------- Default working directory ----------

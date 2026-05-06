@@ -16,6 +16,16 @@ from datetime import datetime
 
 DEFAULT_CHECKPOINT = "$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"
 
+FATAL_LOG_MARKERS = (
+    "Call to publish() on an invalid Publisher",
+    "boost::thread_resource_error",
+    "what():  boost::thread_resource_error",
+    "gzserver: Aborted",
+    "gzclient: Aborted",
+    "process has died",
+    "RL node failed to initialize",
+)
+
 EXPERIMENT_PROCESS_PATTERNS = (
     "/opt/ros/noetic/bin/rosmaster --core",
     "/opt/ros/noetic/lib/rosout/rosout",
@@ -54,8 +64,16 @@ def parse_args():
                         help="Output root (default: auto timestamp under /root/catkin_ws/results)")
     parser.add_argument("--resume-from", default=None,
                         help="Resume an existing batch result root in-place; skips complete runs")
+    parser.add_argument("--batch-index", type=int, default=None,
+                        help="Run only one batch index from the full seed plan")
+    parser.add_argument("--batch-start", type=int, default=None,
+                        help="First batch index to execute from the full seed plan")
+    parser.add_argument("--batch-end", type=int, default=None,
+                        help="Last batch index to execute from the full seed plan, inclusive")
     parser.add_argument("--min-complete-samples", type=int, default=1,
                         help="Minimum samples for an existing trajectory to be considered complete")
+    parser.add_argument("--run-retries", type=int, default=0,
+                        help="Retry a failed/timed-out/fatal-log run this many times")
     parser.add_argument("--launch-timeout", type=float, default=80.0,
                         help="External watchdog timeout per run in seconds")
     parser.add_argument("--recorder-timeout", type=float, default=60.0,
@@ -77,6 +95,8 @@ def parse_args():
     parser.add_argument("--safety-recover-centerline-gain", type=float, default=None,
                         help="Centerline-return weight for safety_mode=recover")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--ipc-spinner-threads", type=int, default=2,
+                        help="AsyncSpinner threads for ipc_node (default: 2)")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT,
                         help="RL checkpoint passed to tunnel_comparison.launch")
     parser.add_argument("--gazebo-z-mode", default="alt_hold",
@@ -476,6 +496,9 @@ def apply_resume_config(args, output_root):
     args.safety_recover_forward_speed = config_safety_recover_forward_speed
     args.safety_recover_centerline_gain = config_safety_recover_centerline_gain
     args.device = config.get("device", args.device)
+    args.ipc_spinner_threads = int(
+        config.get("ipc_spinner_threads", args.ipc_spinner_threads)
+    )
     args.checkpoint = config.get("checkpoint", args.checkpoint)
     args.gazebo_z_mode = config.get("gazebo_z_mode", args.gazebo_z_mode)
     args.gazebo_policy_z_max = float(
@@ -755,6 +778,7 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"safety_recover_forward_speed:={args.safety_recover_forward_speed}",
         f"safety_recover_centerline_gain:={args.safety_recover_centerline_gain}",
         f"device:={args.device}",
+        f"ipc_spinner_threads:={args.ipc_spinner_threads}",
         f"checkpoint:={args.checkpoint}",
         f"gazebo_z_mode:={args.gazebo_z_mode}",
         f"gazebo_policy_z_max:={args.gazebo_policy_z_max}",
@@ -794,6 +818,9 @@ def load_json(path):
 
 
 def write_json(path, data):
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
     tmp_path = f"{path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2)
@@ -804,9 +831,87 @@ def write_manifest(output_root, manifest):
     write_json(os.path.join(output_root, "batch_manifest.json"), manifest)
 
 
+def load_existing_manifest(output_root):
+    manifest_path = os.path.join(output_root, "batch_manifest.json")
+    if not os.path.exists(manifest_path):
+        return None
+    try:
+        return load_json(manifest_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[Batch] WARNING: ignoring unreadable existing manifest: {exc}")
+        return None
+
+
+def run_manifest_key(summary):
+    return (
+        int(summary.get("batch_idx", -1)),
+        int(summary.get("run_idx", -1)),
+        str(summary.get("method", "")).lower(),
+    )
+
+
+def upsert_manifest_run(manifest, summary):
+    key = run_manifest_key(summary)
+    runs = []
+    replaced = False
+    for existing in manifest.get("runs", []):
+        if run_manifest_key(existing) == key:
+            runs.append(summary)
+            replaced = True
+        else:
+            runs.append(existing)
+    if not replaced:
+        runs.append(summary)
+    manifest["runs"] = runs
+
+
 def expected_seed_plan_matches(args, config_plan):
     generated_plan = generate_seed_plan(args)
     return generated_plan == config_plan
+
+
+def select_seed_plan(args, seed_plan):
+    if args.batch_index is not None:
+        if args.batch_start is not None or args.batch_end is not None:
+            raise ValueError("--batch-index cannot be combined with --batch-start/--batch-end")
+        start = end = args.batch_index
+    else:
+        start = 0 if args.batch_start is None else args.batch_start
+        end = len(seed_plan) - 1 if args.batch_end is None else args.batch_end
+
+    if start < 0 or end < 0 or start > end:
+        raise ValueError(f"Invalid batch selection: start={start} end={end}")
+    max_batch = len(seed_plan) - 1
+    if end > max_batch:
+        raise ValueError(f"Batch selection ends at {end}, but max batch index is {max_batch}")
+
+    selected = [
+        batch
+        for batch in seed_plan
+        if start <= int(batch["batch_idx"]) <= end
+    ]
+    if not selected:
+        raise ValueError(f"No batches selected for range {start}..{end}")
+    return selected, [int(batch["batch_idx"]) for batch in selected]
+
+
+def detect_log_failures(log_path):
+    if not os.path.exists(log_path):
+        return []
+    hits = []
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                for marker in FATAL_LOG_MARKERS:
+                    if marker in line and marker not in hits:
+                        hits.append(marker)
+    except OSError as exc:
+        hits.append(f"unreadable log: {exc}")
+    return hits
+
+
+def run_attempt_failed(timed_out, exit_code, fatal_errors):
+    return bool(timed_out or fatal_errors or (exit_code not in (0, None)))
 
 
 def data_path_for_summary(run_dir, summary):
@@ -890,6 +995,16 @@ def existing_run_is_complete(run_dir, method, trial_id, batch_idx, run_idx,
     )
     if not matches:
         return None, reason
+    if summary.get("timed_out"):
+        return None, "previous run timed out"
+    if summary.get("fatal_errors"):
+        return None, "previous run recorded fatal log markers"
+    try:
+        exit_code = int(summary.get("exit_code", 0))
+    except (TypeError, ValueError):
+        return None, "previous run exit_code missing or invalid"
+    if exit_code != 0:
+        return None, f"previous run exit_code {exit_code}"
 
     try:
         summary_samples = int(summary.get("samples", 0))
@@ -930,7 +1045,9 @@ def normalize_existing_summary(summary, run_dir, method, trial_id, run_id, batch
 
 def collect_run_summary(run_dir, method, trial_id, run_id, batch_idx, run_idx,
                          map_seed, user_model_seed, timed_out, exit_code, log_path,
-                         map_path, world_path, checkpoint):
+                         map_path, world_path, checkpoint, fatal_errors=None,
+                         attempt=1, max_attempts=1):
+    fatal_errors = fatal_errors or []
     summary_path = os.path.join(run_dir, "run_summary.json")
     if os.path.exists(summary_path):
         summary = load_json(summary_path)
@@ -960,6 +1077,15 @@ def collect_run_summary(run_dir, method, trial_id, run_id, batch_idx, run_idx,
 
     summary["exit_code"] = exit_code
     summary["timed_out"] = timed_out
+    summary["fatal_errors"] = fatal_errors
+    summary["attempt"] = attempt
+    summary["max_attempts"] = max_attempts
+    if fatal_errors:
+        summary["termination_reason"] = "fatal_log_error"
+    elif timed_out:
+        summary["termination_reason"] = "timeout"
+    elif exit_code not in (0, None) and summary.get("termination_reason") == "missing_summary":
+        summary["termination_reason"] = "roslaunch_exit_nonzero"
     summary["log_file"] = os.path.relpath(log_path, os.path.dirname(run_dir))
     summary["pcd_file"] = summary.get("pcd_file", map_path) or map_path
     summary["tunnel_world"] = summary.get("tunnel_world", world_path) or world_path
@@ -982,7 +1108,9 @@ def run_batch(args, output_root):
     else:
         seed_plan = generate_seed_plan(args)
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    execution_plan, selected_batch_indices = select_seed_plan(args, seed_plan)
     cleanup_experiment_processes("batch start")
+    existing_manifest = load_existing_manifest(output_root)
     manifest = {
         "batch_config": {
             "num_batches": args.num_batches,
@@ -998,6 +1126,7 @@ def run_batch(args, output_root):
             "safety_recover_forward_speed": args.safety_recover_forward_speed,
             "safety_recover_centerline_gain": args.safety_recover_centerline_gain,
             "device": args.device,
+            "ipc_spinner_threads": args.ipc_spinner_threads,
             "checkpoint": args.checkpoint,
             "gazebo_z_mode": args.gazebo_z_mode,
             "gazebo_policy_z_max": args.gazebo_policy_z_max,
@@ -1044,7 +1173,8 @@ def run_batch(args, output_root):
             "spawn": [args.spawn_x, args.spawn_y, args.spawn_z],
             "batches": seed_plan,
         },
-        "runs": [],
+        "selected_batches": selected_batch_indices,
+        "runs": list((existing_manifest or {}).get("runs", [])),
     }
     if resume:
         manifest["resume"] = {
@@ -1054,12 +1184,17 @@ def run_batch(args, output_root):
 
     write_json(os.path.join(output_root, "batch_config.json"), manifest["batch_config"])
 
-    total_runs = args.num_batches * args.runs_per_batch * len(methods)
+    total_runs = len(execution_plan) * args.runs_per_batch * len(methods)
     completed_runs = 0
     skipped_runs = 0
     rerun_runs = 0
 
-    for batch_info in seed_plan:
+    print(
+        f"[Batch] Executing batch indices: "
+        f"{','.join(str(index) for index in selected_batch_indices)}"
+    )
+
+    for batch_info in execution_plan:
         batch_idx = batch_info["batch_idx"]
         batch_dir = os.path.join(output_root, f"batch_{batch_idx:03d}")
         runs_dir = os.path.join(batch_dir, "runs")
@@ -1107,7 +1242,7 @@ def run_batch(args, output_root):
                             world_path=world_path,
                             checkpoint=args.checkpoint,
                         )
-                        manifest["runs"].append(summary)
+                        upsert_manifest_run(manifest, summary)
                         skipped_runs += 1
                         completed_runs += 1
                         print(
@@ -1126,65 +1261,90 @@ def run_batch(args, output_root):
                     log_path = os.path.join(run_dir, "launch.log")
                     rerun_runs += 1
 
-                cleanup_experiment_processes(f"before {run_id}")
-                run_env = build_run_env(run_dir, completed_runs)
-                cmd = build_roslaunch_cmd(
-                    args=args,
-                    method=method,
-                    run_dir=run_dir,
-                    trial_id=trial_id,
-                    run_id=run_id,
-                    batch_idx=batch_idx,
-                    run_idx=run_idx,
-                    map_seed=batch_info["map_seed"],
-                    user_model_seed=user_model_seed,
-                    map_path=map_path,
-                    world_path=world_path,
-                )
+                max_attempts = args.run_retries + 1
+                summary = None
+                for attempt in range(1, max_attempts + 1):
+                    if attempt > 1:
+                        print(
+                            f"[Batch] Retry {attempt}/{max_attempts} for "
+                            f"batch={batch_idx} run={run_idx} method={method}"
+                        )
+                        if os.path.isdir(run_dir):
+                            shutil.rmtree(run_dir)
+                        os.makedirs(run_dir, exist_ok=True)
+                        log_path = os.path.join(run_dir, "launch.log")
 
-                print(
-                    f"[Batch] {completed_runs + 1}/{total_runs} "
-                    f"batch={batch_idx} run={run_idx} method={method} seed={user_model_seed}"
-                )
-
-                proc = None
-                timed_out = False
-                exit_code = None
-                with open(log_path, "w", encoding="utf-8") as log_handle:
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=log_handle,
-                        stderr=subprocess.STDOUT,
-                        preexec_fn=os.setsid,
-                        env=run_env,
+                    cleanup_experiment_processes(f"before {run_id}")
+                    run_env = build_run_env(run_dir, completed_runs)
+                    cmd = build_roslaunch_cmd(
+                        args=args,
+                        method=method,
+                        run_dir=run_dir,
+                        trial_id=trial_id,
+                        run_id=run_id,
+                        batch_idx=batch_idx,
+                        run_idx=run_idx,
+                        map_seed=batch_info["map_seed"],
+                        user_model_seed=user_model_seed,
+                        map_path=map_path,
+                        world_path=world_path,
                     )
-                    try:
-                        exit_code = proc.wait(timeout=args.launch_timeout)
-                    except subprocess.TimeoutExpired:
-                        timed_out = True
-                        kill_process_group(proc)
-                        exit_code = -signal.SIGTERM
 
-                summary = collect_run_summary(
-                    run_dir=run_dir,
-                    method=method,
-                    trial_id=trial_id,
-                    run_id=run_id,
-                    batch_idx=batch_idx,
-                    run_idx=run_idx,
-                    map_seed=batch_info["map_seed"],
-                    user_model_seed=user_model_seed,
-                    timed_out=timed_out,
-                    exit_code=exit_code,
-                    log_path=log_path,
-                    map_path=map_path,
-                    world_path=world_path,
-                    checkpoint=args.checkpoint,
-                )
-                manifest["runs"].append(summary)
+                    print(
+                        f"[Batch] {completed_runs + 1}/{total_runs} "
+                        f"batch={batch_idx} run={run_idx} method={method} "
+                        f"seed={user_model_seed} attempt={attempt}/{max_attempts}"
+                    )
+
+                    timed_out = False
+                    exit_code = None
+                    with open(log_path, "w", encoding="utf-8") as log_handle:
+                        proc = subprocess.Popen(
+                            cmd,
+                            stdout=log_handle,
+                            stderr=subprocess.STDOUT,
+                            preexec_fn=os.setsid,
+                            env=run_env,
+                        )
+                        try:
+                            exit_code = proc.wait(timeout=args.launch_timeout)
+                        except subprocess.TimeoutExpired:
+                            timed_out = True
+                            kill_process_group(proc)
+                            exit_code = -signal.SIGTERM
+
+                    fatal_errors = detect_log_failures(log_path)
+                    summary = collect_run_summary(
+                        run_dir=run_dir,
+                        method=method,
+                        trial_id=trial_id,
+                        run_id=run_id,
+                        batch_idx=batch_idx,
+                        run_idx=run_idx,
+                        map_seed=batch_info["map_seed"],
+                        user_model_seed=user_model_seed,
+                        timed_out=timed_out,
+                        exit_code=exit_code,
+                        log_path=log_path,
+                        map_path=map_path,
+                        world_path=world_path,
+                        checkpoint=args.checkpoint,
+                        fatal_errors=fatal_errors,
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                    )
+                    cleanup_experiment_processes(f"after {run_id}")
+                    if not run_attempt_failed(timed_out, exit_code, fatal_errors):
+                        break
+                    if attempt < max_attempts:
+                        print(
+                            f"[Batch] Run failed; retrying after errors: "
+                            f"{fatal_errors or ['timeout/nonzero exit']}"
+                        )
+
+                upsert_manifest_run(manifest, summary)
                 write_manifest(output_root, manifest)
 
-                cleanup_experiment_processes(f"after {run_id}")
                 completed_runs += 1
                 time.sleep(args.inter_run_delay)
 
@@ -1210,6 +1370,10 @@ def maybe_run_analysis(args, output_root):
 
 def main():
     args = parse_args()
+    if args.run_retries < 0:
+        raise ValueError("--run-retries must be non-negative")
+    if args.ipc_spinner_threads < 1:
+        raise ValueError("--ipc-spinner-threads must be positive")
     output_root = ensure_output_dir(args)
     if args.resume_from:
         apply_resume_config(args, output_root)

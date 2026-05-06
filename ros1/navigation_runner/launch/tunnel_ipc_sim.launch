@@ -11,6 +11,7 @@
     <arg name="rviz" default="true"/>
     <arg name="device" default="cpu"/>
     <arg name="ipc_launch_prefix" default=""/>
+    <arg name="ipc_spinner_threads" default="2"/>
     <arg name="user_model_simple" default="false"/>
     <arg name="user_model_profile" default="m3_diverse"/>
     <arg name="user_model_speed" default="2.0"/>
@@ -157,6 +158,7 @@
 
         <rosparam command="load"
                   file="$(find navigation_runner)/cfg/tunnel/ipc_gazebo_param.yaml"/>
+        <param name="spinner_threads" value="$(arg ipc_spinner_threads)"/>
     </node>
 
     <!-- ===== Flight Recorder ===== -->

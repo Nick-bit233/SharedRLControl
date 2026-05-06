@@ -1,54 +1,75 @@
 # =============================================================
-# Docker Compose for persistent tunnel comparison debugging
-# Usage:
-#   docker compose -f docker-compose.tunnel.yml up -d
-#   # Then attach VSCode via "Dev Containers: Attach to Running Container"
-#   # Or open a shell: docker exec -it tunnel_debug bash
+# Docker Compose for ROS1 tunnel comparison experiments
+#
+# Default unattended batch mode is headless: no host DISPLAY and no X11 socket.
+# Manual visual debugging is opt-in via the tunnel_debug service/profile.
 # =============================================================
 
+x-tunnel-common: &tunnel-common
+  build:
+    context: .
+    dockerfile: Dockerfile.tunnel_comparison
+  image: tunnel_comparison:20260415-ipcfix
+  runtime: nvidia
+  network_mode: host
+  shm_size: "2gb"
+  pids_limit: 4096
+  working_dir: /root/catkin_ws
+  restart: "no"
+  environment: &tunnel-common-env
+    NVIDIA_VISIBLE_DEVICES: all
+    NVIDIA_DRIVER_CAPABILITIES: all
+    QT_X11_NO_MITSHM: "1"
+    SLOPE_SOURCE_MOUNT: /root/slope_ws/src
+  volumes: &tunnel-common-volumes
+    # ROS1 comparison source mounts
+    - ./ros1/navigation_runner/scripts:/root/catkin_ws/src/navigation_runner/scripts:rw
+    - ./ros1/navigation_runner/cfg:/root/catkin_ws/src/navigation_runner/cfg:rw
+    - ./ros1/navigation_runner/launch:/root/catkin_ws/src/navigation_runner/launch:rw
+    - ./ros1/navigation_runner/docs:/root/catkin_ws/src/navigation_runner/docs:rw
+    - ./isaac-training/data/trajectories_tunnel.h5:/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5:ro
+
+    # slope_inspection IPC source. Override SLOPE_INSPECTION_HOST_PATH if needed.
+    - ${SLOPE_INSPECTION_HOST_PATH:-../slope_inspection}:/root/slope_ws/src:rw
+
+    # RL checkpoints and Gazebo assets
+    - ./isaac-training/outputs:/root/catkin_ws/src/navigation_runner/checkpoints:ro
+    - ./ros1/uav_simulator/worlds:/root/catkin_ws/src/uav_simulator/worlds:rw
+
+    # Persistent experiment outputs
+    - ./ros1/results:/root/results:rw
+    - ./ros1/results:/root/catkin_ws/results:rw
+
 services:
-  tunnel_debug:
-    build:
-      context: .
-      dockerfile: Dockerfile.tunnel_comparison
-    image: tunnel_comparison:20260415-ipcfix
-    container_name: tunnel_debug
-    runtime: nvidia            # GPU passthrough for Gazebo rendering
-    stdin_open: true           # keep alive for VSCode attach
+  tunnel_batch:
+    <<: *tunnel-common
+    stdin_open: true
     tty: true
-    network_mode: host         # simplifies ROS networking
-
     environment:
-      - DISPLAY=${DISPLAY:-:1}
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=all
-      - QT_X11_NO_MITSHM=1    # fix shared memory issues with X11
+      <<: *tunnel-common-env
+      TUNNEL_RENDER_MODE: headless
+    command: ["bash"]
 
+  tunnel_debug:
+    <<: *tunnel-common
+    profiles: ["debug"]
+    container_name: tunnel_debug
+    stdin_open: true
+    tty: true
+    environment:
+      <<: *tunnel-common-env
+      DISPLAY: ${DISPLAY:-:1}
+      TUNNEL_RENDER_MODE: x11
     volumes:
-      # --- X11 socket for GUI (Gazebo, RViz) on host monitor ---
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-
-      # --- Source code mounts (edit on host, test in container) ---
-      # Python scripts: edits reflect immediately, no rebuild needed
       - ./ros1/navigation_runner/scripts:/root/catkin_ws/src/navigation_runner/scripts:rw
       - ./ros1/navigation_runner/cfg:/root/catkin_ws/src/navigation_runner/cfg:rw
       - ./ros1/navigation_runner/launch:/root/catkin_ws/src/navigation_runner/launch:rw
       - ./ros1/navigation_runner/docs:/root/catkin_ws/src/navigation_runner/docs:rw
       - ./isaac-training/data/trajectories_tunnel.h5:/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5:ro
-
-      # RL checkpoints (read-only, large files)
+      - ${SLOPE_INSPECTION_HOST_PATH:-../slope_inspection}:/root/slope_ws/src:rw
       - ./isaac-training/outputs:/root/catkin_ws/src/navigation_runner/checkpoints:ro
-
-      # Gazebo world files (edit tunnel layout without rebuild)
       - ./ros1/uav_simulator/worlds:/root/catkin_ws/src/uav_simulator/worlds:rw
-
-      # Persistent experiment outputs: host ros1/results/ <-> container results dirs
-      # Keep both paths mounted for compatibility with older scripts that still use
-      # /root/catkin_ws/results while the newer launch files default to /root/results.
       - ./ros1/results:/root/results:rw
       - ./ros1/results:/root/catkin_ws/results:rw
-
-    working_dir: /root/catkin_ws
-
-    # Keep container running (entrypoint sources ROS + starts Xvfb if needed)
     command: ["bash"]

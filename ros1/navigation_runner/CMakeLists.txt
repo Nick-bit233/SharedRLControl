@@ -178,6 +178,7 @@ catkin_install_python(PROGRAMS
   scripts/flight_recorder.py
   scripts/run_comparison.py
   scripts/batch_tunnel_experiments.py
+  scripts/run_tunnel_batch_containers.py
   scripts/analyze_results.py
   scripts/run_iteration1_screening.py
   scripts/run_iteration2_targeted.py
