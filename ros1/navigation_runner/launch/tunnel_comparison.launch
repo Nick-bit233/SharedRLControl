@@ -19,7 +19,6 @@
     <arg name="rviz" default="true"/>
     <arg name="device" default="cpu"/>
     <arg name="ipc_launch_prefix" default=""/>
-    <arg name="ipc_spinner_threads" default="2"/>
     <arg name="user_model_simple" default="false"/>
     <arg name="user_model_profile" default="m3_diverse"/>
     <arg name="user_model_speed" default="2.0"/>
@@ -175,7 +174,6 @@
             <arg name="rviz" value="false"/>
             <arg name="device" value="$(arg device)"/>
             <arg name="ipc_launch_prefix" value="$(arg ipc_launch_prefix)"/>
-            <arg name="ipc_spinner_threads" value="$(arg ipc_spinner_threads)"/>
             <arg name="user_model_simple" value="$(arg user_model_simple)"/>
             <arg name="user_model_profile" value="$(arg user_model_profile)"/>
             <arg name="user_model_speed" value="$(arg user_model_speed)"/>

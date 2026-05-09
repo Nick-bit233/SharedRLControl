@@ -31,6 +31,9 @@ x-tunnel-common: &tunnel-common
 
     # slope_inspection IPC source. Override SLOPE_INSPECTION_HOST_PATH if needed.
     - ${SLOPE_INSPECTION_HOST_PATH:-../slope_inspection}:/root/slope_ws/src:rw
+    - slope_ws_build:/root/slope_ws/build
+    - slope_ws_devel:/root/slope_ws/devel
+    - slope_ws_install:/root/slope_ws/install
 
     # RL checkpoints and Gazebo assets
     - ./isaac-training/outputs:/root/catkin_ws/src/navigation_runner/checkpoints:ro
@@ -68,8 +71,16 @@ services:
       - ./ros1/navigation_runner/docs:/root/catkin_ws/src/navigation_runner/docs:rw
       - ./isaac-training/data/trajectories_tunnel.h5:/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5:ro
       - ${SLOPE_INSPECTION_HOST_PATH:-../slope_inspection}:/root/slope_ws/src:rw
+      - slope_ws_build:/root/slope_ws/build
+      - slope_ws_devel:/root/slope_ws/devel
+      - slope_ws_install:/root/slope_ws/install
       - ./isaac-training/outputs:/root/catkin_ws/src/navigation_runner/checkpoints:ro
       - ./ros1/uav_simulator/worlds:/root/catkin_ws/src/uav_simulator/worlds:rw
       - ./ros1/results:/root/results:rw
       - ./ros1/results:/root/catkin_ws/results:rw
     command: ["bash"]
+
+volumes:
+  slope_ws_build:
+  slope_ws_devel:
+  slope_ws_install:

@@ -95,8 +95,6 @@ def parse_args():
     parser.add_argument("--safety-recover-centerline-gain", type=float, default=None,
                         help="Centerline-return weight for safety_mode=recover")
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--ipc-spinner-threads", type=int, default=2,
-                        help="AsyncSpinner threads for ipc_node (default: 2)")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT,
                         help="RL checkpoint passed to tunnel_comparison.launch")
     parser.add_argument("--gazebo-z-mode", default="alt_hold",
@@ -496,9 +494,6 @@ def apply_resume_config(args, output_root):
     args.safety_recover_forward_speed = config_safety_recover_forward_speed
     args.safety_recover_centerline_gain = config_safety_recover_centerline_gain
     args.device = config.get("device", args.device)
-    args.ipc_spinner_threads = int(
-        config.get("ipc_spinner_threads", args.ipc_spinner_threads)
-    )
     args.checkpoint = config.get("checkpoint", args.checkpoint)
     args.gazebo_z_mode = config.get("gazebo_z_mode", args.gazebo_z_mode)
     args.gazebo_policy_z_max = float(
@@ -778,7 +773,6 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"safety_recover_forward_speed:={args.safety_recover_forward_speed}",
         f"safety_recover_centerline_gain:={args.safety_recover_centerline_gain}",
         f"device:={args.device}",
-        f"ipc_spinner_threads:={args.ipc_spinner_threads}",
         f"checkpoint:={args.checkpoint}",
         f"gazebo_z_mode:={args.gazebo_z_mode}",
         f"gazebo_policy_z_max:={args.gazebo_policy_z_max}",
@@ -1126,7 +1120,6 @@ def run_batch(args, output_root):
             "safety_recover_forward_speed": args.safety_recover_forward_speed,
             "safety_recover_centerline_gain": args.safety_recover_centerline_gain,
             "device": args.device,
-            "ipc_spinner_threads": args.ipc_spinner_threads,
             "checkpoint": args.checkpoint,
             "gazebo_z_mode": args.gazebo_z_mode,
             "gazebo_policy_z_max": args.gazebo_policy_z_max,
@@ -1372,8 +1365,6 @@ def main():
     args = parse_args()
     if args.run_retries < 0:
         raise ValueError("--run-retries must be non-negative")
-    if args.ipc_spinner_threads < 1:
-        raise ValueError("--ipc-spinner-threads must be positive")
     output_root = ensure_output_dir(args)
     if args.resume_from:
         apply_resume_config(args, output_root)

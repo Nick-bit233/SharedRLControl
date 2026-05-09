@@ -17,6 +17,11 @@ CONTAINER_BATCH_SCRIPT = "/root/catkin_ws/src/navigation_runner/scripts/batch_tu
 CONTAINER_ANALYZE_SCRIPT = "/root/catkin_ws/src/navigation_runner/scripts/analyze_results.py"
 RESULT_PREFIXES = ("/root/results", "/root/catkin_ws/results")
 SLOPE_BUILD_PACKAGES = "mars_quadrotor_msgs;mars_planning_utils;mars_base;rog_map;ipc"
+SLOPE_CMAKE_CLEANUP = (
+    'if [ "$(readlink /root/slope_ws/src/CMakeLists.txt 2>/dev/null)" = '
+    '"/opt/ros/noetic/share/catkin/cmake/toplevel.cmake" ]; then '
+    "rm -f /root/slope_ws/src/CMakeLists.txt; fi"
+)
 
 
 def shell_join(argv):
@@ -52,9 +57,11 @@ def parse_args(argv):
                         help="Skip final analysis container")
     parser.set_defaults(analyze=True)
     parser.add_argument("--rebuild-slope", dest="rebuild_slope", action="store_true",
-                        help="Run catkin_make -C /root/slope_ws inside each container")
+                        help="Build mounted slope_ws overlay once before running selected batches")
     parser.add_argument("--no-rebuild-slope", dest="rebuild_slope", action="store_false")
     parser.set_defaults(rebuild_slope=True)
+    parser.add_argument("--slope-build-retries", type=int, default=2,
+                        help="Retry the one-time slope_ws build after compiler crashes")
     parser.add_argument("--log-dir", default="",
                         help="Host log directory; default: <output-root>/host_logs")
     args, batch_args = parser.parse_known_args(argv)
@@ -69,6 +76,8 @@ def parse_args(argv):
         parser.error("one of --output-dir or --resume-from is required")
     if args.num_batches is not None and args.num_batches <= 0:
         parser.error("--num-batches must be positive")
+    if args.slope_build_retries < 0:
+        parser.error("--slope-build-retries must be non-negative")
     return args, batch_args
 
 
@@ -152,8 +161,8 @@ def container_shell(batch_argv, rebuild_slope):
         lines.extend(
             [
                 "echo '[host-runner] Rebuilding mounted slope_ws overlay'",
-                f"catkin_make -C /root/slope_ws -j2 -l2 -DCATKIN_WHITELIST_PACKAGES={shlex.quote(SLOPE_BUILD_PACKAGES)}",
-                'if [ "$(readlink /root/slope_ws/src/CMakeLists.txt 2>/dev/null)" = "/opt/ros/noetic/share/catkin/cmake/toplevel.cmake" ]; then rm -f /root/slope_ws/src/CMakeLists.txt; fi',
+                f"trap '{SLOPE_CMAKE_CLEANUP}' EXIT",
+                f"catkin_make -C /root/slope_ws -j1 -l1 -DCATKIN_WHITELIST_PACKAGES={shlex.quote(SLOPE_BUILD_PACKAGES)}",
             ]
         )
     lines.extend(
@@ -201,6 +210,43 @@ def run_logged(argv, log_path, dry_run):
         return proc.wait()
 
 
+def run_slope_build_container(args, host_output_dir):
+    log_dir = args.log_dir or os.path.join(host_output_dir, "host_logs")
+    log_path = os.path.join(log_dir, "slope_build.docker.log")
+    status_path = os.path.join(log_dir, "slope_build.status.json")
+    inner = "\n".join(
+        [
+            "set -eo pipefail",
+            "source /opt/ros/noetic/setup.bash",
+            f"trap '{SLOPE_CMAKE_CLEANUP}' EXIT",
+            "echo '[host-runner] Building mounted slope_ws overlay once for all batches'",
+            f"catkin_make -C /root/slope_ws -j1 -l1 -DCATKIN_WHITELIST_PACKAGES={shlex.quote(SLOPE_BUILD_PACKAGES)}",
+        ]
+    )
+    argv = docker_run_argv(args, "tunnel_batch_slope_build", inner)
+    start = time.time()
+    returncode = 1
+    for attempt in range(1, args.slope_build_retries + 2):
+        print(f"[host-runner] slope build attempt {attempt}/{args.slope_build_retries + 1}")
+        returncode = run_logged(argv, log_path, dry_run=not args.run)
+        if returncode == 0:
+            break
+        if attempt <= args.slope_build_retries:
+            print(f"[host-runner] slope build failed with {returncode}; retrying")
+    if args.run:
+        write_status(
+            status_path,
+            {
+                "container_name": "tunnel_batch_slope_build",
+                "returncode": returncode,
+                "duration_sec": time.time() - start,
+                "log_path": log_path,
+                "command": argv,
+            },
+        )
+    return returncode
+
+
 def write_status(path, payload):
     tmp_path = f"{path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as handle:
@@ -237,7 +283,7 @@ def run_batch_container(args, batch_args, num_batches, batch_idx, host_output_di
     log_dir = args.log_dir or os.path.join(host_output_dir, "host_logs")
     log_path = os.path.join(log_dir, f"batch_{batch_idx:03d}.docker.log")
     status_path = os.path.join(log_dir, f"batch_{batch_idx:03d}.status.json")
-    argv = docker_run_argv(args, container_name, container_shell(batch_argv, args.rebuild_slope))
+    argv = docker_run_argv(args, container_name, container_shell(batch_argv, False))
 
     start = time.time()
     returncode = run_logged(argv, log_path, dry_run=not args.run)
@@ -268,7 +314,7 @@ def run_analysis_container(args, host_output_dir, container_output_dir):
             "--output-dir",
             os.path.join(container_output_dir, "analysis"),
         ],
-        args.rebuild_slope,
+        False,
     )
     argv = docker_run_argv(args, "tunnel_batch_analysis", inner)
     return run_logged(argv, log_path, dry_run=not args.run)
@@ -286,6 +332,12 @@ def main(argv=None):
     print(f"Selected batches: {','.join(str(index) for index in indices)}")
 
     failures = []
+    if args.rebuild_slope:
+        rc = run_slope_build_container(args, host_output_dir)
+        if rc != 0:
+            print(f"FAILED: slope build exit={rc}", file=sys.stderr)
+            return 1
+
     for batch_idx in indices:
         rc = run_batch_container(
             args,

@@ -17,7 +17,7 @@ cd /home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
      --num-batches 10 \
-     --output-dir /root/results/replay_h5_mapconstrained_seed5716 \
+     --output-dir /root/results/batch_replay_h5_mapconstrained_seed5716 \
      --methods rl,ipc \
      --master-seed 5716 \
      --runs-per-batch 10 \
@@ -45,9 +45,10 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
 ```bash
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
-     --resume-from /root/results/replay_h5_mapconstrained_seed5716 \
+     --resume-from /root/results/batch_replay_h5_mapconstrained_seed5716 \
      --num-batches 10 \
-     --batch-index 1 \
+     --start-batch 7 \
+     --end-batch 9
      --methods rl,ipc \
      --master-seed 5716 \
      --runs-per-batch 10 \
@@ -128,9 +129,10 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
 - `docker-compose.tunnel.yml` 默认挂载
   `/home/haoming/wht/IsaacLab_drones_5.1/slope_inspection` 到 `/root/slope_ws/src`；
   如路径不同，可设置 `SLOPE_INSPECTION_HOST_PATH=/path/to/slope_inspection`。
-- host orchestrator 默认只重编译 IPC 相关包并限制并发：
-  `catkin_make -C /root/slope_ws -j2 -l2 -DCATKIN_WHITELIST_PACKAGES=...`，
-  避免全量 workspace 高并发构建触发无关包失败或资源峰值。
+- host orchestrator 默认只在开始时重编译一次 IPC 相关包并限制并发：
+  `catkin_make -C /root/slope_ws -j1 -l1 -DCATKIN_WHITELIST_PACKAGES=...`，
+  构建产物保存在 Docker named volumes 中供后续 batch 容器复用，避免每个 batch
+  重复编译触发 gcc ICE 或资源峰值。
 - 离线输入回放数据默认路径为
   `/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5`。
 - 约束地图采样会记录 spacing、local density、connectivity 等指标到每个 batch 的

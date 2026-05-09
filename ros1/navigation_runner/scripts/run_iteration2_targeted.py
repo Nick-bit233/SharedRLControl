@@ -27,7 +27,7 @@ ROS_SETUP_LINES = (
     "set -eo pipefail",
     "export ROS_MASTER_URI=${ROS_MASTER_URI:-http://127.0.0.1:11311}",
     "source /opt/ros/noetic/setup.bash",
-    f"catkin_make -C /root/slope_ws -j2 -l2 -DCATKIN_WHITELIST_PACKAGES={shlex.quote(SLOPE_BUILD_PACKAGES)}",
+    f"catkin_make -C /root/slope_ws -j1 -l1 -DCATKIN_WHITELIST_PACKAGES={shlex.quote(SLOPE_BUILD_PACKAGES)}",
     'if [ "$(readlink /root/slope_ws/src/CMakeLists.txt 2>/dev/null)" = "/opt/ros/noetic/share/catkin/cmake/toplevel.cmake" ]; then rm -f /root/slope_ws/src/CMakeLists.txt; fi',
     "source /root/slope_ws/devel/setup.bash",
     "source /root/catkin_ws/devel/setup.bash",

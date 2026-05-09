@@ -69,8 +69,9 @@ docker exec -it tunnel_debug bash
 > 长时间对比实验请使用 `run_tunnel_batch_containers.py`，它会从宿主机启动
 > 一个 batch 一个一次性 headless 容器，并默认挂载
 > `/home/haoming/wht/IsaacLab_drones_5.1/slope_inspection` 中的 IPC 源码。
-> 自动重编译只白名单构建 IPC 相关包，并限制为 `-j2 -l2`，避免全量 workspace
-> 高并发构建触发无关包失败或资源峰值。
+> 自动重编译只在开始时白名单构建一次 IPC 相关包，并限制为 `-j1 -l1`；
+> 构建产物保存在 Docker named volumes 中供后续 batch 容器复用，避免每个 batch
+> 重复编译触发 gcc ICE 或资源峰值。
 
 ### 1.1.1 宿主机 batch-by-batch 运行
 
