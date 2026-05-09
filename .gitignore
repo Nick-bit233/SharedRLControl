@@ -46,6 +46,9 @@ dmypy.json
 # VS Code
 .vscode/
 
+# GitHub workflows
+.github/
+
 # PyCharm
 .idea/
 *.iml
@@ -117,6 +120,7 @@ isaac-training/tests/
 isaac-training/figures/
 
 outputs/
+eval_videos/
 
 shared_demos/ckpts/
 shared_demos/drift_analysis_results/
