@@ -387,8 +387,13 @@ Do not restore large `reg_coeff` values such as `0.05` unless there is clear evi
 Only after stage1 passes held-out checks:
 
 1. Start `tunnel_lagrangian_stage2` from the selected stage1 checkpoint.
-2. Keep `lambda_lr=1e-3`, `lambda_max=10`, and `safety_cost_radius=0.8`.
-3. If collision jumps above `0.40`, do not immediately increase radius. First try `lambda_min=0.2` or `cost_limit=0.04`.
+2. Use `run_curriculum.py` for cross-stage starts. The runner automatically passes
+   `resume_policy_only=true` for stage2/stage3 so rich checkpoints warm-start the
+   policy weights without carrying over the previous stage's iteration counter,
+   optimizer state, or best-eval baseline.
+3. Keep `lambda_lr=1e-3`, `lambda_max=10`, and the selected stage1 safety settings.
+4. If collision jumps above `0.40`, first try a stronger `lambda_min` or lower
+   `cost_limit` before changing the obstacle curriculum.
 
 Stage2 proceed thresholds:
 

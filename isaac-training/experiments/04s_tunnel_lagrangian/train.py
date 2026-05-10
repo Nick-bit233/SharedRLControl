@@ -242,8 +242,11 @@ def main(cfg):
     #         policy, actor_optim, critic_optim, feature_extractor_optim,
     #         lambda_optimizer,
     #         iter, env_frames, reg_scheduler (optional), best_eval_success
+    # When resume_policy_only=true, rich checkpoints are treated as cross-stage
+    # warm starts: load policy weights only and reset iter/best/optimizer state.
     resume_ckpt = cfg.get("resume_checkpoint", None)
     resume_ckpt = resolve_runtime_path(resume_ckpt, hydra_cfg)
+    resume_policy_only = bool(cfg.get("resume_policy_only", False))
     resume_state = None
     if resume_ckpt is not None:
         print(f"[Train] Loading checkpoint: {resume_ckpt}")
@@ -251,7 +254,13 @@ def main(cfg):
         if isinstance(loaded, dict) and "policy" in loaded:
             print("[Train] Detected RICH checkpoint format (weights + optimizer + state).")
             load_policy_state_dict(loaded["policy"])
-            resume_state = loaded
+            if resume_policy_only:
+                print(
+                    "[Train] resume_policy_only=true: loaded policy weights only; "
+                    "resetting iter/env_frames/best metrics/optimizer state for this stage."
+                )
+            else:
+                resume_state = loaded
         else:
             print("[Train] Detected legacy WEIGHTS-ONLY checkpoint format.")
             load_policy_state_dict(loaded)

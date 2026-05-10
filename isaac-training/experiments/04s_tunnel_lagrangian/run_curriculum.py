@@ -120,6 +120,11 @@ def find_latest_output_dir(stage_name: str) -> str:
     return os.path.join(base, subdirs[0])
 
 
+def has_override(overrides: list[str], key: str) -> bool:
+    prefixes = (f"{key}=", f"+{key}=", f"++{key}=")
+    return any(override.startswith(prefixes) for override in overrides)
+
+
 def run_stage(
     stage_idx: int,
     checkpoint: str | None,
@@ -139,6 +144,14 @@ def run_stage(
         print(f"  Checkpoint: None (training from scratch)")
     print(f"{'='*60}\n")
 
+    stage_overrides = list(extra_overrides)
+    if checkpoint and stage_idx > 0 and not has_override(stage_overrides, "resume_policy_only"):
+        stage_overrides.append("+resume_policy_only=true")
+        print(
+            "[Pipeline] Cross-stage checkpoint detected; "
+            "loading policy weights only for this stage."
+        )
+
     cmd = [
         sys.executable,
         "experiments/04s_tunnel_lagrangian/train.py",
@@ -147,7 +160,7 @@ def run_stage(
     ]
     if checkpoint:
         cmd.append(f"resume_checkpoint={checkpoint}")
-    cmd.extend(extra_overrides)
+    cmd.extend(stage_overrides)
 
     print(f"[Pipeline] Command: {' '.join(cmd)}")
 
