@@ -133,10 +133,27 @@ class EnvTunnelLagrangian(IsaacEnv):
         self.enable_task_reward = cfg.env.get("enable_task_reward", True)
         self.safety_collision_radius = cfg.env.get("safety_collision_radius", 0.3)
         self.safety_cost_radius = cfg.env.get("safety_cost_radius", 0.8)
+        self.safety_cost_mode = cfg.env.get("safety_cost_mode", "radial_soft_margin")
         if self.safety_cost_radius <= self.safety_collision_radius:
             raise ValueError(
                 "env.safety_cost_radius must be larger than env.safety_collision_radius"
             )
+        if self.safety_cost_mode not in ("radial_soft_margin", "directional_cone"):
+            raise ValueError(
+                "env.safety_cost_mode must be 'radial_soft_margin' or 'directional_cone'"
+            )
+        self.safety_cone_threshold = cfg.env.get("safety_cone_threshold", 0.866)
+        self.safety_directional_dist_scale = cfg.env.get("safety_directional_dist_scale", 1.0)
+        self.safety_directional_safe_zone = cfg.env.get("safety_directional_safe_zone", 4.0)
+        self.safety_weight_min = cfg.env.get("safety_weight_min", 0.2)
+        self.safety_weight_velocity = cfg.env.get("safety_weight_velocity", 0.4)
+        self.safety_weight_command = cfg.env.get("safety_weight_command", 0.4)
+        if self.safety_directional_dist_scale <= 0.0:
+            raise ValueError("env.safety_directional_dist_scale must be positive")
+        if self.safety_directional_safe_zone <= 0.0:
+            raise ValueError("env.safety_directional_safe_zone must be positive")
+        if self.safety_weight_min + self.safety_weight_velocity + self.safety_weight_command <= 0.0:
+            raise ValueError("directional safety weights must sum to a positive value")
 
         # User Model Initialization
         # Check for offline mode configuration
@@ -427,6 +444,71 @@ class EnvTunnelLagrangian(IsaacEnv):
             idx = (env_ids == 0).nonzero(as_tuple=True)[0].item()
             self.viz_human_pos = pos[idx, 0].clone()
 
+    def _compute_lidar_safety_cost(self, drone_vel_w: torch.Tensor, target_vel_w: torch.Tensor):
+        if not self.enable_lidar:
+            return (
+                torch.zeros(self.num_envs, 1, device=self.device),
+                torch.full((self.num_envs, 1), self.lidar_range, device=self.device),
+            )
+
+        ray_vecs_w = self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1)
+        ray_dists = ray_vecs_w.norm(dim=-1).clamp_max(self.lidar_range)
+        min_dist_to_obs, _ = ray_dists.min(dim=-1, keepdim=True)
+
+        if self.safety_cost_mode == "radial_soft_margin":
+            soft_margin = self.safety_cost_radius - self.safety_collision_radius
+            safety_cost = (
+                (self.safety_cost_radius - min_dist_to_obs).clamp(min=0.0, max=soft_margin)
+                / soft_margin
+            )
+            return safety_cost, min_dist_to_obs
+
+        ray_dirs_w = ray_vecs_w / (ray_dists.unsqueeze(-1) + 1e-6)
+        cone_threshold = self.safety_cone_threshold
+
+        cur_vel_norm = drone_vel_w.norm(dim=-1, keepdim=True)
+        cur_vel_dir = drone_vel_w / (cur_vel_norm + 1e-6)
+        cos_sim_vel = (ray_dirs_w * cur_vel_dir.unsqueeze(1)).sum(dim=-1)
+        mask_vel = cos_sim_vel > cone_threshold
+        dist_in_vel_cone = torch.where(
+            mask_vel,
+            ray_dists,
+            torch.full_like(ray_dists, self.lidar_range),
+        )
+        dist_to_cur_vel_dir, _ = dist_in_vel_cone.min(dim=-1, keepdim=True)
+        is_moving = (cur_vel_norm > 0.1).float()
+        dist_to_cur_vel_dir = is_moving * dist_to_cur_vel_dir + (1.0 - is_moving) * self.lidar_range
+
+        target_vel_norm = target_vel_w.norm(dim=-1, keepdim=True)
+        target_vel_dir = target_vel_w / (target_vel_norm + 1e-6)
+        cos_sim_cmd = (ray_dirs_w * target_vel_dir.unsqueeze(1)).sum(dim=-1)
+        mask_cmd = cos_sim_cmd > cone_threshold
+        dist_in_cmd_cone = torch.where(
+            mask_cmd,
+            ray_dists,
+            torch.full_like(ray_dists, self.lidar_range),
+        )
+        dist_to_human_action_dir, _ = dist_in_cmd_cone.min(dim=-1, keepdim=True)
+        has_cmd = (target_vel_norm > 0.1).float()
+        dist_to_human_action_dir = has_cmd * dist_to_human_action_dir + (1.0 - has_cmd) * self.lidar_range
+
+        dist_scale = self.safety_directional_dist_scale
+        safe_zone = self.safety_directional_safe_zone
+        p_min = torch.exp(-min_dist_to_obs / dist_scale) * (min_dist_to_obs < safe_zone).float()
+        p_vel = torch.exp(-dist_to_cur_vel_dir / dist_scale) * (dist_to_cur_vel_dir < safe_zone).float()
+        p_cmd = torch.exp(-dist_to_human_action_dir / dist_scale) * (dist_to_human_action_dir < safe_zone).float()
+
+        weight_sum = max(
+            self.safety_weight_min + self.safety_weight_velocity + self.safety_weight_command,
+            1e-6,
+        )
+        safety_cost = (
+            self.safety_weight_min * p_min
+            + self.safety_weight_velocity * p_vel
+            + self.safety_weight_command * p_cmd
+        ) / weight_sum
+        return safety_cost.clamp(0.0, 1.0), min_dist_to_obs
+
     def _pre_sim_step(self, tensordict: TensorDictBase):
 
         # Store last step action command for smoothness reward
@@ -563,19 +645,10 @@ class EnvTunnelLagrangian(IsaacEnv):
         )
         
         # a. Safety cost: independent constraint signal, not part of reward.
-        if self.enable_lidar:
-            ray_vecs_w = self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1)
-            ray_dists = ray_vecs_w.norm(dim=-1).clamp_max(self.lidar_range)
-            min_dist_to_obs, _ = ray_dists.min(dim=-1, keepdim=True)
-            soft_margin = self.safety_cost_radius - self.safety_collision_radius
-            self.safety_cost = (
-                (self.safety_cost_radius - min_dist_to_obs).clamp(min=0.0, max=soft_margin)
-                / soft_margin
-            )
-            self.min_dist_to_obs = min_dist_to_obs
-        else:
-            self.safety_cost = torch.zeros(self.num_envs, 1, device=self.device)
-            self.min_dist_to_obs = torch.full((self.num_envs, 1), self.lidar_range, device=self.device)
+        self.safety_cost, self.min_dist_to_obs = self._compute_lidar_safety_cost(
+            drone_vel_w,
+            target_vel_w,
+        )
 
         # c. Velocity following reward (Positive)
         # c1. 方向奖励 (Alignment)

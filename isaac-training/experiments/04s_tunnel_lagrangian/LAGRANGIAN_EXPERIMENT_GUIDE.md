@@ -430,6 +430,45 @@ Only run this if the lambda floor does not reduce collision enough.
 
 Do not return to `1.5m` unless there is a new environment reason. It made cost active too often.
 
+### 7.3 B1 directional safety cost
+
+B1 keeps the Lagrangian separation between reward and safety cost, but ports
+experiment 04's directional obstacle-risk signal into the cost channel:
+
+| Mode | Meaning |
+|---|---|
+| `radial_soft_margin` | A6-compatible default: cost depends only on absolute min distance |
+| `directional_cone` | Cost combines min distance, current-velocity cone risk, and human-command cone risk |
+
+Recommended short Stage2 warm-start from A6 Stage2 best:
+
+```bash
+python experiments/04s_tunnel_lagrangian/run_curriculum.py \
+  --start-stage 2 \
+  --end-stage 2 \
+  --checkpoint outputs/lagrangian_curriculum_stage2/2026-05-06_16-29-53/wandb/run-20260506_163012-g8edmzbc/files/checkpoint_best.pt \
+  --group 04s_m2_B1_directional_cost_stage2 \
+  --skip-dataset \
+  +resume_policy_only=true \
+  max_iterations=6010 \
+  eval_interval=500 \
+  algo.lambda_min=0.3 \
+  algo.cost_limit=0.05 \
+  algo.reg_coeff=0.0 \
+  env.safety_cost_radius=1.0 \
+  env.safety_cost_mode=directional_cone
+```
+
+Compare the resulting checkpoint with `04_m2` and A6 using:
+
+```bash
+python experiments/04s_tunnel_lagrangian/compare_eval_results.py \
+  --run 04_m2=eval_videos/native04_m2_heldout_multiseed \
+  --run 04s_A6=eval_videos/04s_m2_A6_stage2_heldout_multiseed \
+  --run 04s_B1=eval_videos/04s_m2_B1_heldout_multiseed \
+  --baseline 04_m2
+```
+
 ## 8. Monitoring checklist
 
 Watch these metrics together:

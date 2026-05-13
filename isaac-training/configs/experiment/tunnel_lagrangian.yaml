@@ -16,6 +16,16 @@ env:
   # instead of the previous 1.5m radius that made cost almost always active.
   safety_collision_radius: 0.3
   safety_cost_radius: 0.8
+  # B1 ablation: keep radial_soft_margin as the A6-compatible default.
+  # directional_cone ports experiment 04's min/velocity/command-direction risk
+  # into the Lagrangian cost channel without adding safety shaping to reward.
+  safety_cost_mode: radial_soft_margin
+  safety_cone_threshold: 0.866
+  safety_directional_dist_scale: 1.0
+  safety_directional_safe_zone: 4.0
+  safety_weight_min: 0.2
+  safety_weight_velocity: 0.4
+  safety_weight_command: 0.4
 
 env_dyn:
   num_obstacles: 0
