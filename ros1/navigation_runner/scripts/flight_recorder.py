@@ -12,6 +12,8 @@ from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
 
+from tunnel_deployment.pcd_io import read_pcd_xyz
+
 try:
     from scipy.spatial import cKDTree
     HAS_SCIPY = True
@@ -168,24 +170,18 @@ class FlightRecorder:
                 rospy.logwarn("[Recorder] scipy unavailable; collision monitoring disabled")
             return None
 
-        points = []
-        header_done = False
         try:
-            with open(self.pcd_file, 'r') as handle:
-                for line in handle:
-                    if not header_done:
-                        if line.startswith('DATA'):
-                            header_done = True
-                        continue
-                    parts = line.strip().split()
-                    if len(parts) >= 3:
-                        points.append([float(parts[0]), float(parts[1]), float(parts[2])])
+            points = read_pcd_xyz(self.pcd_file)
         except FileNotFoundError:
             rospy.logfatal("[Recorder] PCD file not found: %s", self.pcd_file)
             rospy.signal_shutdown("Missing collision map")
             return None
+        except ValueError as exc:
+            rospy.logfatal("[Recorder] PCD load error for %s: %s", self.pcd_file, exc)
+            rospy.signal_shutdown("Invalid collision map")
+            return None
 
-        if not points:
+        if len(points) == 0:
             rospy.logwarn("[Recorder] PCD file %s is empty; collision monitoring disabled", self.pcd_file)
             return None
 

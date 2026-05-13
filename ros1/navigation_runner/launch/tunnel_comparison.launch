@@ -55,6 +55,7 @@
     <arg name="gazebo_policy_z_gate_tolerance" default="0.5"/>
     <arg name="policy_takeoff_gate" default="true"/>
     <arg name="policy_takeoff_gate_tolerance" default="0.5"/>
+    <arg name="takeoff_height" default="5.0"/>
     <arg name="auto_terminate" default="true"/>
     <arg name="shutdown_on_complete" default="true"/>
     <arg name="timeout_sec" default="0.0"/>
@@ -147,6 +148,7 @@
             <param name="replay_start_offset" value="$(arg replay_start_offset)"/>
             <param name="replay_loop" value="$(arg replay_loop)"/>
             <param name="goal_x" value="$(arg goal_x)"/>
+            <param name="takeoff_height" value="$(arg takeoff_height)"/>
             <param name="collision_dist" value="$(arg collision_dist)"/>
             <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
             <param name="safety_mode" value="$(arg safety_mode)"/>

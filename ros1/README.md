@@ -18,7 +18,7 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
      --num-batches 10 \
      --output-dir /root/results/batch_replay_h5_mapconstrained_seed5716 \
-     --methods rl,ipc \
+     --methods rl \
      --master-seed 5716 \
      --runs-per-batch 10 \
      --input-source offline \
@@ -36,6 +36,60 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --launch-timeout 100 \
      --run-retries 1
 ```
+
+use other checkpoints (with same actor net structure)
+- M3
+```python
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+     --run \
+     --checkpoint /root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_M3_21500.pt \
+     --num-batches 64 \
+     --output-dir /root/results/batch_compare_models_04m3 \
+     --methods rl \
+     --master-seed 325 \
+     --runs-per-batch 10 \
+     --input-source offline \
+     --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
+     --replay-start-offset 0 \
+     --map-sampling-mode constrained \
+     --min-obstacle-spacing 0.6 \
+     --local-density-window 3.0 \
+     --max-obstacles-per-window 3 \
+     --max-local-area-fraction 0.35 \
+     --require-connectivity \
+     --gazebo-z-mode policy_clamped \
+     --gazebo-policy-z-max 0.50 \
+     --safety-min-dist 0.20 \
+     --launch-timeout 100 \
+     --run-retries 1
+```
+- A6-stage2
+```pythonreplay_pt_04sA6s2_h5_mapconstrained_seed5716
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+     --run \
+     --checkpoint /root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_safetyconstrained_A6_stage2_best.pt \
+     --num-batches 64 \
+     --output-dir /root/results/batch_compare_models_04sA6 \
+     --methods rl \
+     --master-seed 325 \
+     --runs-per-batch 10 \
+     --input-source offline \
+     --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
+     --replay-start-offset 0 \
+     --map-sampling-mode constrained \
+     --min-obstacle-spacing 0.6 \
+     --local-density-window 3.0 \
+     --max-obstacles-per-window 3 \
+     --max-local-area-fraction 0.35 \
+     --require-connectivity \
+     --gazebo-z-mode policy_clamped \
+     --gazebo-policy-z-max 0.50 \
+     --safety-min-dist 0.20 \
+     --launch-timeout 100 \
+     --run-retries 1
+```
+
+[TODO] use other checkpoints with no residual (for ablation)
 
 如果输出目录已经存在，runner 会自动让后续 batch 使用 `--resume-from`，复用
 `batch_config.json`、地图和 seed plan，并跳过完整 run。

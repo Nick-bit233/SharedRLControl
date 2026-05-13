@@ -1,0 +1,82 @@
+<launch>
+    <!-- Real scanned PCD map inference/visualization wrapper.
+         The PCD map is authoritative for ROS LiDAR/raycast/collision checks;
+         Gazebo uses an empty world for vehicle dynamics unless overridden. -->
+
+    <arg name="method" default="rl" doc="rl or ipc"/>
+    <arg name="gui" default="false"/>
+    <arg name="keyboard" default="false"/>
+    <arg name="rviz" default="true"/>
+    <arg name="device" default="cpu"/>
+    <arg name="checkpoint"
+         default="$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"/>
+    <arg name="real_map"
+         default="$(find navigation_runner)/../real_maps/merged/real_map_merged_ascii.pcd"/>
+    <arg name="tunnel_world"
+         default="$(find uav_simulator)/worlds/test/empty.world"/>
+
+    <!-- Defaults derived from the current raw real-map bbox. Tune after inspecting
+         the merged/cropped map and intended flight direction. -->
+    <arg name="spawn_x" default="-10.0"/>
+    <arg name="spawn_y" default="0.0"/>
+    <arg name="spawn_z" default="0.1"/>
+    <arg name="goal_x" default="8.0"/>
+    <arg name="takeoff_height" default="5.0"/>
+    <arg name="collision_dist" default="0.05"/>
+    <arg name="safety_min_dist" default="0.2"/>
+    <arg name="safety_mode" default="hold"/>
+    <arg name="gazebo_z_mode" default="alt_hold"/>
+    <arg name="gazebo_policy_z_max" default="2.0"/>
+    <arg name="gazebo_z_blend_alpha" default="0.5"/>
+    <arg name="gazebo_policy_z_takeoff_gate" default="true"/>
+    <arg name="gazebo_policy_z_gate_tolerance" default="0.5"/>
+    <arg name="policy_takeoff_gate" default="true"/>
+    <arg name="policy_takeoff_gate_tolerance" default="0.5"/>
+
+    <arg name="map_frame" default="map"/>
+    <arg name="map_cloud_topic" default="/real_map/cloud"/>
+    <arg name="map_cloud_voxel_size" default="0.1"/>
+    <arg name="map_cloud_max_points" default="300000"/>
+
+    <include file="$(find navigation_runner)/launch/tunnel_comparison.launch">
+        <arg name="method" value="$(arg method)"/>
+        <arg name="gui" value="$(arg gui)"/>
+        <arg name="keyboard" value="$(arg keyboard)"/>
+        <arg name="rviz" value="false"/>
+        <arg name="tunnel_map" value="$(arg real_map)"/>
+        <arg name="tunnel_world" value="$(arg tunnel_world)"/>
+        <arg name="checkpoint" value="$(arg checkpoint)"/>
+        <arg name="device" value="$(arg device)"/>
+        <arg name="spawn_x" value="$(arg spawn_x)"/>
+        <arg name="spawn_y" value="$(arg spawn_y)"/>
+        <arg name="spawn_z" value="$(arg spawn_z)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="takeoff_height" value="$(arg takeoff_height)"/>
+        <arg name="collision_dist" value="$(arg collision_dist)"/>
+        <arg name="safety_min_dist" value="$(arg safety_min_dist)"/>
+        <arg name="safety_mode" value="$(arg safety_mode)"/>
+        <arg name="gazebo_z_mode" value="$(arg gazebo_z_mode)"/>
+        <arg name="gazebo_policy_z_max" value="$(arg gazebo_policy_z_max)"/>
+        <arg name="gazebo_z_blend_alpha" value="$(arg gazebo_z_blend_alpha)"/>
+        <arg name="gazebo_policy_z_takeoff_gate" value="$(arg gazebo_policy_z_takeoff_gate)"/>
+        <arg name="gazebo_policy_z_gate_tolerance" value="$(arg gazebo_policy_z_gate_tolerance)"/>
+        <arg name="policy_takeoff_gate" value="$(arg policy_takeoff_gate)"/>
+        <arg name="policy_takeoff_gate_tolerance" value="$(arg policy_takeoff_gate_tolerance)"/>
+    </include>
+
+    <node pkg="navigation_runner" type="pcd_map_publisher.py"
+          name="real_map_publisher" output="screen">
+        <param name="pcd_file" value="$(arg real_map)"/>
+        <param name="frame_id" value="$(arg map_frame)"/>
+        <param name="topic" value="$(arg map_cloud_topic)"/>
+        <param name="voxel_size" value="$(arg map_cloud_voxel_size)"/>
+        <param name="max_points" value="$(arg map_cloud_max_points)"/>
+        <param name="publish_rate" value="0.2"/>
+        <param name="latch" value="true"/>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="real_map_rviz"
+              args="-d $(find navigation_runner)/cfg/real_map/real_map.rviz"/>
+    </group>
+</launch>

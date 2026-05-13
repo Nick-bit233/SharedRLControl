@@ -12,6 +12,8 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
 
+from tunnel_deployment.pcd_io import read_pcd_xyz
+
 try:
     from scipy.spatial import cKDTree
     HAS_SCIPY = True
@@ -78,18 +80,8 @@ class LiDARSimulator:
     @staticmethod
     def _load_pcd(filepath):
         try:
-            points = []
-            header_done = False
-            with open(filepath, 'r') as f:
-                for line in f:
-                    if not header_done:
-                        if line.startswith('DATA'):
-                            header_done = True
-                        continue
-                    parts = line.strip().split()
-                    if len(parts) >= 3:
-                        points.append([float(parts[0]), float(parts[1]), float(parts[2])])
-            return np.array(points, dtype=np.float32) if points else None
+            points = read_pcd_xyz(filepath)
+            return points if len(points) else None
         except Exception as e:
             rospy.logerr("[LiDAR Sim] PCD load error: %s", str(e))
             return None
