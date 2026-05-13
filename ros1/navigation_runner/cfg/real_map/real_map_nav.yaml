@@ -1,7 +1,7 @@
 # Real scanned-map inference defaults.
 # The launch wrapper exposes these as args so they can be tuned per merged map.
 
-real_map: "$(find navigation_runner)/../real_maps/merged/real_map_merged_ascii.pcd"
+real_map: "$(find navigation_runner)/cfg/real_maps/merged/real_map_merged_ascii.pcd"
 tunnel_world: "$(find uav_simulator)/worlds/test/empty.world"
 map_frame: "map"
 

@@ -1,0 +1,132 @@
+{
+  "bounds": {
+    "max": [
+      9.767159461975098,
+      17.504596710205078,
+      6.019554615020752
+    ],
+    "min": [
+      -13.844757080078125,
+      -12.860544204711914,
+      -2.1691389083862305
+    ]
+  },
+  "crop_max": null,
+  "crop_min": null,
+  "inputs": [
+    {
+      "bounds": {
+        "max": [
+          8.312705039978027,
+          17.387100219726562,
+          5.8055315017700195
+        ],
+        "min": [
+          -10.559078216552734,
+          -12.860544204711914,
+          -0.9156869649887085
+        ]
+      },
+      "file": "ros1/real_maps/PCD/scans_0.pcd",
+      "kept_points_before_global_downsample": 139806,
+      "raw_points": 139806,
+      "transform": null
+    },
+    {
+      "bounds": {
+        "max": [
+          9.578269958496094,
+          17.29816436767578,
+          5.437519073486328
+        ],
+        "min": [
+          -13.790684700012207,
+          -12.758496284484863,
+          -1.384752869606018
+        ]
+      },
+      "file": "ros1/real_maps/PCD/scans_1.pcd",
+      "kept_points_before_global_downsample": 180183,
+      "raw_points": 180183,
+      "transform": null
+    },
+    {
+      "bounds": {
+        "max": [
+          8.023918151855469,
+          6.826891899108887,
+          4.245996475219727
+        ],
+        "min": [
+          -13.833210945129395,
+          -12.775647163391113,
+          -1.7480448484420776
+        ]
+      },
+      "file": "ros1/real_maps/PCD/scans_2.pcd",
+      "kept_points_before_global_downsample": 166732,
+      "raw_points": 166732,
+      "transform": null
+    },
+    {
+      "bounds": {
+        "max": [
+          9.767159461975098,
+          17.504596710205078,
+          5.092851161956787
+        ],
+        "min": [
+          -13.844757080078125,
+          -12.823020935058594,
+          -1.850599765777588
+        ]
+      },
+      "file": "ros1/real_maps/PCD/scans_3.pcd",
+      "kept_points_before_global_downsample": 213140,
+      "raw_points": 213140,
+      "transform": null
+    },
+    {
+      "bounds": {
+        "max": [
+          8.145525932312012,
+          17.503395080566406,
+          6.019554615020752
+        ],
+        "min": [
+          -13.785792350769043,
+          -12.762775421142578,
+          -2.1691389083862305
+        ]
+      },
+      "file": "ros1/real_maps/PCD/scans_4.pcd",
+      "kept_points_before_global_downsample": 182326,
+      "raw_points": 182326,
+      "transform": null
+    },
+    {
+      "bounds": {
+        "max": [
+          8.152297019958496,
+          6.716047286987305,
+          3.5751938819885254
+        ],
+        "min": [
+          -13.788257598876953,
+          -12.76367473602295,
+          -2.1530492305755615
+        ]
+      },
+      "file": "ros1/real_maps/PCD/scans_5.pcd",
+      "kept_points_before_global_downsample": 137909,
+      "raw_points": 137909,
+      "transform": null
+    }
+  ],
+  "output": "ros1/real_maps/merged/real_map_merged_ascii.pcd",
+  "output_format": "ascii_xyz",
+  "points_after_downsample": 105353,
+  "points_before_downsample": 1020096,
+  "voxel_size": 0.1,
+  "z_offset": 0.0
+}

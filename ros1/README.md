@@ -215,8 +215,8 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
 1. 新增 launch：
 
    roslaunch navigation_runner tunnel_real_px4.launch \
-        checkpoint:=/path/to/checkpoint_tunnel_M3_21500.pt \
-        pcd_file:=/path/to/pre_scanned_map.pcd \
+        checkpoint:=/root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_M3_21500.pt \
+        pcd_file:=/root/catkin_ws/src/navigation_runner/cfg/real_maps/merged/real_map_merged_ascii.pcd \
         start_mavros:=false
 
 2. 默认假设：
