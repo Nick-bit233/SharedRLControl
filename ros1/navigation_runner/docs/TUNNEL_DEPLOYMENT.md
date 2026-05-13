@@ -54,17 +54,50 @@ cd SharedRLControl
 # 构建 Docker 镜像
 docker build -f Dockerfile.tunnel_comparison -t tunnel_comparison:latest .
 
-# 使用 docker-compose 持久化启动（支持 GPU 渲染、X11 转发、代码热编辑）
-xhost +local:docker
-docker compose -f docker-compose.tunnel.yml up -d
+# 默认 headless batch 容器，不挂载宿主 DISPLAY/X11
+docker compose -f docker-compose.tunnel.yml run --rm tunnel_batch bash
 
-# 进入容器
+# 只有手动可视化调试时才启动 X11 debug 容器
+xhost +local:docker
+docker compose -f docker-compose.tunnel.yml --profile debug up -d tunnel_debug
 docker exec -it tunnel_debug bash
 ```
 
 > 当前已验证并持久化了一个本地修复镜像：`tunnel_comparison:20260415-ipcfix`。
 > 这份 image 包含容器内重新编译后的 `slope_ws` / `ipc_node` 修复，`docker-compose.tunnel.yml`
 > 现在默认就固定到这个 tag。为了兼容旧命令，本机的 `tunnel_comparison:latest` 也已被重新标记到同一镜像。
+> 长时间对比实验请使用 `run_tunnel_batch_containers.py`，它会从宿主机启动
+> 一个 batch 一个一次性 headless 容器，并默认挂载
+> `/home/haoming/wht/IsaacLab_drones_5.1/slope_inspection` 中的 IPC 源码。
+> 自动重编译只在开始时白名单构建一次 IPC 相关包，并限制为 `-j1 -l1`；
+> 构建产物保存在 Docker named volumes 中供后续 batch 容器复用，避免每个 batch
+> 重复编译触发 gcc ICE 或资源峰值。
+
+### 1.1.1 宿主机 batch-by-batch 运行
+
+```bash
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+    --run \
+    --num-batches 10 \
+    --output-dir /root/results/replay_h5_mapconstrained_seed5716 \
+    --methods rl,ipc \
+    --master-seed 5716 \
+    --runs-per-batch 10 \
+    --input-source offline \
+    --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
+    --replay-start-offset 0 \
+    --map-sampling-mode constrained \
+    --min-obstacle-spacing 0.6 \
+    --local-density-window 3.0 \
+    --max-obstacles-per-window 3 \
+    --max-local-area-fraction 0.35 \
+    --require-connectivity \
+    --gazebo-z-mode policy_clamped \
+    --gazebo-policy-z-max 0.50 \
+    --safety-min-dist 0.20 \
+    --launch-timeout 100 \
+    --run-retries 1
+```
 
 ### 1.2 运行 RL 模式
 
@@ -121,6 +154,10 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 | `gazebo_z_mode` | `alt_hold` | RL z 速度执行模式：`alt_hold`、`policy`、`policy_clamped` 或 `blend` |
 | `gazebo_policy_z_takeoff_gate` | `true` | `policy`/`policy_clamped`/`blend` 下先用高度保持起飞，接近 `takeoff_height` 后再执行 policy z |
 | `policy_takeoff_gate` | `true` | 起飞接近训练高度前不运行 policy，不执行 policy x/y/z |
+| `safety_mode` | `hold` | 安全距离触发后的介入模式：`hold` 原地悬停，`recover` 低速远离障碍并回中心线 |
+| `input_source` | `online` | pilot 输入源：`online` 使用 ROS1 生成器，`offline` 回放 HDF5 dataset |
+| `replay_dataset_path` | 空 | `input_source:=offline` 时的 HDF5 路径，例如 `isaac-training/data/trajectories_tunnel.h5` |
+| `replay_start_offset` | `-1` | `-1` 按 seed 确定窗口；设为 `0` 可从轨迹起点回放 |
 
 ### 1.5 键盘控制模式
 
@@ -352,12 +389,17 @@ user_model_laziness: 0.3
 user_model_seed: 42      # RL / IPC 共用，确保输入序列可复现
 safety_min_dist: 0.2     # 米，安全停止距离；pilot 可用 --safety-min-dist 0.30 覆盖
 collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失败）
+safety_mode: "hold"      # hold|recover；recover 用低速脱困替代原地 hold
 ```
 
 **安全机制说明：**
 - `min_dist > safety_min_dist`：正常控制
-- `collision_dist < min_dist < safety_min_dist`：安全停止（零速指令），距离恢复后自动继续
+- `collision_dist < min_dist < safety_min_dist`：
+  - `safety_mode=hold`：安全停止（原地 pose hold），距离恢复后自动继续
+  - `safety_mode=recover`：发布限幅低速恢复命令，方向由最近障碍物远离方向 + 隧道中心线方向组成，距离恢复后自动继续 RL 推理
 - `min_dist < collision_dist`：碰撞！发布 `/tunnel_nav/collision` (True)，永久停止。对比实验中视为任务失败
+
+推荐将 `recover` 作为 stop-only safety shield 之后的 paired ablation：保持相同地图和 user-model seeds，比较 `hold` 与 `recover` 对 success、collision、safety-hold trap、TCR@1/2/5 和成功 runs 完成时间的影响。
 
 ### UserModel 模式
 
@@ -369,12 +411,40 @@ collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失�
   `vx=user_model_speed`，`vy=vz=0`，用于 sanity check。
 - `user_model_seed` 现在同时传给 RL 与 IPC；两种方法在相同 seed 下会复用同一条
   `UserModelTunnel` 指令序列
+- **offline replay 模式**：设置 `input_source:=offline replay_dataset_path:=...` 后，
+  `UserModelTunnel` 会从 HDF5 的 `velocities` 中按 `user_model_seed` 确定轨迹并输出
+  `(vx, vy, vz)` body-frame 指令。当前首版只支持 `replay_sampling_mode:=raw`，不隐式做
+  IsaacSim `sample_scaled`，以避免未验证的坐标/边界缩放差异影响实验解释。
 
 **M3 注意事项**：`checkpoint_tunnel_M3_21500.pt` 的训练主线继承了
 `tunnel_m2_diverse_pilot`，训练时使用 offline feasible-diverse pilot dataset。
-当前 ROS1 批量实验默认使用 `m3_diverse` online 近似，而不是旧 `legacy_perlin`。
-它用于验证 M3 模型在 ROS1/Gazebo 中面对 M3-aligned pilot 分布的表现；若需要严格复现
-M3 offline dataset 的逐样本输入，需要另行接入 offline pilot replay。
+当前 ROS1 批量实验默认仍使用 `m3_diverse` online 近似；如需减少 ROS1 online 近似与
+M3 offline dataset 的 gap，可用 `input_source:=offline` 或 batch 参数
+`--input-source offline --replay-dataset-path <h5>` 启用回放。建议先用
+`--replay-start-offset 0` 做小规模 pilot，因为现有 HDF5 若随机截取窗口，部分旧轨迹段
+可能包含低前进速度段。
+
+### 约束 PCD 地图采样
+
+`generate_tunnel_map.py` 与 `batch_tunnel_experiments.py` 支持 `uniform|constrained`
+两类采样。`constrained` 不降低障碍物数量，而是在保留随机形状/位置的同时拒绝局部不可通过的病态聚集：
+
+```bash
+python3 scripts/batch_tunnel_experiments.py \
+  --num-batches 10 --runs-per-batch 10 --methods rl,ipc \
+  --master-seed 5716 \
+  --map-sampling-mode constrained \
+  --min-obstacle-spacing 0.6 \
+  --local-density-window 3.0 \
+  --max-obstacles-per-window 3 \
+  --max-local-area-fraction 0.35 \
+  --require-connectivity \
+  --min-bottleneck-width 0.4
+```
+
+每张图的 `obstacles.json` 会记录 sampling attempts、拒绝原因、footprint spacing、
+local density、近似 start-to-goal connectivity 和 free-space fraction；`analyze_results.py`
+会把 batch-level feasibility 聚合到 `analysis/summary.json`。
 
 ## 6. 架构说明
 

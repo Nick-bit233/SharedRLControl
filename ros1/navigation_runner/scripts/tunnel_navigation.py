@@ -126,6 +126,13 @@ class TunnelConfig:
         self.user_model_smoothness_scale = rospy.get_param("~user_model_smoothness_scale", 0.5)
         self.user_model_laziness = rospy.get_param("~user_model_laziness", 0.3)
         self.user_model_seed = int(rospy.get_param("~user_model_seed", 42))
+        self.input_source = str(rospy.get_param("~input_source", "online")).lower()
+        self.replay_dataset_path = rospy.get_param("~replay_dataset_path", "")
+        self.replay_dataset_format = rospy.get_param("~replay_dataset_format", "hdf5")
+        self.replay_sampling_mode = rospy.get_param("~replay_sampling_mode", "raw")
+        self.replay_trajectory_index = int(rospy.get_param("~replay_trajectory_index", -1))
+        self.replay_start_offset = int(rospy.get_param("~replay_start_offset", -1))
+        self.replay_loop = _param_bool(rospy.get_param("~replay_loop", True))
         # Keyboard RL-assist scaling target (fraction of action_limit).
         # Training always used ha_x = action_limit; below ~0.877 * limit the
         # learned residual bias reverses the forward direction.  1.0 = full
@@ -137,6 +144,14 @@ class TunnelConfig:
         self.use_safety_shield = rospy.get_param("~use_safety_shield", False)
         self.safety_min_dist = rospy.get_param("~safety_min_dist", 0.3)
         self.collision_dist = rospy.get_param("~collision_dist", 0.05)
+        self.safety_mode = str(rospy.get_param("~safety_mode", "hold")).lower()
+        self.safety_recover_speed = float(rospy.get_param("~safety_recover_speed", 0.35))
+        self.safety_recover_forward_speed = float(
+            rospy.get_param("~safety_recover_forward_speed", 0.15)
+        )
+        self.safety_recover_centerline_gain = float(
+            rospy.get_param("~safety_recover_centerline_gain", 0.4)
+        )
         self.safety_start_takeoff_delta = rospy.get_param("~safety_start_takeoff_delta", 0.5)
         self.takeoff_height = rospy.get_param("~takeoff_height", 1.0)
         # Gazebo altitude-hold P-gain. The CERLAB plugin has no built-in
@@ -238,6 +253,22 @@ class TunnelNavigator:
             raise ValueError(f"Invalid human_action_source: {self.cfg.human_action_source}")
         if self.cfg.human_action_source == "keyboard":
             self.cfg.keyboard_mode = True
+        valid_safety_modes = {"hold", "recover"}
+        if self.cfg.safety_mode not in valid_safety_modes:
+            rospy.logfatal(
+                "[TunnelNav] Invalid safety_mode=%s; expected one of %s",
+                self.cfg.safety_mode,
+                sorted(valid_safety_modes),
+            )
+            rospy.signal_shutdown("Invalid safety_mode")
+            raise ValueError(f"Invalid safety_mode: {self.cfg.safety_mode}")
+        if self.cfg.input_source not in {"online", "offline"}:
+            rospy.logfatal(
+                "[TunnelNav] Invalid input_source=%s; expected online or offline",
+                self.cfg.input_source,
+            )
+            rospy.signal_shutdown("Invalid input_source")
+            raise ValueError(f"Invalid input_source: {self.cfg.input_source}")
 
         # ---- Load policy ----
         rospy.loginfo(f"[TunnelNav] Loading checkpoint: {self.cfg.checkpoint_path}")
@@ -283,12 +314,18 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   control_freq   : {self.cfg.control_freq} Hz")
         rospy.loginfo(f"[TunnelNav]   action_limit   : {self.cfg.action_limit} m/s")
         rospy.loginfo(f"[TunnelNav]   safety_min_dist: {self.cfg.safety_min_dist} m")
+        rospy.loginfo(f"[TunnelNav]   safety_mode    : {self.cfg.safety_mode}")
         rospy.loginfo(f"[TunnelNav]   collision_dist : {self.cfg.collision_dist} m")
         if not self.cfg.keyboard_mode:
             rospy.loginfo(
                 f"[TunnelNav]   user_model     : "
                 f"{'simple' if self.cfg.user_model_simple else self.cfg.user_model_profile} "
                 f"@ {self.cfg.user_model_speed} m/s (seed={self.cfg.user_model_seed})"
+            )
+            rospy.loginfo(
+                f"[TunnelNav]   input_source   : {self.cfg.input_source} "
+                f"(dataset={self.cfg.replay_dataset_path or 'n/a'}, "
+                f"mode={self.cfg.replay_sampling_mode})"
             )
         rospy.loginfo(f"[TunnelNav]   lidar          : {self.cfg.lidar_hbeams}h x {self.cfg.lidar_vbeams}v, range={self.cfg.lidar_range}m")
         rospy.loginfo(f"[TunnelNav]   deterministic  : {self.cfg.deterministic}")
@@ -349,6 +386,13 @@ class TunnelNavigator:
                 smoothness_base=self.cfg.user_model_smoothness_base,
                 smoothness_scale=self.cfg.user_model_smoothness_scale,
                 laziness=self.cfg.user_model_laziness,
+                input_source=self.cfg.input_source,
+                replay_dataset_path=self.cfg.replay_dataset_path,
+                replay_dataset_format=self.cfg.replay_dataset_format,
+                replay_sampling_mode=self.cfg.replay_sampling_mode,
+                replay_trajectory_index=self.cfg.replay_trajectory_index,
+                replay_start_offset=self.cfg.replay_start_offset,
+                replay_loop=self.cfg.replay_loop,
                 device=self.cfg.device,
             )
             self.user_model.reset(seed=self.cfg.user_model_seed)
@@ -374,6 +418,8 @@ class TunnelNavigator:
         self.safety_stop = False
         self.collision = False  # True = min_dist < collision_dist → task failed
         self.min_dist = float("inf")  # current minimum obstacle distance
+        self.safety_nearest_point = None
+        self.safety_recover_cmd = np.zeros(3, dtype=np.float32)
         self.initial_z = None
         self.safety_airborne = False
         self.policy_active = False
@@ -659,27 +705,19 @@ class TunnelNavigator:
         quat_np = np.array([[q_ros.w, q_ros.x, q_ros.y, q_ros.z]], dtype=np.float32)
         quat = torch.from_numpy(quat_np).to(device=dev)
 
-        # --- World-frame velocity ---
-        rot = self._quat_to_rot(q_ros)
-        vel_body_np = np.array([
+        # Gazebo odometry twist is already expressed in base_link/body frame.
+        vel_b_np = np.array([
             odom.twist.twist.linear.x,
             odom.twist.twist.linear.y,
             odom.twist.twist.linear.z,
-        ], dtype=np.float64)
-        vel_world_np = (rot @ vel_body_np).astype(np.float32)
-        vel_w = torch.from_numpy(vel_world_np).unsqueeze(0).to(device=dev)  # (1,3)
-
-        ang_vel_np = np.array([
+        ], dtype=np.float32)
+        ang_vel_b_np = np.array([
             odom.twist.twist.angular.x,
             odom.twist.twist.angular.y,
             odom.twist.twist.angular.z,
-        ], dtype=np.float64)
-        ang_vel_world_np = (rot @ ang_vel_np).astype(np.float32)
-        ang_vel_w = torch.from_numpy(ang_vel_world_np).unsqueeze(0).to(device=dev)
-
-        # Body-frame velocities
-        vel_b = quat_rotate_inverse(quat, vel_w)        # (1, 3)
-        ang_vel_b = quat_rotate_inverse(quat, ang_vel_w)  # (1, 3)
+        ], dtype=np.float32)
+        vel_b = torch.from_numpy(vel_b_np).unsqueeze(0).to(device=dev)
+        ang_vel_b = torch.from_numpy(ang_vel_b_np).unsqueeze(0).to(device=dev)
 
         # State: [vel_b(3), ang_vel_b(3), quat(4)]
         state = torch.cat([vel_b, ang_vel_b, quat], dim=-1)  # (1, 10)
@@ -854,15 +892,22 @@ class TunnelNavigator:
             return
 
         if self.safety_stop:
-            # Reset tumble recovery — safety stop uses pose hold which
-            # actively stabilises attitude.
+            # Reset tumble recovery — safety intervention directly commands a
+            # stabilising hold/recovery action instead of policy velocity.
             self.in_tumble_recovery = False
             self.tumble_recovery_start = None
-            self._publish_stop()
             pos = self.odom.pose.pose.position
+            if self.cfg.safety_mode == "recover":
+                cmd = self._publish_safety_recovery()
+                mode_label = "SAFETY_RECOVER"
+                cmd_label = f"[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}]"
+            else:
+                self._publish_stop()
+                mode_label = "SAFETY_STOP"
+                cmd_label = "[0,0,0]"
             status_msg = (
                 f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
-                f"cmd=[0,0,0] | min_d={self.min_dist:.2f} | SAFETY_STOP"
+                f"cmd={cmd_label} | min_d={self.min_dist:.2f} | {mode_label}"
             )
             self.status_pub.publish(String(data=status_msg))
             return
@@ -1258,6 +1303,47 @@ class TunnelNavigator:
         pose_msg.pose.orientation.w = 1.0  # level attitude
         self.pose_pub.publish(pose_msg)
 
+    def _publish_safety_recovery(self):
+        self.policy_active = False
+        if hasattr(self, "policy_active_pub"):
+            self.policy_active_pub.publish(Bool(data=False))
+
+        cmd = self._compute_safety_recovery_cmd()
+        self.safety_recover_cmd = cmd
+        self._publish_cmd(cmd)
+        return cmd
+
+    def _compute_safety_recovery_cmd(self):
+        if self.odom is None:
+            return np.zeros(3, dtype=np.float32)
+
+        pos = self.odom.pose.pose.position
+        pos_xy = np.array([pos.x, pos.y], dtype=np.float32)
+        away_xy = np.zeros(2, dtype=np.float32)
+
+        if self.safety_nearest_point is not None:
+            nearest_xy = np.asarray(self.safety_nearest_point[:2], dtype=np.float32)
+            diff = pos_xy - nearest_xy
+            norm = float(np.linalg.norm(diff))
+            if norm > 1e-4:
+                away_xy = diff / norm
+
+        center_xy = np.zeros(2, dtype=np.float32)
+        if abs(pos.y) > 0.05:
+            center_xy[1] = -math.copysign(1.0, pos.y)
+
+        cmd_xy = away_xy + self.cfg.safety_recover_centerline_gain * center_xy
+        cmd_xy[0] += self.cfg.safety_recover_forward_speed
+
+        norm = float(np.linalg.norm(cmd_xy))
+        max_speed = max(0.0, self.cfg.safety_recover_speed)
+        if norm > 1e-4 and max_speed > 0.0:
+            cmd_xy = cmd_xy / norm * min(norm, max_speed)
+        elif max_speed <= 0.0:
+            cmd_xy[:] = 0.0
+
+        return np.array([cmd_xy[0], cmd_xy[1], 0.0], dtype=np.float32)
+
     def _publish_human_cmd(self, cmd_body: np.ndarray):
         msg = TwistStamped()
         msg.header.stamp = rospy.Time.now()
@@ -1359,7 +1445,10 @@ class TunnelNavigator:
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             if self.collision:
-                rate.sleep()
+                try:
+                    rate.sleep()
+                except rospy.exceptions.ROSInterruptException:
+                    break
                 continue
 
             ray_np = self.raypoints_np
@@ -1381,16 +1470,23 @@ class TunnelNavigator:
                     else:
                         self.min_dist = float("inf")
                         self.safety_stop = False
-                        rate.sleep()
+                        try:
+                            rate.sleep()
+                        except rospy.exceptions.ROSInterruptException:
+                            break
                         continue
+                nearest_point = None
                 if self.pcd_raycaster is not None:
-                    min_dist = self.pcd_raycaster.nearest_distance(pos)
+                    nearest_point, min_dist = self.pcd_raycaster.nearest_point(pos)
                 else:
                     # Fallback for the C++ raycast service path. The preferred
                     # PCD path uses true map proximity to avoid stale ray hits.
                     dists = np.linalg.norm(ray_np - pos, axis=-1)
-                    min_dist = float(dists.min())
+                    nearest_idx = int(np.argmin(dists))
+                    nearest_point = ray_np[nearest_idx].copy()
+                    min_dist = float(dists[nearest_idx])
                 self.min_dist = min_dist
+                self.safety_nearest_point = nearest_point
                 self._apply_proximity_safety(min_dist)
             elif (
                 self.cfg.lidar_source == "topic"

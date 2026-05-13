@@ -178,13 +178,19 @@ catkin_install_python(PROGRAMS
   scripts/rc_input_node.py
   scripts/rc_sim_node.py
   scripts/lidar_sim_node.py
+  scripts/pcd_map_publisher.py
   scripts/imu_bridge_node.py
   scripts/cmd_bridge_node.py
   scripts/mavros_fake_node.py
   scripts/flight_recorder.py
   scripts/run_comparison.py
   scripts/batch_tunnel_experiments.py
+  scripts/run_tunnel_batch_containers.py
   scripts/analyze_results.py
+  scripts/run_iteration1_screening.py
+  scripts/run_iteration2_targeted.py
+  scripts/run_iteration3_targeted.py
+  scripts/tunnel_deployment/merge_real_pcd_maps.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

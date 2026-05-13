@@ -14,6 +14,11 @@ import math
 import numpy as np
 
 try:
+    from .pcd_io import read_pcd_xyz
+except ImportError:
+    from pcd_io import read_pcd_xyz  # type: ignore
+
+try:
     from scipy.spatial import cKDTree
     HAS_SCIPY = True
 except ImportError:
@@ -26,7 +31,7 @@ class PcdRaycaster:
     Parameters
     ----------
     pcd_path : str
-        Path to an ASCII PCD file (FIELDS x y z).
+        Path to an ASCII or binary PCD file containing x/y/z fields.
     resolution : float
         Voxel size in metres (should match occupancy map resolution).
     inflate : tuple[float, float, float]
@@ -70,19 +75,8 @@ class PcdRaycaster:
 
     @staticmethod
     def _load_pcd(filepath: str):
-        """Load ASCII PCD file → Nx3 float array."""
-        pts = []
-        header_done = False
-        with open(filepath, 'r') as f:
-            for line in f:
-                if not header_done:
-                    if line.startswith('DATA'):
-                        header_done = True
-                    continue
-                parts = line.strip().split()
-                if len(parts) >= 3:
-                    pts.append((float(parts[0]), float(parts[1]), float(parts[2])))
-        return pts if pts else None
+        """Load ASCII or binary PCD file -> Nx3 float array."""
+        return read_pcd_xyz(filepath)
 
     def raycast(self, position, yaw, range_m, vfov_min_deg, vfov_max_deg,
                 vbeams, hres_deg):
@@ -170,6 +164,18 @@ class PcdRaycaster:
 
         return result
 
+    def nearest_point(self, position):
+        """Return the nearest PCD point and its Euclidean distance."""
+        pos = np.asarray(position, dtype=np.float32)
+        if self._tree is not None:
+            dist, idx = self._tree.query(pos)
+            return self.points[int(idx)].copy(), float(dist)
+
+        diffs = self.points - pos.reshape(1, 3)
+        dists_sq = np.einsum("ij,ij->i", diffs, diffs)
+        idx = int(np.argmin(dists_sq))
+        return self.points[idx].copy(), float(math.sqrt(dists_sq[idx]))
+
     def nearest_distance(self, position) -> float:
         """Return Euclidean distance from position to the nearest PCD point.
 
@@ -177,9 +183,4 @@ class PcdRaycaster:
         sparse raycast hit points because those points can be stale between
         raycast updates and cause false collision events during fast motion.
         """
-        pos = np.asarray(position, dtype=np.float32)
-        if self._tree is not None:
-            return float(self._tree.query(pos)[0])
-
-        diffs = self.points - pos.reshape(1, 3)
-        return float(np.sqrt(np.einsum("ij,ij->i", diffs, diffs).min()))
+        return self.nearest_point(position)[1]

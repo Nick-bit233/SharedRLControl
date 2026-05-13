@@ -81,6 +81,7 @@ class TunnelPolicyNet(nn.Module):
         super().__init__()
         self.action_limit = action_limit
         self.min_concentration = min_concentration
+        self.debug = True
 
         # ---- Feature extractor (identical to TanhNormal version) ----
         self.lidar_cnn = _LidarCNN()
@@ -144,10 +145,12 @@ class TunnelPolicyNet(nn.Module):
         action_world = vec_to_world(action_body, state, yaw_only=True)
 
         # Debug: log internals for first N calls
-        if not hasattr(self, '_fwd_count'):
-            self._fwd_count = 0
-        self._fwd_count += 1
-        if self._fwd_count <= 15 or self._fwd_count % 200 == 0:
+        debug_enabled = getattr(self, "debug", True)
+        if debug_enabled:
+            if not hasattr(self, '_fwd_count'):
+                self._fwd_count = 0
+            self._fwd_count += 1
+        if debug_enabled and (self._fwd_count <= 15 or self._fwd_count % 200 == 0):
             md = mean_delta.detach().cpu().reshape(-1, 3)[0].numpy()
             m = mean.detach().cpu().reshape(-1, 3)[0].numpy()
             ab = action_body.detach().cpu().reshape(-1, 3)[0].numpy()
@@ -210,8 +213,14 @@ class TunnelPolicyNet(nn.Module):
         dummy_state = torch.zeros(1, 10, device=device)
         dummy_ha = torch.zeros(1, 3, device=device)
         dummy_lidar = torch.zeros(1, 1, 36, 4, device=device)
-        with torch.no_grad():
-            net(dummy_state, dummy_ha, dummy_lidar)
+        net.debug = False
+        try:
+            with torch.no_grad():
+                net(dummy_state, dummy_ha, dummy_lidar)
+        finally:
+            if hasattr(net, "_fwd_count"):
+                delattr(net, "_fwd_count")
+            net.debug = True
 
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         if isinstance(ckpt, dict) and "policy" in ckpt:
@@ -222,12 +231,30 @@ class TunnelPolicyNet(nn.Module):
             src = ckpt
 
         mapped = _map_checkpoint(src, net, device)
+        net_state = net.state_dict()
+        required_keys = set(net_state.keys())
+        mapped_keys = set(mapped.keys())
+        missing = sorted(required_keys - mapped_keys)
+        unexpected = sorted(mapped_keys - required_keys)
+        shape_mismatches = [
+            (key, tuple(mapped[key].shape), tuple(net_state[key].shape))
+            for key in sorted(required_keys & mapped_keys)
+            if tuple(mapped[key].shape) != tuple(net_state[key].shape)
+        ]
+        if missing or unexpected or shape_mismatches:
+            details = []
+            if missing:
+                details.append(f"missing inference keys={missing}")
+            if unexpected:
+                details.append(f"unexpected mapped keys={unexpected}")
+            if shape_mismatches:
+                details.append(f"shape mismatches={shape_mismatches}")
+            raise RuntimeError(
+                "Checkpoint is not compatible with TunnelPolicyNet: "
+                + "; ".join(details)
+            )
 
-        missing, unexpected = net.load_state_dict(mapped, strict=False)
-        if missing:
-            print(f"[TunnelPolicyNet] Missing keys (expected for critic): {missing}")
-        if unexpected:
-            print(f"[TunnelPolicyNet] Unexpected keys: {unexpected}")
+        net.load_state_dict(mapped, strict=True)
 
         net.eval()
         return net

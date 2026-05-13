@@ -191,6 +191,25 @@ https://github.com/user-attachments/assets/b7cc7e2e-c01d-4e44-87e3-97271a3aaa0f
 
 To change the environment settings, review the launch file at ```ros1/uav_simulator/launch/start.launch```. The parameters for each module are located in ```ros1/navigation_runner/cfg/*.yaml``` configuration files.
 
+### Real scanned PCD map inference
+
+For tunnel-policy tests with real scanned maps, merge registered binary PCD scans into the ASCII `x y z` format used by the ROS1 raycaster and recorder:
+
+```
+python3 ros1/navigation_runner/scripts/tunnel_deployment/merge_real_pcd_maps.py \
+  --input-dir ros1/real_maps/PCD \
+  --output ros1/real_maps/merged/real_map_merged_ascii.pcd \
+  --voxel-size 0.1
+```
+
+Then run the real-map wrapper. The PCD drives ROS LiDAR/raycast/collision checks and RViz publishes the full map on `/real_map/cloud`; Gazebo uses an empty world unless you provide a matching mesh/SDF world.
+
+```
+roslaunch navigation_runner real_map_inference.launch \
+  real_map:=/absolute/path/to/real_map_merged_ascii.pcd \
+  rviz:=true gui:=false
+```
+
 
 ## IV. NavRL ROS2 Deployment
 This section demonstrates an example of deploying NavRL with ROS2 and Isaac Sim using a Unitree Go2 quadruped robot. Ensure that your system meets the following requirements:
@@ -252,7 +271,6 @@ If our work is useful to your research, please consider citing our paper.
 The authors would like to express their sincere gratitude to Professor Kenji Shimada for his great support and all CERLAB UAV team members who contribute to the development of this research.
 
 The Isaac Sim training component of the NavRL framework is built upon [OmniDrones](https://github.com/btx0424/OmniDrones).
-
 
 
 

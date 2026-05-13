@@ -1,8 +1,17 @@
 import os
 import sys
 import torch
-from tensordict import TensorDict
 from torchrl.data import Unbounded, Composite
+
+
+SUPPORTED_MODEL_TYPES = [
+    "Auto",
+    "Simple",
+    "Residual",
+    "Constrained",
+    "ConstrainedBeta",
+    "ConstrainedBetaLagrangian",
+]
 
 
 class MockConfig:
@@ -73,12 +82,97 @@ class MockConfig:
         self.user_model = self.UserModel()
 
 
+def _ensure_training_import_paths():
+    training_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training"))
+    algos_root = os.path.join(training_root, "src", "algos")
+    for path in (training_root, algos_root):
+        if path not in sys.path:
+            sys.path.append(path)
+
+
+def _load_checkpoint(checkpoint_path, device):
+    try:
+        return torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(checkpoint_path, map_location=device)
+
+
+def _extract_policy_state(checkpoint):
+    if isinstance(checkpoint, dict) and "policy" in checkpoint:
+        metadata_keys = [key for key in checkpoint.keys() if key != "policy"]
+        print(
+            "[INFO] Detected rich checkpoint; loading checkpoint['policy']"
+            + (f" and ignoring runtime metadata keys: {metadata_keys}" if metadata_keys else ".")
+        )
+        return checkpoint["policy"], True
+    return checkpoint, False
+
+
+def _state_dict_has_lagrangian_weights(state_dict):
+    return isinstance(state_dict, dict) and "lambda_lag" in state_dict
+
+
+def _select_model_class(model_type, state_dict):
+    if model_type == "Auto":
+        if _state_dict_has_lagrangian_weights(state_dict):
+            model_type = "ConstrainedBetaLagrangian"
+        else:
+            model_type = "ConstrainedBeta"
+        print(f"[INFO] Auto-selected SRLC model type: {model_type}")
+    elif model_type == "ConstrainedBeta" and _state_dict_has_lagrangian_weights(state_dict):
+        model_type = "ConstrainedBetaLagrangian"
+        print("[INFO] Detected Lagrangian checkpoint weights; using ConstrainedBetaLagrangian loader.")
+
+    if model_type == "Simple":
+        from ppo_simple import SimplePPO as ppo_model
+    elif model_type == "Residual":
+        from ppo_residual import SimpleResidualPPO as ppo_model
+    elif model_type == "Constrained":
+        from ppo_constrained import ConstrainedResidualPPO as ppo_model
+    elif model_type == "ConstrainedBeta":
+        from ppo_constrained_beta import ConstrainedResidualPPO_Beta as ppo_model
+    elif model_type == "ConstrainedBetaLagrangian":
+        from ppo_constrained_beta_lagrangian import ConstrainedResidualPPO_BetaLagrangian as ppo_model
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}. Choose from: {', '.join(SUPPORTED_MODEL_TYPES)}")
+    return model_type, ppo_model
+
+
+def _load_policy_state(policy, state_dict, model_type):
+    try:
+        policy.load_state_dict(state_dict)
+        return
+    except RuntimeError as exc:
+        if not isinstance(state_dict, dict):
+            raise exc
+        policy_keys = set(policy.state_dict().keys())
+        loaded_keys = set(state_dict.keys())
+        missing_keys = policy_keys - loaded_keys
+        unexpected_keys = loaded_keys - policy_keys
+
+        # 04s Lagrangian checkpoints add lambda_lag. It is useful for resumed
+        # training but does not affect forward inference, so allow old/new Beta
+        # checkpoints to interoperate when this is the only state mismatch.
+        if model_type == "ConstrainedBetaLagrangian" and missing_keys <= {"lambda_lag"} and not unexpected_keys:
+            policy.load_state_dict(state_dict, strict=False)
+            print("[INFO] Loaded non-Lagrangian Beta checkpoint into Lagrangian policy without lambda_lag.")
+            return
+        if model_type == "ConstrainedBeta" and unexpected_keys <= {"lambda_lag"} and not missing_keys:
+            policy.load_state_dict(state_dict, strict=False)
+            print("[INFO] Loaded Lagrangian Beta checkpoint into Beta policy; ignored inference-only lambda_lag.")
+            return
+
+        print(f"[ERROR] Missing checkpoint keys: {sorted(missing_keys)}")
+        print(f"[ERROR] Unexpected checkpoint keys: {sorted(unexpected_keys)}")
+        raise exc
+
+
 def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_lidar=True, state_dim=10):
     """
     Load the SRLC model from the given checkpoint path.
     
     Args:
-        model_type(str): Simple/Residual/Constrained/ConstrainedBeta
+        model_type(str): Auto/Simple/Residual/Constrained/ConstrainedBeta/ConstrainedBetaLagrangian
         checkpoint_path (str): Path to the model checkpoint.
         device (str or torch.device): Device to load the model on.
         action_dim (int): Action dimension, either 3 (no yaw control) or 4 (with yaw control). Default is 3.
@@ -90,18 +184,16 @@ def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_li
     """
     assert action_dim in [3, 4], f"action_dim must be 3 or 4, got {action_dim}"
 
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../isaac-training/src/algos")))
-
-    if model_type == "Simple":
-        from ppo_simple import SimplePPO as ppo_model
-    elif model_type == "Residual":
-        from ppo_residual import SimpleResidualPPO as ppo_model
-    elif model_type == "Constrained":
-        from ppo_constrained import ConstrainedResidualPPO as ppo_model
-    elif model_type == "ConstrainedBeta":
-        from ppo_constrained_beta import ConstrainedResidualPPO_Beta as ppo_model
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}. Choose from: Simple, Residual, Constrained, ConstrainedBeta")
+    _ensure_training_import_paths()
+    try:
+        checkpoint = _load_checkpoint(checkpoint_path, device)
+        state_dict, _ = _extract_policy_state(checkpoint)
+        if not isinstance(state_dict, dict):
+            raise TypeError(f"Checkpoint policy payload must be a state_dict, got {type(state_dict).__name__}")
+        model_type, ppo_model = _select_model_class(model_type, state_dict)
+    except Exception as e:
+        print(f"[ERROR] Failed to read checkpoint: {e}")
+        return None
 
     cfg_model = MockConfig(device=device)
     
@@ -136,14 +228,7 @@ def load_srlc_model(model_type, checkpoint_path, device, action_dim=3, enable_li
     print(f"[INFO] Loading SRLC model: type={model_type}, checkpoint={checkpoint_path}, action_dim={action_dim}, state_dim={state_dim}, lidar={enable_lidar}")
     policy = ppo_model(cfg_model.algo, observation_spec, action_spec, device)
     try:
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        except TypeError:
-            checkpoint = torch.load(checkpoint_path, map_location=device)
-        if isinstance(checkpoint, dict) and "policy" in checkpoint:
-            checkpoint = checkpoint["policy"]
-            print("[INFO] Detected rich checkpoint; loading checkpoint['policy'].")
-        policy.load_state_dict(checkpoint)
+        _load_policy_state(policy, state_dict, model_type)
         print(f"[INFO] Model loaded successfully.")
     except Exception as e:
         print(f"[ERROR] Failed to load model: {e}")

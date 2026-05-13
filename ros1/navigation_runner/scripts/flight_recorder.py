@@ -12,6 +12,8 @@ from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
 
+from tunnel_deployment.pcd_io import read_pcd_xyz
+
 try:
     from scipy.spatial import cKDTree
     HAS_SCIPY = True
@@ -62,6 +64,13 @@ class FlightRecorder:
         self.user_model_vx_amp = float(rospy.get_param('~user_model_vx_amp', 0.0))
         self.user_model_vy_amp = float(rospy.get_param('~user_model_vy_amp', 0.0))
         self.user_model_vz_amp = float(rospy.get_param('~user_model_vz_amp', 0.2))
+        self.input_source = rospy.get_param('~input_source', 'online')
+        self.replay_dataset_path = rospy.get_param('~replay_dataset_path', '')
+        self.replay_dataset_format = rospy.get_param('~replay_dataset_format', 'hdf5')
+        self.replay_sampling_mode = rospy.get_param('~replay_sampling_mode', 'raw')
+        self.replay_trajectory_index = int(rospy.get_param('~replay_trajectory_index', -1))
+        self.replay_start_offset = int(rospy.get_param('~replay_start_offset', -1))
+        self.replay_loop = _param_bool(rospy.get_param('~replay_loop', True))
         self.gazebo_z_mode = rospy.get_param('~gazebo_z_mode', '')
         self.gazebo_policy_z_max = float(rospy.get_param('~gazebo_policy_z_max', 0.0))
         self.gazebo_z_blend_alpha = float(rospy.get_param('~gazebo_z_blend_alpha', 0.0))
@@ -161,24 +170,18 @@ class FlightRecorder:
                 rospy.logwarn("[Recorder] scipy unavailable; collision monitoring disabled")
             return None
 
-        points = []
-        header_done = False
         try:
-            with open(self.pcd_file, 'r') as handle:
-                for line in handle:
-                    if not header_done:
-                        if line.startswith('DATA'):
-                            header_done = True
-                        continue
-                    parts = line.strip().split()
-                    if len(parts) >= 3:
-                        points.append([float(parts[0]), float(parts[1]), float(parts[2])])
+            points = read_pcd_xyz(self.pcd_file)
         except FileNotFoundError:
             rospy.logfatal("[Recorder] PCD file not found: %s", self.pcd_file)
             rospy.signal_shutdown("Missing collision map")
             return None
+        except ValueError as exc:
+            rospy.logfatal("[Recorder] PCD load error for %s: %s", self.pcd_file, exc)
+            rospy.signal_shutdown("Invalid collision map")
+            return None
 
-        if not points:
+        if len(points) == 0:
             rospy.logwarn("[Recorder] PCD file %s is empty; collision monitoring disabled", self.pcd_file)
             return None
 
@@ -464,6 +467,13 @@ class FlightRecorder:
             'user_model_vx_amp': self.user_model_vx_amp,
             'user_model_vy_amp': self.user_model_vy_amp,
             'user_model_vz_amp': self.user_model_vz_amp,
+            'input_source': self.input_source,
+            'replay_dataset_path': self.replay_dataset_path,
+            'replay_dataset_format': self.replay_dataset_format,
+            'replay_sampling_mode': self.replay_sampling_mode,
+            'replay_trajectory_index': self.replay_trajectory_index,
+            'replay_start_offset': self.replay_start_offset,
+            'replay_loop': self.replay_loop,
             'gazebo_z_mode': self.gazebo_z_mode,
             'gazebo_policy_z_max': self.gazebo_policy_z_max,
             'gazebo_z_blend_alpha': self.gazebo_z_blend_alpha,
@@ -509,6 +519,13 @@ class FlightRecorder:
             'user_model_vx_amp': float(self.user_model_vx_amp),
             'user_model_vy_amp': float(self.user_model_vy_amp),
             'user_model_vz_amp': float(self.user_model_vz_amp),
+            'input_source': self.input_source,
+            'replay_dataset_path': self.replay_dataset_path,
+            'replay_dataset_format': self.replay_dataset_format,
+            'replay_sampling_mode': self.replay_sampling_mode,
+            'replay_trajectory_index': int(self.replay_trajectory_index),
+            'replay_start_offset': int(self.replay_start_offset),
+            'replay_loop': bool(self.replay_loop),
             'gazebo_z_mode': self.gazebo_z_mode,
             'gazebo_policy_z_max': float(self.gazebo_policy_z_max),
             'gazebo_z_blend_alpha': float(self.gazebo_z_blend_alpha),

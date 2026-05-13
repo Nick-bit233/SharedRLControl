@@ -22,6 +22,14 @@ sys.path.insert(0, SCRIPT_DIR)
 from tunnel_deployment.user_model import UserModelTunnel
 
 
+def _param_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 class RCSimulator:
     def __init__(self):
         rospy.init_node('rc_sim_node', anonymous=False)
@@ -53,6 +61,13 @@ class RCSimulator:
         self.user_model_seed = int(rospy.get_param('~user_model_seed', 42))
         self.user_model_rate = rospy.get_param('~user_model_rate', 20.0)
         self.user_model_device = rospy.get_param('~device', 'cpu')
+        self.input_source = str(rospy.get_param('~input_source', 'online')).lower()
+        self.replay_dataset_path = rospy.get_param('~replay_dataset_path', '')
+        self.replay_dataset_format = rospy.get_param('~replay_dataset_format', 'hdf5')
+        self.replay_sampling_mode = rospy.get_param('~replay_sampling_mode', 'raw')
+        self.replay_trajectory_index = int(rospy.get_param('~replay_trajectory_index', -1))
+        self.replay_start_offset = int(rospy.get_param('~replay_start_offset', -1))
+        self.replay_loop = _param_bool(rospy.get_param('~replay_loop', True))
         self.auto_takeoff = rospy.get_param('~auto_takeoff', True)
         self.takeoff_wait = rospy.get_param('~takeoff_wait', 4.0)
         self.takeoff_topic = rospy.get_param('~takeoff_topic', '/CERLAB/quadcopter/takeoff')
@@ -120,6 +135,13 @@ class RCSimulator:
                 smoothness_base=self.user_model_smoothness_base,
                 smoothness_scale=self.user_model_smoothness_scale,
                 laziness=self.user_model_laziness,
+                input_source=self.input_source,
+                replay_dataset_path=self.replay_dataset_path,
+                replay_dataset_format=self.replay_dataset_format,
+                replay_sampling_mode=self.replay_sampling_mode,
+                replay_trajectory_index=self.replay_trajectory_index,
+                replay_start_offset=self.replay_start_offset,
+                replay_loop=self.replay_loop,
                 device=self.user_model_device,
             )
         except Exception as exc:
@@ -144,6 +166,13 @@ class RCSimulator:
                 smoothness_base=self.user_model_smoothness_base,
                 smoothness_scale=self.user_model_smoothness_scale,
                 laziness=self.user_model_laziness,
+                input_source=self.input_source,
+                replay_dataset_path=self.replay_dataset_path,
+                replay_dataset_format=self.replay_dataset_format,
+                replay_sampling_mode=self.replay_sampling_mode,
+                replay_trajectory_index=self.replay_trajectory_index,
+                replay_start_offset=self.replay_start_offset,
+                replay_loop=self.replay_loop,
                 device='cpu',
             )
         model.reset(seed=self.user_model_seed)

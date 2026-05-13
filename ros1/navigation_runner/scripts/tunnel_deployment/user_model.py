@@ -10,6 +10,7 @@ No Isaac Sim / OmniDrones dependency.
 """
 import torch
 import math
+import os
 from enum import Enum
 
 
@@ -93,6 +94,106 @@ def _batched_perlin_noise(channels, time, seeds, freq, device):
 # =====================================================================
 # User model
 # =====================================================================
+class InputProvider:
+    """Common body-frame velocity command interface."""
+
+    def reset(self, seed: int = None):
+        raise NotImplementedError
+
+    def step(self) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class Hdf5ReplayProvider(InputProvider):
+    """Replay one deterministic velocity trajectory from an HDF5 dataset."""
+
+    def __init__(
+        self,
+        dataset_path: str,
+        device: torch.device,
+        max_speed: float,
+        trajectory_index: int = -1,
+        start_offset: int = -1,
+        loop: bool = True,
+        sampling_mode: str = "raw",
+    ):
+        self.dataset_path = os.path.expanduser(str(dataset_path))
+        self.device = device
+        self.max_speed = float(max_speed)
+        self.trajectory_index = int(trajectory_index)
+        self.start_offset = int(start_offset)
+        self.loop = bool(loop)
+        self.sampling_mode = str(sampling_mode).lower()
+        self.velocities = None
+        self.cursor = 0
+        self.selected_trajectory_index = -1
+        self.selected_start_offset = 0
+
+        if self.sampling_mode != "raw":
+            raise ValueError(
+                "ROS1 HDF5 replay currently supports replay_sampling_mode='raw'. "
+                "Scaled replay should be added explicitly once ROS/Isaac coordinate "
+                "bounds are validated."
+            )
+
+    def reset(self, seed: int = None):
+        try:
+            import h5py
+        except ImportError as exc:
+            raise RuntimeError("h5py is required for HDF5 offline replay") from exc
+
+        if not os.path.exists(self.dataset_path):
+            raise FileNotFoundError(f"Offline replay dataset not found: {self.dataset_path}")
+
+        with h5py.File(self.dataset_path, "r") as handle:
+            if "velocities" not in handle:
+                raise KeyError(f"HDF5 dataset has no 'velocities': {self.dataset_path}")
+            dataset = handle["velocities"]
+            if dataset.ndim != 3 or dataset.shape[-1] < 3:
+                raise ValueError(
+                    f"Expected velocities shape (N,T,D>=3), got {dataset.shape}"
+                )
+            num_traj, traj_len, _ = dataset.shape
+            rng_seed = 0 if seed is None else int(seed)
+            if self.trajectory_index >= 0:
+                traj_idx = self.trajectory_index % num_traj
+            else:
+                traj_idx = rng_seed % num_traj
+
+            max_offset = max(0, traj_len - 1)
+            if self.start_offset >= 0:
+                offset = min(self.start_offset, max_offset)
+            else:
+                # Use a tiny LCG-style mix so nearby user seeds do not all start
+                # at nearby offsets, while remaining deterministic.
+                offset = ((rng_seed * 1103515245 + 12345) & 0x7FFFFFFF) % (max_offset + 1)
+
+            raw = dataset[traj_idx, offset:, :3]
+            if raw.shape[0] == 0:
+                raw = dataset[traj_idx, :, :3]
+                offset = 0
+
+        clipped = torch.from_numpy(raw.astype("float32")).to(self.device)
+        clipped = clipped.clamp(min=-self.max_speed, max=self.max_speed)
+        clipped[:, 0] = clipped[:, 0].clamp(min=0.0)
+        self.velocities = clipped
+        self.cursor = 0
+        self.selected_trajectory_index = int(traj_idx)
+        self.selected_start_offset = int(offset)
+
+    def step(self) -> torch.Tensor:
+        if self.velocities is None:
+            self.reset()
+        if self.cursor >= self.velocities.shape[0]:
+            if self.loop:
+                self.cursor = 0
+            else:
+                return self.velocities[-1:].clone()
+        cmd = self.velocities[self.cursor:self.cursor + 1].clone()
+        self.cursor += 1
+        return cmd
+
+
 class UserModelTunnel:
     """
     Generates forward velocity commands for tunnel deployment.
@@ -122,12 +223,45 @@ class UserModelTunnel:
         smoothness_base: float = 0.4,
         smoothness_scale: float = 0.5,
         laziness: float = 0.3,
+        input_source: str = "online",
+        replay_dataset_path: str = "",
+        replay_dataset_format: str = "hdf5",
+        replay_sampling_mode: str = "raw",
+        replay_trajectory_index: int = -1,
+        replay_start_offset: int = -1,
+        replay_loop: bool = True,
         device: str = "cpu",
     ):
         self.device = torch.device(device)
         self.max_speed = max_speed
         self.dt = dt
         self.buffer_size = buffer_size
+        self.input_source = str(input_source).lower()
+        self.provider = None
+        if self.input_source not in ("online", "offline"):
+            raise ValueError(
+                f"Unsupported input_source '{self.input_source}'. Expected online or offline."
+            )
+        if self.input_source == "offline":
+            dataset_format = str(replay_dataset_format).lower()
+            if dataset_format not in ("hdf5", "h5"):
+                raise ValueError(
+                    f"Unsupported replay_dataset_format '{replay_dataset_format}'. "
+                    "Only hdf5 is implemented in the first ROS1 replay provider."
+                )
+            self.provider = Hdf5ReplayProvider(
+                replay_dataset_path,
+                self.device,
+                max_speed=self.max_speed,
+                trajectory_index=replay_trajectory_index,
+                start_offset=replay_start_offset,
+                loop=replay_loop,
+                sampling_mode=replay_sampling_mode,
+            )
+            self.profile = "offline_hdf5"
+            self.simple_mode = False
+            return
+
         requested_profile = str(profile)
         self.simple_mode = simple_mode or requested_profile == "simple"
         self.profile = "simple" if self.simple_mode else requested_profile
@@ -163,6 +297,10 @@ class UserModelTunnel:
 
     def reset(self, seed: int = None):
         """Reset for a new episode."""
+        if self.provider is not None:
+            self.provider.reset(seed=seed)
+            return
+
         N = 1
         self.buffer_read_idx.zero_()
         self.noise_time.zero_()
@@ -196,6 +334,8 @@ class UserModelTunnel:
         """
         Return one (1, 3) body-frame velocity command.
         """
+        if self.provider is not None:
+            return self.provider.step()
         if self.simple_mode:
             return self._step_simple()
         return self._step_online()

@@ -5,7 +5,7 @@ import argparse
 # 添加命令行参数
 parser = argparse.ArgumentParser(description="Verify SRLC Model (Tunnel Environment)")
 parser.add_argument("--model_type", type=str, default="ConstrainedBeta",
-                    choices=["Simple", "Residual", "Constrained", "ConstrainedBeta"],
+                    choices=["Auto", "Simple", "Residual", "Constrained", "ConstrainedBeta", "ConstrainedBetaLagrangian"],
                     help="Type of SRLC model to load")
 parser.add_argument("--checkpoint", type=str, required=True,
                     help="Path to model checkpoint (.pt file)")
