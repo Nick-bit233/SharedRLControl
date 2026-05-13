@@ -112,6 +112,10 @@ class TunnelConfig:
         self.human_action_topic = rospy.get_param("~human_action_topic", "/srlc/human_action")
         self.assist_enable_topic = rospy.get_param("~assist_enable_topic", "/srlc/assist_enable")
         self.human_action_timeout = float(rospy.get_param("~human_action_timeout", 0.3))
+        self.assist_input_deadzone_norm = float(
+            rospy.get_param("~assist_input_deadzone_norm", 0.0)
+        )
+        self.lock_z_control = _param_bool(rospy.get_param("~lock_z_control", False))
         self.keyboard_mode = rospy.get_param("~keyboard_mode", False)
         self.user_model_simple = rospy.get_param("~user_model_simple", True)
         self.user_model_profile = rospy.get_param("~user_model_profile", "m3_diverse")
@@ -726,6 +730,8 @@ class TunnelNavigator:
         if self.cfg.keyboard_mode:
             with self._kb_cmd_lock:
                 kb_np = self._kb_cmd.copy()
+            if self.cfg.lock_z_control:
+                kb_np[2] = 0.0
             if self.rl_assist:
                 # With Beta distribution, the residual operates linearly in [0,1]
                 # space — no crossover/reversal issue. Pass keyboard input as-is.
@@ -734,9 +740,13 @@ class TunnelNavigator:
         elif self.cfg.human_action_source == "rc_topic":
             with self._topic_human_lock:
                 cmd_np = self._topic_human_cmd.copy()
+            if self.cfg.lock_z_control:
+                cmd_np[2] = 0.0
             human_action = torch.from_numpy(cmd_np).unsqueeze(0).to(device=dev)
         else:
             human_action = self.user_model.step()  # (1, 3) body-frame
+            if self.cfg.lock_z_control:
+                human_action[..., 2] = 0.0
 
         # --- LiDAR ---
         if self.cfg.lidar_source == "topic" and self.topic_lidar_np is not None:
@@ -949,6 +959,18 @@ class TunnelNavigator:
         state, human_action, lidar = self._build_obs()
         human_action_np = human_action.squeeze(0).detach().cpu().numpy()
         self._publish_human_cmd(human_action_np)
+        if (
+            self.cfg.assist_input_deadzone_norm > 0.0
+            and float(np.linalg.norm(human_action_np[:2])) < self.cfg.assist_input_deadzone_norm
+        ):
+            self._publish_hover_cmd(request_hold=False, reason="INPUT_DEADZONE")
+            pos = self.odom.pose.pose.position
+            status_msg = (
+                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                f"cmd=[0,0,0] | min_d={self.min_dist:.2f} | INPUT_DEADZONE"
+            )
+            self.status_pub.publish(String(data=status_msg))
+            return
 
         # 2. Policy inference
         with torch.no_grad():
@@ -981,6 +1003,8 @@ class TunnelNavigator:
             )
 
         # 3. Publish
+        if self.cfg.lock_z_control:
+            cmd[2] = 0.0
         self._publish_policy_cmd(cmd)
         self._publish_cmd(cmd)
 
@@ -1020,7 +1044,7 @@ class TunnelNavigator:
             msg.header.frame_id = "map"
             msg.velocity.x = float(cmd_vel_world[0])
             msg.velocity.y = float(cmd_vel_world[1])
-            if self.cfg.height_control:
+            if self.cfg.height_control and not self.cfg.lock_z_control:
                 msg.velocity.z = float(cmd_vel_world[2])
                 msg.yaw = self._current_yaw()
                 msg.type_mask = (
@@ -1269,6 +1293,9 @@ class TunnelNavigator:
         position and attitude — plain zero-velocity cmd_vel doesn't
         fight attitude drift as effectively.
         """
+        self._publish_hover_cmd(request_hold=True, reason=reason)
+
+    def _publish_hover_cmd(self, request_hold=False, reason="HOVER"):
         self.policy_active = False
         if hasattr(self, "policy_active_pub"):
             self.policy_active_pub.publish(Bool(data=False))
@@ -1276,21 +1303,31 @@ class TunnelNavigator:
         if hasattr(self, "z_policy_active_pub"):
             self.z_policy_active_pub.publish(Bool(data=False))
         if self.cfg.use_px4:
-            self._request_px4_hold_mode(reason=reason)
+            if request_hold:
+                self._request_px4_hold_mode(reason=reason)
             msg = PositionTarget()
             msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
             msg.header.stamp = rospy.Time.now()
             msg.header.frame_id = "map"
             msg.velocity.x = 0.0
             msg.velocity.y = 0.0
-            msg.velocity.z = 0.0
             msg.yaw = self._current_yaw() if self.odom is not None else 0.0
-            msg.type_mask = (
-                PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
-                | PositionTarget.IGNORE_PZ
-                | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY
-                | PositionTarget.IGNORE_AFZ | PositionTarget.IGNORE_YAW_RATE
-            )
+            if self.cfg.height_control and not self.cfg.lock_z_control:
+                msg.velocity.z = 0.0
+                msg.type_mask = (
+                    PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
+                    | PositionTarget.IGNORE_PZ
+                    | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY
+                    | PositionTarget.IGNORE_AFZ | PositionTarget.IGNORE_YAW_RATE
+                )
+            else:
+                msg.position.z = self.cfg.takeoff_height
+                msg.type_mask = (
+                    PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
+                    | PositionTarget.IGNORE_VZ
+                    | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY
+                    | PositionTarget.IGNORE_AFZ | PositionTarget.IGNORE_YAW_RATE
+                )
             self.action_pub.publish(msg)
             return
         pose_msg = PoseStamped()

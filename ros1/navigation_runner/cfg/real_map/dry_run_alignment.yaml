@@ -1,0 +1,27 @@
+# First-stage SRLC dry-run defaults: fake MAVROS/odom with the real PCD map.
+
+pcd_file: "$(find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd"
+map_frame: "map"
+
+# Local ENU -> PCD-map transform used by map_lidar_node.py.
+# For fake odom, local takeoff is fixed at (0, 0, takeoff_height); tune these
+# after selecting the real-map takeoff point and forward direction in RViz.
+map_origin_xyz: [0.0, 0.0, 0.0]
+map_yaw_deg: 0.0
+
+takeoff_height: 2.0
+fake_initial_xyz: [0.0, 0.0, 2.0]
+fake_initial_yaw_deg: 0.0
+
+# Conservative dry-run box in MAVROS local ENU coordinates.
+geofence_x: [-3.0, 3.0]
+geofence_y: [-3.0, 3.0]
+min_altitude: 0.5
+max_altitude: 5.0
+
+max_xy_speed_real: 1.0
+max_z_speed_real: 0.3
+safety_min_dist: 0.5
+collision_dist: 0.2
+assist_input_deadzone_norm: 0.05
+lock_z_control: true

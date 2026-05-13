@@ -57,7 +57,7 @@ Visualization Manager:
       Size (Pixels): 5
       Size (m): 0.03
       Style: Points
-      Topic: /tunnel_nav/lidar_cloud
+      Topic: /srlc/lidar/raycast_points
       Unreliable: false
       Use Fixed Frame: true
       Value: true
@@ -73,6 +73,12 @@ Visualization Manager:
       Name: Human Command
       Queue Size: 1
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /srlc/alignment/markers
+      Name: Alignment
+      Queue Size: 1
+      Value: true
     - Angle Tolerance: 0.01
       Class: rviz/Odometry
       Enabled: true
@@ -82,7 +88,7 @@ Visualization Manager:
       Queue Size: 10
       Shape:
         Value: Arrow
-      Topic: /CERLAB/quadcopter/odom
+      Topic: /srlc/alignment/odom_map
       Unreliable: false
       Value: true
   Enabled: true

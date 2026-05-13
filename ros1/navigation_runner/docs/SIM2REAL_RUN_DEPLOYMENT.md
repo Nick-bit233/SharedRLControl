@@ -46,6 +46,47 @@
 
 - 在dry-run和真实部署时，可以在rivz中看到可视化数据，包括：地图点云、无人机位置、激光雷达射线
 
+## 第一阶段 dry-run 入口
+
+当前第一阶段使用 fake MAVROS 和 fake odom，但接入真实 PCD 地图数据：
+
+```bash
+roslaunch navigation_runner tunnel_dry_run_px4.launch \
+    mode:=fake_mavros \
+    pcd_file:="$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
+    rviz:=true
+```
+
+默认链路为：`mavros_fake_node.py` 发布 `/mavros/state`、MAVROS 服务和 `/mavros/local_position/odom`，`srlc_fake_rc_node.py` 发布 `/mavros/rc/in`，`rc_input_node.py` 转换为 `/srlc/human_action` 与 `/srlc/assist_enable`，`map_lidar_node.py` 用真实 PCD + fake odom 生成 `/srlc/lidar/range_image`，`tunnel_navigation.py` 加载策略并向 `/mavros/setpoint_raw/local` 输出速度/锁高 setpoint。
+
+常用调参项：
+
+- `map_origin_x/y/z`、`map_yaw_deg`：把 fake local ENU 起飞点对齐到 PCD 地图。
+- `fake_forward_stick`、`fake_lateral_stick`：模拟测试员前进和小幅横向扰动。
+- `assist_input_deadzone_norm`：输入过小时保持悬停，不执行共享控制输出。
+- `lock_z_control:=true`、`takeoff_height:=2.0`：禁用 z 轴共享控制并保持 2m 平飞。
+- `geofence_x_min/max`、`geofence_y_min/max`、`min_altitude`、`max_altitude`：dry-run 边界保护。
+
+真实 merged map 的默认 dry-run 裁剪图由以下命令生成：
+
+```bash
+rosrun navigation_runner crop_real_pcd_map.py \
+    --input "$(rospack find navigation_runner)/cfg/real_maps/merged/real_map_merged_ascii.pcd" \
+    --output "$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
+    --center 0 0 2 \
+    --size 6 6 5
+```
+
+启动前可先离线检查 PCD、raycast shape、checkpoint 和 launch XML：
+
+```bash
+rosrun navigation_runner srlc_dry_run_smoke_check.py \
+    --pcd-file "$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
+    --checkpoint "$(rospack find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt" \
+    --launch-file "$(rospack find navigation_runner)/launch/tunnel_dry_run_px4.launch" \
+    --device cpu
+```
+
 ## 飞行过程记录
 
 真机实验过程中，记录以下信息：

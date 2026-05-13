@@ -1,0 +1,145 @@
+<launch>
+    <!-- First-stage SRLC dry-run: fake MAVROS/odom + real PCD map. -->
+
+    <arg name="mode" default="fake_mavros" doc="Currently supported: fake_mavros"/>
+    <arg name="checkpoint" default="$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"/>
+    <arg name="pcd_file" default="$(find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd"/>
+    <arg name="device" default="cpu"/>
+    <arg name="rviz" default="true"/>
+    <arg name="record" default="true"/>
+    <arg name="output_dir" default="/tmp/srlc_dry_run"/>
+    <arg name="run_id" default="fake_mavros_real_pcd"/>
+
+    <arg name="takeoff_height" default="2.0"/>
+    <arg name="fake_initial_x" default="0.0"/>
+    <arg name="fake_initial_y" default="0.0"/>
+    <arg name="fake_initial_z" default="$(arg takeoff_height)"/>
+    <arg name="fake_initial_yaw_deg" default="0.0"/>
+
+    <arg name="map_origin_x" default="0.0"/>
+    <arg name="map_origin_y" default="0.0"/>
+    <arg name="map_origin_z" default="0.0"/>
+    <arg name="map_yaw_deg" default="0.0"/>
+
+    <arg name="geofence_x_min" default="-3.0"/>
+    <arg name="geofence_x_max" default="3.0"/>
+    <arg name="geofence_y_min" default="-3.0"/>
+    <arg name="geofence_y_max" default="3.0"/>
+    <arg name="min_altitude" default="0.5"/>
+    <arg name="max_altitude" default="5.0"/>
+    <arg name="max_xy_speed_real" default="1.0"/>
+    <arg name="max_z_speed_real" default="0.3"/>
+    <arg name="safety_min_dist" default="0.5"/>
+    <arg name="collision_dist" default="0.2"/>
+    <arg name="assist_input_deadzone_norm" default="0.05"/>
+    <arg name="lock_z_control" default="true"/>
+
+    <arg name="fake_forward_stick" default="0.45"/>
+    <arg name="fake_lateral_stick" default="0.05"/>
+    <arg name="fake_reset_after" default="1.0"/>
+    <arg name="fake_assist_after" default="2.0"/>
+    <arg name="fake_motion_after" default="3.0"/>
+    <arg name="fake_estop_after" default="0.0"/>
+
+    <param name="/use_sim_time" value="false"/>
+
+    <group if="$(eval mode == 'fake_mavros')">
+        <node pkg="navigation_runner" type="mavros_fake_node.py"
+              name="mavros_fake_node" output="screen" required="true">
+            <param name="publish_odom" value="true"/>
+            <param name="integrate_cmd" value="true"/>
+            <param name="odom_rate" value="30.0"/>
+            <param name="initial_x" value="$(arg fake_initial_x)"/>
+            <param name="initial_y" value="$(arg fake_initial_y)"/>
+            <param name="initial_z" value="$(arg fake_initial_z)"/>
+            <param name="initial_yaw_deg" value="$(arg fake_initial_yaw_deg)"/>
+            <param name="max_xy_speed" value="$(arg max_xy_speed_real)"/>
+            <param name="max_z_speed" value="$(arg max_z_speed_real)"/>
+        </node>
+
+        <node pkg="navigation_runner" type="srlc_fake_rc_node.py"
+              name="srlc_fake_rc_node" output="screen" required="true">
+            <rosparam file="$(find navigation_runner)/cfg/tunnel/rc_input_real_px4.yaml"/>
+            <param name="forward_stick" value="$(arg fake_forward_stick)"/>
+            <param name="lateral_stick" value="$(arg fake_lateral_stick)"/>
+            <param name="vertical_stick" value="0.0"/>
+            <param name="reset_after" value="$(arg fake_reset_after)"/>
+            <param name="assist_after" value="$(arg fake_assist_after)"/>
+            <param name="motion_after" value="$(arg fake_motion_after)"/>
+            <param name="estop_after" value="$(arg fake_estop_after)"/>
+        </node>
+    </group>
+
+    <node pkg="navigation_runner" type="pcd_map_publisher.py"
+          name="real_map_publisher" output="screen">
+        <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="frame_id" value="map"/>
+        <param name="topic" value="/real_map/cloud"/>
+        <param name="voxel_size" value="0.1"/>
+        <param name="max_points" value="300000"/>
+        <param name="publish_rate" value="0.2"/>
+        <param name="latch" value="true"/>
+    </node>
+
+    <node pkg="navigation_runner" type="map_lidar_node.py"
+          name="map_lidar_node" output="screen" required="true">
+        <rosparam file="$(find navigation_runner)/cfg/tunnel/map_lidar_real_px4.yaml"/>
+        <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
+        <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+    </node>
+
+    <node pkg="navigation_runner" type="srlc_alignment_viz_node.py"
+          name="srlc_alignment_viz_node" output="screen">
+        <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
+        <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+        <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>
+        <rosparam param="geofence_y" subst_value="true">[$(arg geofence_y_min), $(arg geofence_y_max)]</rosparam>
+        <param name="min_altitude" value="$(arg min_altitude)"/>
+        <param name="max_altitude" value="$(arg max_altitude)"/>
+    </node>
+
+    <node pkg="navigation_runner" type="rc_input_node.py"
+          name="rc_input_node" output="screen" required="true">
+        <rosparam file="$(find navigation_runner)/cfg/tunnel/rc_input_real_px4.yaml"/>
+    </node>
+
+    <node pkg="navigation_runner" type="tunnel_navigation.py"
+          name="tunnel_navigator" output="screen" required="true">
+        <rosparam file="$(find navigation_runner)/cfg/tunnel/tunnel_nav_real_px4.yaml"/>
+        <param name="checkpoint_path" value="$(arg checkpoint)"/>
+        <param name="device" value="$(arg device)"/>
+        <param name="takeoff_height" value="$(arg takeoff_height)"/>
+        <param name="height_control" value="false"/>
+        <param name="lock_z_control" value="$(arg lock_z_control)"/>
+        <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
+        <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
+        <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
+        <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
+        <param name="collision_dist" value="$(arg collision_dist)"/>
+        <param name="min_altitude" value="$(arg min_altitude)"/>
+        <param name="max_altitude" value="$(arg max_altitude)"/>
+        <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>
+        <rosparam param="geofence_y" subst_value="true">[$(arg geofence_y_min), $(arg geofence_y_max)]</rosparam>
+        <param name="auto_arm" value="false"/>
+        <param name="auto_offboard" value="false"/>
+        <param name="hold_on_stop" value="false"/>
+        <param name="policy_takeoff_gate" value="false"/>
+    </node>
+
+    <group if="$(arg record)">
+        <node pkg="navigation_runner" type="srlc_dry_run_recorder.py"
+              name="srlc_dry_run_recorder" output="screen">
+            <param name="output_dir" value="$(arg output_dir)"/>
+            <param name="run_id" value="$(arg run_id)"/>
+            <param name="lidar_range" value="4.0"/>
+            <param name="lidar_hbeams" value="36"/>
+            <param name="lidar_vbeams" value="4"/>
+        </node>
+    </group>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="dry_run_rviz"
+              args="-d $(find navigation_runner)/cfg/real_map/real_map.rviz"/>
+    </group>
+</launch>

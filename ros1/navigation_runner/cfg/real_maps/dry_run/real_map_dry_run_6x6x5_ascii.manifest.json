@@ -1,0 +1,64 @@
+{
+  "input": "ros1/navigation_runner/cfg/real_maps/merged/real_map_merged_ascii.pcd",
+  "output": "ros1/navigation_runner/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd",
+  "input_bounds": {
+    "min": [
+      -13.844757080078125,
+      -12.860544204711914,
+      -2.1691389083862305
+    ],
+    "max": [
+      9.767159461975098,
+      17.504596710205078,
+      6.01955509185791
+    ]
+  },
+  "crop_center": [
+    0.0,
+    0.0,
+    2.0
+  ],
+  "crop_size": [
+    6.0,
+    6.0,
+    5.0
+  ],
+  "crop_min": [
+    -3.0,
+    -3.0,
+    -0.5
+  ],
+  "crop_max": [
+    3.0,
+    3.0,
+    4.5
+  ],
+  "voxel_size": 0.0,
+  "points_before_crop": 105353,
+  "points_after_crop": 12899,
+  "output_bounds": {
+    "min": [
+      -2.999695062637329,
+      -2.9996960163116455,
+      -0.10377400368452072
+    ],
+    "max": [
+      2.999588966369629,
+      2.9997570514678955,
+      4.179853916168213
+    ]
+  },
+  "suggested_fake_initial_xyz": [
+    0.0,
+    0.0,
+    2.0
+  ],
+  "suggested_geofence_x": [
+    -3.0,
+    3.0
+  ],
+  "suggested_geofence_y": [
+    -3.0,
+    3.0
+  ]
+}

@@ -23,13 +23,15 @@ human_action_source: "rc_topic"
 human_action_topic: "/srlc/human_action"
 assist_enable_topic: "/srlc/assist_enable"
 human_action_timeout: 0.3
+assist_input_deadzone_norm: 0.05
 keyboard_mode: false
 
 # PX4 control.
 control_freq: 20.0
 use_px4: true
-height_control: true
-takeoff_height: 5.0
+height_control: false
+lock_z_control: true
+takeoff_height: 2.0
 auto_arm: false
 auto_offboard: false
 hold_on_stop: true
@@ -40,11 +42,11 @@ odom_timeout: 0.3
 
 # Conservative real-flight command limits.
 max_xy_speed_real: 1.0
-max_z_speed_real: 0.4
+max_z_speed_real: 0.3
 min_altitude: 0.5
-max_altitude: 5.5
-geofence_x: []
-geofence_y: []
+max_altitude: 5.0
+geofence_x: [-3.0, 3.0]
+geofence_y: [-3.0, 3.0]
 
 # Safety.
 use_safety_shield: false
