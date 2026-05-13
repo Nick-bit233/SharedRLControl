@@ -1,0 +1,21 @@
+# PCD-map LiDAR generation for real PX4 SRLC deployment.
+odom_topic: "/mavros/local_position/odom"
+range_image_topic: "/srlc/lidar/range_image"
+raycast_points_topic: "/srlc/lidar/raycast_points"
+min_distance_topic: "/srlc/lidar/min_distance"
+frame_id: "map"
+rate: 20.0
+
+# Must match training.
+lidar_range: 4.0
+lidar_vfov: [-10.0, 20.0]
+lidar_vbeams: 4
+lidar_hres: 10.0
+
+# PCD voxelization.
+map_resolution: 0.1
+inflate_xyz: [0.15, 0.15, 0.05]
+
+# Default assumption: pre-scanned PCD map is aligned with MAVROS local ENU.
+map_origin_xyz: [0.0, 0.0, 0.0]
+map_yaw_deg: 0.0

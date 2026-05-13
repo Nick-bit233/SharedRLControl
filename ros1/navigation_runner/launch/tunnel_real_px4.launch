@@ -1,0 +1,61 @@
+<launch>
+    <!-- Real PX4 SRLC deployment.
+         Default assumes MAVROS is already running and connected to PX4. -->
+
+    <arg name="checkpoint" default="$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"/>
+    <arg name="pcd_file" default="$(find navigation_runner)/cfg/tunnel/tunnel_map_default.pcd"/>
+    <arg name="device" default="cpu"/>
+    <arg name="rviz" default="false"/>
+
+    <arg name="start_mavros" default="false"/>
+    <arg name="fcu_url" default="/dev/ttyACM0:921600"/>
+    <arg name="gcs_url" default=""/>
+
+    <arg name="map_yaw_deg" default="0.0"/>
+    <arg name="map_origin_x" default="0.0"/>
+    <arg name="map_origin_y" default="0.0"/>
+    <arg name="map_origin_z" default="0.0"/>
+
+    <arg name="estop_hold_mode" default="AUTO.LOITER"/>
+    <arg name="max_xy_speed_real" default="1.0"/>
+    <arg name="max_z_speed_real" default="0.4"/>
+    <arg name="safety_min_dist" default="0.5"/>
+    <arg name="collision_dist" default="0.2"/>
+
+    <group if="$(arg start_mavros)">
+        <include file="$(find mavros)/launch/px4.launch">
+            <arg name="fcu_url" value="$(arg fcu_url)"/>
+            <arg name="gcs_url" value="$(arg gcs_url)"/>
+        </include>
+    </group>
+
+    <node pkg="navigation_runner" type="map_lidar_node.py"
+          name="map_lidar_node" output="screen" required="true">
+        <rosparam file="$(find navigation_runner)/cfg/tunnel/map_lidar_real_px4.yaml"/>
+        <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
+        <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+    </node>
+
+    <node pkg="navigation_runner" type="rc_input_node.py"
+          name="rc_input_node" output="screen" required="true">
+        <rosparam file="$(find navigation_runner)/cfg/tunnel/rc_input_real_px4.yaml"/>
+    </node>
+
+    <node pkg="navigation_runner" type="tunnel_navigation.py"
+          name="tunnel_navigator" output="screen" required="true">
+        <rosparam file="$(find navigation_runner)/cfg/tunnel/tunnel_nav_real_px4.yaml"/>
+        <param name="checkpoint_path" value="$(arg checkpoint)"/>
+        <param name="device" value="$(arg device)"/>
+        <param name="estop_hold_mode" value="$(arg estop_hold_mode)"/>
+        <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
+        <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
+        <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
+        <param name="collision_dist" value="$(arg collision_dist)"/>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="tunnel_real_rviz"
+              args="-d $(find navigation_runner)/cfg/tunnel/tunnel.rviz"/>
+    </group>
+</launch>
