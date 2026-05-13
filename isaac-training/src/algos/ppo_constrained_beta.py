@@ -236,6 +236,30 @@ class BetaResidualActionModule(nn.Module):
         self.min_concentration = value
 
 
+class DirectBetaActionModule(nn.Module):
+    """Direct Beta action head for no-residual ablations.
+
+    The policy still receives the pilot command in the observation encoder, but
+    the Beta mean is not mathematically centered on that command.
+    """
+
+    MAX_CONCENTRATION = BetaResidualActionModule.MAX_CONCENTRATION
+
+    def __init__(self, min_concentration=2.0):
+        super().__init__()
+        self.min_concentration = min_concentration
+
+    def forward(self, mean_logits, raw_concentration):
+        mean = torch.sigmoid(mean_logits).clamp(0.01, 0.99)
+        concentration = F.softplus(raw_concentration).clamp(max=self.MAX_CONCENTRATION) + self.min_concentration
+        alpha = mean * concentration + 1.0
+        beta = (1.0 - mean) * concentration + 1.0
+        return alpha, beta
+
+    def set_min_concentration(self, value):
+        self.min_concentration = value
+
+
 class BetaSplitLayer(nn.Module):
     """Splits actor network output into mean_delta and raw_concentration."""
     
@@ -272,6 +296,9 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         
         # Residual regularization coefficient
         self.reg_coeff = cfg.get("reg_coeff", 0.01)
+        self.policy_mode = cfg.get("policy_mode", "residual")
+        if self.policy_mode not in ("residual", "direct"):
+            raise ValueError("algo.policy_mode must be either 'residual' or 'direct'")
         
         # Beta-specific: minimum concentration (can be adjusted per curriculum stage)
         self.min_concentration = cfg.get("min_concentration", 2.0)
@@ -342,37 +369,47 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         self.n_agents, self.action_dim = actual_action_spec.shape[-2:]
         self.action_limit = cfg.actor.action_limit
 
-        # Actor net outputs [mean_delta, raw_concentration], each of size action_dim
+        # Actor net outputs [mean_delta/mean_logits, raw_concentration], each of size action_dim
         self.actor_net = TensorDictModule(
             nn.Sequential(
                 make_mlp([256, 256]), 
-                nn.Linear(256, self.action_dim * 2)  # [mean_delta, raw_concentration]
+                nn.Linear(256, self.action_dim * 2)  # [mean_delta or mean_logits, raw_concentration]
             ),
             in_keys=["_feature"],
             out_keys=["_actor_logits"]
         ).to(self.device)
 
-        # Split into mean_delta and raw_concentration
+        # Split into mean_delta/mean_logits and raw_concentration
         split_module = TensorDictModule(
             BetaSplitLayer(self.action_dim),
             in_keys=["_actor_logits"],
             out_keys=["_mean_delta", "_raw_concentration"]
         )
 
-        # Residual module: combines mean_delta + human_action → alpha, beta
-        self.residual_action_module = BetaResidualActionModule(
-            self.action_limit, 
-            min_concentration=self.min_concentration
-        )
-        residual_module = TensorDictModule(
-            self.residual_action_module,
-            in_keys=["_mean_delta", "_raw_concentration", ("agents", "observation", "human_action")],
-            out_keys=["alpha", "beta"]
-        )
+        if self.policy_mode == "residual":
+            # Residual module: combines mean_delta + human_action → alpha, beta
+            self.action_parameter_module = BetaResidualActionModule(
+                self.action_limit,
+                min_concentration=self.min_concentration
+            )
+            beta_param_module = TensorDictModule(
+                self.action_parameter_module,
+                in_keys=["_mean_delta", "_raw_concentration", ("agents", "observation", "human_action")],
+                out_keys=["alpha", "beta"]
+            )
+        else:
+            self.action_parameter_module = DirectBetaActionModule(
+                min_concentration=self.min_concentration
+            )
+            beta_param_module = TensorDictModule(
+                self.action_parameter_module,
+                in_keys=["_mean_delta", "_raw_concentration"],
+                out_keys=["alpha", "beta"]
+            )
 
         # ProbabilisticActor with IndependentScaledBeta
         self.actor = ProbabilisticActor(
-            module=TensorDictSequential(self.actor_net, split_module, residual_module),
+            module=TensorDictSequential(self.actor_net, split_module, beta_param_module),
             in_keys=["alpha", "beta"],
             out_keys=[("agents", "action_normalized")],
             distribution_class=IndependentScaledBeta,
@@ -420,14 +457,15 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         self.actor.apply(init_)
         self.critic.apply(init_)
 
-        # Identity initialization for the actor's last layer:
-        # mean_delta ≈ 0 (no correction), raw_concentration ≈ 0 (moderate exploration)
-        def init_residual_beta(module):
+        # Last-layer initialization:
+        # residual mode: mean_delta ≈ 0, so deterministic action starts near human input.
+        # direct mode: mean_logits ≈ 0, so deterministic action starts near zero velocity.
+        def init_beta_output(module):
             if isinstance(module, nn.Linear):
                 nn.init.constant_(module.weight, 1e-6)
                 nn.init.constant_(module.bias, 0.)
-                
-        self.actor_net.module[-1].apply(init_residual_beta)
+
+        self.actor_net.module[-1].apply(init_beta_output)
     
     def set_reg_coeff(self, value):
         """Set the residual regularization coefficient (for curriculum)."""
@@ -435,8 +473,8 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
 
     def set_residual_scale(self, scale):
         """Set the scale of the residual policy output (0.0 to 1.0)."""
-        if hasattr(self, "residual_action_module"):
-            self.residual_action_module.set_scale(scale)
+        if self.policy_mode == "residual" and hasattr(self, "action_parameter_module"):
+            self.action_parameter_module.set_scale(scale)
     
     def set_min_concentration(self, value):
         """Adjust minimum concentration (higher → less exploration noise).
@@ -446,8 +484,8 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
           - Mid stages: 5.0 (moderate)
           - Late stages: 10-20 (narrow, precise)
         """
-        if hasattr(self, "residual_action_module"):
-            self.residual_action_module.set_min_concentration(value)
+        if hasattr(self, "action_parameter_module"):
+            self.action_parameter_module.set_min_concentration(value)
 
     def __call__(self, tensordict):
         # Input validation (same as TanhNormal version)
@@ -590,9 +628,13 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             surr2 = advantage * ratio.clamp(1.-self.cfg.actor.clip_ratio, 1.+self.cfg.actor.clip_ratio)
             actor_loss = -torch.mean(torch.min(surr1, surr2)) * self.action_dim 
 
-            # 3. Regularization Loss — penalize deviation from human action
-            #    _mean_delta is the residual in [0,1] space (analogous to _loc_delta)
-            reg_loss = minibatch["_mean_delta"].pow(2).sum(dim=-1).mean()
+            # 3. Regularization Loss — penalize residual deviation from human action.
+            # In direct no-residual mode, _mean_delta is a direct mean logit, not a
+            # residual, so reg_coeff is recorded for parity but has no loss effect.
+            if self.policy_mode == "residual":
+                reg_loss = minibatch["_mean_delta"].pow(2).sum(dim=-1).mean()
+            else:
+                reg_loss = actor_loss.new_zeros(())
 
             # 4. Policy Loss
             loss_pi = actor_loss + self.reg_coeff * reg_loss

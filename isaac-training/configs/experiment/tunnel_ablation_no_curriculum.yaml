@@ -1,0 +1,33 @@
+# @package _global_
+# NoCurriculum: train Ours architecture/reward directly on the hard stage-3 tunnel.
+
+defaults:
+  - tunnel_ablation_base
+
+env:
+  num_obstacles: 80
+  obstacle_width_range: [0.4, 0.9]
+  obstacle_height_range: [8.0, 18.0]
+
+algo:
+  policy_mode: residual
+  feature_extractor:
+    learning_rate: 5e-5
+  actor:
+    learning_rate: 5e-5
+  critic:
+    learning_rate: 5e-5
+
+# Match the configured three-stage 1024-env ablation budget: 3003 + 3003 + 5003.
+max_iterations: 11009
+eval_interval: 125
+save_interval: 250
+
+wandb:
+  name: tunnel_ablation_no_curriculum
+
+hydra:
+  run:
+    dir: ./outputs/tunnel_ablation/no_curriculum/${now:%Y-%m-%d_%H-%M-%S}
+
+job_name: tunnel_ablation_no_curriculum

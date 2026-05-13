@@ -7,7 +7,7 @@ Architecture (training-identical, Beta distribution):
   Concat:   [cnn_feat(128), human_action(3), state(10)] → 141
   LayerNorm(141)
   MLP:      141 → 256 → 256  (_feature)
-  ActorMLP: 256 → 256 → 256 → 6  (mean_delta[3], raw_concentration[3])
+  ActorMLP: 256 → 256 → 256 → 6  (mean_delta/mean_logits[3], raw_concentration[3])
   BetaResidual:
     ha_01 = (ha / action_limit + 1) / 2              map to [0, 1]
     mean  = clamp(ha_01 + mean_delta * residual_scale, 0.01, 0.99)
@@ -77,10 +77,18 @@ class TunnelPolicyNet(nn.Module):
 
     MAX_CONCENTRATION = 100.0
 
-    def __init__(self, action_limit: float = 2.0, min_concentration: float = 2.0):
+    def __init__(
+        self,
+        action_limit: float = 2.0,
+        min_concentration: float = 2.0,
+        policy_mode: str = "residual",
+    ):
         super().__init__()
+        if policy_mode not in ("residual", "direct"):
+            raise ValueError("policy_mode must be 'residual' or 'direct'")
         self.action_limit = action_limit
         self.min_concentration = min_concentration
+        self.policy_mode = policy_mode
         self.debug = True
 
         # ---- Feature extractor (identical to TanhNormal version) ----
@@ -91,11 +99,12 @@ class TunnelPolicyNet(nn.Module):
         # ---- Actor head ----
         self.actor_mlp = nn.Sequential(
             _make_mlp([256, 256]),
-            nn.Linear(256, 6),  # mean_delta(3) + raw_concentration(3)
+            nn.Linear(256, 6),  # mean_delta/mean_logits(3) + raw_concentration(3)
         )
 
         # ---- Residual module ----
-        self.residual_scale = nn.Parameter(torch.tensor(1.0), requires_grad=False)
+        if self.policy_mode == "residual":
+            self.residual_scale = nn.Parameter(torch.tensor(1.0), requires_grad=False)
 
     # ------------------------------------------------------------------
     # Forward (inference) — Beta distribution
@@ -113,18 +122,22 @@ class TunnelPolicyNet(nn.Module):
         normed = self.input_norm(cat_feat)
         feature = self.feature_mlp(normed)                   # (N, 256)
 
-        # 2. Actor outputs mean_delta and raw_concentration
+        # 2. Actor outputs mean_delta/mean_logits and raw_concentration
         logits = self.actor_mlp(feature)                     # (N, 6)
         mean_delta, raw_concentration = logits.split(3, dim=-1)
 
-        # 3. Beta residual in [0, 1] space
-        #    (mirrors BetaResidualActionModule.forward from ppo_constrained_beta.py)
-        ha_norm = human_action / self.action_limit            # [-1, 1]
-        ha_01 = (ha_norm + 1.0) / 2.0                        # [0, 1]
-        ha_01 = ha_01.clamp(0.01, 0.99)
-
-        mean = ha_01 + mean_delta * self.residual_scale
-        mean = mean.clamp(0.01, 0.99)
+        # 3. Beta parameterization in [0, 1] space
+        if self.policy_mode == "residual":
+            # Mirrors BetaResidualActionModule.forward from ppo_constrained_beta.py.
+            ha_norm = human_action / self.action_limit        # [-1, 1]
+            ha_01 = (ha_norm + 1.0) / 2.0                    # [0, 1]
+            ha_01 = ha_01.clamp(0.01, 0.99)
+            mean = ha_01 + mean_delta * self.residual_scale
+            mean = mean.clamp(0.01, 0.99)
+        else:
+            # NoResidual: direct mean logits, still conditioned on human_action
+            # through the feature encoder, but not centered on it.
+            mean = torch.sigmoid(mean_delta).clamp(0.01, 0.99)
 
         concentration = F.softplus(raw_concentration).clamp(max=self.MAX_CONCENTRATION) + self.min_concentration
         alpha = mean * concentration + 1.0
@@ -192,7 +205,8 @@ class TunnelPolicyNet(nn.Module):
     @classmethod
     def from_checkpoint(cls, ckpt_path: str, action_limit: float = 2.0,
                         min_concentration: float = 2.0,
-                        device: str = "cpu") -> "TunnelPolicyNet":
+                        device: str = "cpu",
+                        policy_mode: str = "residual") -> "TunnelPolicyNet":
         """
         Load a training checkpoint and map weights into this standalone net.
 
@@ -202,10 +216,11 @@ class TunnelPolicyNet(nn.Module):
             feature_extractor.module.3.module.{idx}.*        (feature MLP)
             actor_net.module.0.{idx}.*                       (actor MLP layers)
             actor_net.module.1.*                              (final Linear 256→6)
-            residual_action_module.residual_scale             (scalar)
+            action_parameter_module.residual_scale            (residual mode only)
         """
         net = cls(action_limit=action_limit,
-                  min_concentration=min_concentration).to(device)
+                  min_concentration=min_concentration,
+                  policy_mode=policy_mode).to(device)
 
         # Materialize lazy layers before loading checkpoint weights.
         # Otherwise the subsequent dummy forward would overwrite them with
@@ -319,7 +334,7 @@ def _translate_key(k: str):
         return f"actor_mlp.{suffix}"
 
     # ---- Residual scale (short path) ----
-    if k == "residual_action_module.residual_scale":
+    if k in ("residual_action_module.residual_scale", "action_parameter_module.residual_scale"):
         return "residual_scale"
 
     # Skip: critic, value_norm, gae, duplicate actor.module.* paths,

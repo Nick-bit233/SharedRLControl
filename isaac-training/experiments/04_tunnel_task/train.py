@@ -52,9 +52,10 @@ def main(cfg):
     from src.envs.env_tunnel import EnvTunnelResidual
     # Import PPO algorithm — select via cfg.algo.distribution: "tanh_normal" (default) or "beta"
     algo_distribution = cfg.algo.get("distribution", "tanh_normal")
+    algo_policy_mode = cfg.algo.get("policy_mode", "residual")
     if algo_distribution == "beta":
         from src.algos.ppo_constrained_beta import ConstrainedResidualPPO_Beta as ConstrainedResidualPPO
-        print("[Train] Using Beta distribution PPO")
+        print(f"[Train] Using Beta distribution PPO ({algo_policy_mode} policy mode)")
     else:
         from src.algos.ppo_constrained import ConstrainedResidualPPO
         print("[Train] Using TanhNormal distribution PPO")
@@ -455,25 +456,34 @@ def main(cfg):
         policy(td)
         
         net_output_norm = td["agents", "action_normalized"]
-        human_input_phys = td["agents", "observation", "human_action"]
-        human_input_norm = human_input_phys / cfg.algo.actor.action_limit
-
-        # Diff between network output (normalized) and human input (normalized)
-        # In this architecture, net_output_norm is the FINAL action.
-        # Human input is injected via Residual Module.
-        # If residuals are 0, then net_output_norm should be equal to human_input_norm
-        # (assuming 1-to-1 mapping via residual scale=1.0)
-        
-        diff = (net_output_norm - human_input_norm).norm(dim=-1).mean()
-
-        print(f"[Sanity Check] Initial Mean Error (Norm Space): {diff.item():.6f}")
-        
-        if diff.item() < 1e-2:
-            print("✅ Initialization SUCCESS: Network starts as Identity Mapping.")
+        if cfg.algo.get("policy_mode", "residual") == "direct":
+            finite = torch.isfinite(net_output_norm).all()
+            within_bounds = (net_output_norm.abs() <= 1.0 + 1e-5).all()
+            print("[Sanity Check] Direct policy mode: identity mapping is not expected.")
+            print(f"[Sanity Check] action_normalized finite={bool(finite)}, within_bounds={bool(within_bounds)}")
+            if finite and within_bounds:
+                print("✅ Initialization SUCCESS: Direct policy emits finite bounded actions.")
+            else:
+                print(f"❌ Initialization WARNING: Direct policy emitted invalid action sample: {net_output_norm[0]}")
         else:
-            print(f"❌ Initialization WARNING: Initial error is large ({diff.item()}).")
-            print(f"   Sample Net Out: {net_output_norm[0]}")
-            print(f"   Sample Human In: {human_input_norm[0]}")
+            human_input_phys = td["agents", "observation", "human_action"]
+            human_input_norm = human_input_phys / cfg.algo.actor.action_limit
+
+            # Diff between network output (normalized) and human input (normalized)
+            # In this architecture, net_output_norm is the FINAL action.
+            # Human input is injected via Residual Module.
+            # If residuals are 0, then net_output_norm should be equal to human_input_norm
+            # (assuming 1-to-1 mapping via residual scale=1.0)
+            diff = (net_output_norm - human_input_norm).norm(dim=-1).mean()
+
+            print(f"[Sanity Check] Initial Mean Error (Norm Space): {diff.item():.6f}")
+            
+            if diff.item() < 1e-2:
+                print("✅ Initialization SUCCESS: Network starts as Identity Mapping.")
+            else:
+                print(f"❌ Initialization WARNING: Initial error is large ({diff.item()}).")
+                print(f"   Sample Net Out: {net_output_norm[0]}")
+                print(f"   Sample Human In: {human_input_norm[0]}")
     env.train()
     env.reset()
 
