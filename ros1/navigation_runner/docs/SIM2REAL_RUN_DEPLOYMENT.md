@@ -113,7 +113,7 @@ tunnel_navigation.py
 - 输出给 SRLC/map LiDAR：`/mavros/local_position/odom`
 - 输出 IMU：`/mavros/imu/data`
 
-### 真机理论正确启动步骤
+### 真机理论步骤
 
 以下步骤应在机载电脑上执行，开发机没有 MAVROS/PX4 环境时只做代码和参数准备。
 
@@ -224,8 +224,100 @@ SRLC 真机配置默认 **不会自动 arm，也不会自动切 OFFBOARD**：
 6. **OFFBOARD setpoint 方向**：无桨或架高测试时，轻推前进摇杆，确认 `/mavros/setpoint_raw/local/velocity.x` 与期望前进方向一致，再上桨。
 7. **记录文件**：每次实验后检查 `/tmp/srlc_real/*.json`，确认 `assist_enabled`、`human_action`、`policy_cmd`、`setpoint_velocity`、`min_distance` 和 `front_distance` 被记录。
 
-## 飞行过程记录
+## 足球无人机+动捕启动拓扑
 
-真机实验过程中，记录以下信息：
-- 飞行位置和真实速度（相对起飞位置），原始遥控指令速度，模型输出指令速度
-- 激光雷达数据中，距离所有障碍物的最小距离，以及与机头前进方向最靠近的扫描点获得的与障碍物的距离
+┌─────────────────┬──────────────────────────┬───────────────────────────────────────────────────────────────────┐
+│ 位置            │ 节点                     │ 作用                                                              │
+├─────────────────┼──────────────────────────┼───────────────────────────────────────────────────────────────────┤
+│ 机载电脑        │ roscore                  │ 全系统唯一 ROS master                                             │
+├─────────────────┼──────────────────────────┼───────────────────────────────────────────────────────────────────┤
+│ 机载电脑        │ mavros                   │ 连接 PX4，发布 /mavros/rc/in，订阅 /mavros/setpoint_raw/local     │
+├─────────────────┼──────────────────────────┼───────────────────────────────────────────────────────────────────┤
+│ 机载电脑        │ nokov_node               │ 发布 /mavros/local_position/odom、/mavros/vision_pose/pose        │
+├─────────────────┼──────────────────────────┼───────────────────────────────────────────────────────────────────┤
+│ 推理电脑 Docker │ tunnel_real_px4.launch   │ 策略推理、PCD LiDAR、RC bridge、recorder、可选 RViz               │
+└─────────────────┴──────────────────────────┴───────────────────────────────────────────────────────────────────┘
+
+关键原则：所有控制安全相关链路留在机载电脑；推理电脑只作为可失效的外部 setpoint 生成器。 如果 LAN 或 Docker 掉线，PX4 OFFBOARD failsafe 应接管。
+
+机载电脑启动
+
+ export ROS_MASTER_URI=http://<ONBOARD_IP>:11311
+ export ROS_IP=<ONBOARD_IP>
+ unset ROS_HOSTNAME
+ 
+ roscore
+
+另开终端启动 MAVROS：
+
+ source /opt/ros/noetic/setup.bash
+ roslaunch mavros px4.launch fcu_url:=/dev/ttyACM0:921600
+
+另开终端启动 nokov：
+
+ source /opt/ros/noetic/setup.bash
+ source ~/nokov_ws/devel/setup.bash
+ 
+ roslaunch vrpn_client_ros sample.launch server:=<NOKOV_SERVER_IP>
+
+确认机载端话题：
+
+ rostopic echo -n 1 /mavros/state
+ rostopic echo -n 1 /mavros/rc/in
+ rostopic echo -n 1 /mavros/local_position/odom
+
+推理电脑 Docker 启动
+
+Docker 必须用 host network，ROS1 的 TCPROS 动态端口不适合 bridge 网络。
+
+ docker run --rm -it \
+   --net=host \
+   --ipc=host \
+   --name srlc_infer \
+   -e ROS_MASTER_URI=http://<ONBOARD_IP>:11311 \
+   -e ROS_IP=<INFER_PC_IP> \
+   <your_srlc_ros_image> \
+   bash
+
+容器内：
+
+ unset ROS_HOSTNAME
+ export ROS_MASTER_URI=http://<ONBOARD_IP>:11311
+ export ROS_IP=<INFER_PC_IP>
+ 
+ source /opt/ros/noetic/setup.bash
+ source /root/catkin_ws/devel/setup.bash
+
+先检查跨机 ROS 通信：
+
+ rostopic echo -n 1 /mavros/local_position/odom
+ rostopic echo -n 1 /mavros/rc/in
+ rostopic info /mavros/setpoint_raw/local
+
+然后启动 SRLC：
+
+ roslaunch navigation_runner tunnel_real_px4.launch \
+   start_mavros:=false \
+   rviz:=false \
+   record:=true \
+   takeoff_height:=2.0 \
+   lock_z_control:=true \
+   odom_topic:=/mavros/local_position/odom \
+   rc_topic:=/mavros/rc/in \
+   setpoint_raw_topic:=/mavros/setpoint_raw/local
+
+如果要在推理电脑上看 RViz：
+
+ roslaunch navigation_runner tunnel_real_px4.launch \
+   start_mavros:=false \
+   rviz:=true \
+   record:=true
+
+上机前必须确认
+
+ 1. /mavros/local_position/odom 只有一个可信定位源；如果 MAVROS 和 nokov 同时发布同名 odom，要先解决重复 publisher。
+ 2. /mavros/setpoint_raw/local 有 MAVROS subscriber，SRLC 启动后有 tunnel_navigator publisher。
+ 3. PX4 设置好 OFFBOARD loss failsafe，例如 LAN/Docker 掉线后切 POSCTL/ALTCTL/LAND。
+ 4. 两台电脑用 chrony 或 NTP 同步时间。
+ 5. 首次测试把速度降到： max_xy_speed_real:=0.3
+ 6. assist 关闭时飞手仍用 PX4 遥控器控制；assist 打开后 SRLC 才接管 setpoint 输出。
