@@ -154,7 +154,7 @@ roslaunch navigation_runner tunnel_comparison.launch method:=ipc gui:=true
 | `gazebo_z_mode` | `alt_hold` | RL z 速度执行模式：`alt_hold`、`policy`、`policy_clamped` 或 `blend` |
 | `gazebo_policy_z_takeoff_gate` | `true` | `policy`/`policy_clamped`/`blend` 下先用高度保持起飞，接近 `takeoff_height` 后再执行 policy z |
 | `policy_takeoff_gate` | `true` | 起飞接近训练高度前不运行 policy，不执行 policy x/y/z |
-| `safety_mode` | `hold` | 安全距离触发后的介入模式：`hold` 原地悬停，`recover` 低速远离障碍并回中心线 |
+| `safety_mode` | `recover` | 安全距离触发后的介入模式：`hold` 原地悬停，`recover` 低速远离障碍并回中心线 |
 | `input_source` | `online` | pilot 输入源：`online` 使用 ROS1 生成器，`offline` 回放 HDF5 dataset |
 | `replay_dataset_path` | 空 | `input_source:=offline` 时的 HDF5 路径，例如 `isaac-training/data/trajectories_tunnel.h5` |
 | `replay_start_offset` | `-1` | `-1` 按 seed 确定窗口；设为 `0` 可从轨迹起点回放 |
@@ -387,9 +387,9 @@ user_model_smoothness_base: 0.4
 user_model_smoothness_scale: 0.5
 user_model_laziness: 0.3
 user_model_seed: 42      # RL / IPC 共用，确保输入序列可复现
-safety_min_dist: 0.2     # 米，安全停止距离；pilot 可用 --safety-min-dist 0.30 覆盖
-collision_dist: 0.05     # 米，碰撞判定距离（低于此值 = 任务失败）
-safety_mode: "hold"      # hold|recover；recover 用低速脱困替代原地 hold
+safety_min_dist: 0.35    # 米，安全介入距离
+collision_dist: 0.20     # 米，碰撞判定距离（低于此值 = 任务失败）
+safety_mode: "recover"   # hold|recover；recover 用低速脱困替代原地 hold
 ```
 
 **安全机制说明：**
@@ -770,7 +770,7 @@ docker-compose.tunnel.yml             # 持久化开发容器
 
 ### Q: 碰撞（COLLISION）后无人机不动了
 
-这是预期行为。当 `min_dist < collision_dist`（默认 0.05m），系统判定为碰撞，永久停止。
+这是预期行为。当 `min_dist < collision_dist`（默认 0.20m），系统判定为碰撞，永久停止。
 - 查看碰撞话题：`rostopic echo /tunnel_nav/collision`
 - 对比实验中，碰撞 = 试验失败，flight_recorder 会记录
 - 如需调整碰撞判定距离：修改 `collision_dist` 参数

@@ -94,6 +94,13 @@ class TunnelConfig:
         self.height_control = rospy.get_param("~height_control", True)
         self.deterministic = rospy.get_param("~deterministic", True)
         self.odom_timeout = float(rospy.get_param("~odom_timeout", 0.3))
+        self.odom_topic = rospy.get_param("~odom_topic", "/mavros/local_position/odom")
+        self.setpoint_raw_topic = rospy.get_param(
+            "~setpoint_raw_topic", "/mavros/setpoint_raw/local"
+        )
+        self.setpoint_pose_topic = rospy.get_param(
+            "~setpoint_pose_topic", "/mavros/setpoint_position/local"
+        )
         self.auto_arm = _param_bool(rospy.get_param("~auto_arm", False))
         self.auto_offboard = _param_bool(rospy.get_param("~auto_offboard", False))
         self.estop_hold_mode = str(rospy.get_param("~estop_hold_mode", "AUTO.LOITER"))
@@ -146,9 +153,9 @@ class TunnelConfig:
 
         # Safety
         self.use_safety_shield = rospy.get_param("~use_safety_shield", False)
-        self.safety_min_dist = rospy.get_param("~safety_min_dist", 0.3)
-        self.collision_dist = rospy.get_param("~collision_dist", 0.05)
-        self.safety_mode = str(rospy.get_param("~safety_mode", "hold")).lower()
+        self.safety_min_dist = rospy.get_param("~safety_min_dist", 0.35)
+        self.collision_dist = rospy.get_param("~collision_dist", 0.20)
+        self.safety_mode = str(rospy.get_param("~safety_mode", "recover")).lower()
         self.safety_recover_speed = float(rospy.get_param("~safety_recover_speed", 0.35))
         self.safety_recover_forward_speed = float(
             rospy.get_param("~safety_recover_forward_speed", 0.15)
@@ -476,13 +483,13 @@ class TunnelNavigator:
                 rospy.signal_shutdown("Missing mavros_msgs")
                 return
             self.odom_sub = rospy.Subscriber(
-                "/mavros/local_position/odom", Odometry, self._odom_cb
+                self.cfg.odom_topic, Odometry, self._odom_cb
             )
             self.action_pub = rospy.Publisher(
-                "/mavros/setpoint_raw/local", PositionTarget, queue_size=10
+                self.cfg.setpoint_raw_topic, PositionTarget, queue_size=10
             )
             self.pose_pub = rospy.Publisher(
-                "/mavros/setpoint_position/local", PoseStamped, queue_size=10
+                self.cfg.setpoint_pose_topic, PoseStamped, queue_size=10
             )
             self.state_sub = rospy.Subscriber(
                 "/mavros/state", State, self._mavros_state_cb
@@ -822,7 +829,8 @@ class TunnelNavigator:
         if self.cfg.use_px4:
             gate_ok, gate_reason = self._real_policy_gate_ok()
             if not gate_ok:
-                self._publish_stop(reason=gate_reason)
+                request_hold = gate_reason not in {"ASSIST_DISABLED", "NO_RC_ACTION"}
+                self._publish_hover_cmd(request_hold=request_hold, reason=gate_reason)
                 pos = self.odom.pose.pose.position
                 status_msg = (
                     f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "

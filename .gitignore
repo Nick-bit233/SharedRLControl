@@ -136,3 +136,6 @@ paper/
 
 # pcd maps
 ros1/real_maps/
+
+# ros1 packages for real experiments
+ros1/nokov_ws/

@@ -58,9 +58,9 @@ class NaiveReplayNode:
         self.gazebo_policy_z_gate_tolerance = float(
             rospy.get_param("~gazebo_policy_z_gate_tolerance", 0.5)
         )
-        self.safety_min_dist = float(rospy.get_param("~safety_min_dist", 0.2))
-        self.collision_dist = float(rospy.get_param("~collision_dist", 0.05))
-        self.safety_mode = str(rospy.get_param("~safety_mode", "hold")).lower()
+        self.safety_min_dist = float(rospy.get_param("~safety_min_dist", 0.35))
+        self.collision_dist = float(rospy.get_param("~collision_dist", 0.20))
+        self.safety_mode = str(rospy.get_param("~safety_mode", "recover")).lower()
         if self.method not in ("naive_raw", "naive_safe"):
             rospy.logfatal("[NaiveReplay] invalid method=%s", self.method)
             rospy.signal_shutdown("Invalid naive method")

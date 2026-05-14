@@ -32,7 +32,7 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --require-connectivity \
      --gazebo-z-mode policy_clamped \
      --gazebo-policy-z-max 0.50 \
-     --safety-min-dist 0.20 \
+     --safety-min-dist 0.35 \
      --launch-timeout 100 \
      --run-retries 1
 ```
@@ -61,18 +61,18 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --require-connectivity \
      --gazebo-z-mode policy_clamped \
      --gazebo-policy-z-max 0.50 \
-     --safety-min-dist 0.20 \
+     --safety-min-dist 0.35 \
      --launch-timeout 100 \
      --run-retries 1
 ```
-- ipc和零安全基线
+- ipc
 
 ````python
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
-     --num-batches 100 \
-     --output-dir /root/results/batch_1000_for_report_ipc_baseline_seed5716 \
-     --methods naive_raw,ipc \
+     --num-batches 1000 \
+     --output-dir /root/results/batch_1000_for_report_ipc_seed5716 \
+     --methods ipc \
      --master-seed 5716 \
      --runs-per-batch 10 \
      --input-source offline \
@@ -86,7 +86,33 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --require-connectivity \
      --gazebo-z-mode policy_clamped \
      --gazebo-policy-z-max 0.50 \
-     --safety-min-dist 0.20 \
+     --safety-min-dist 0.35 \
+     --launch-timeout 100 \
+     --run-retries 1
+```
+
+- 零安全基线
+
+````python
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+     --run \
+     --num-batches 100 \
+     --output-dir /root/results/batch_1000_report_naive_baseline_seed5716 \
+     --methods naive_raw,naive_safe \
+     --master-seed 5716 \
+     --runs-per-batch 10 \
+     --input-source offline \
+     --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
+     --replay-start-offset 0 \
+     --map-sampling-mode constrained \
+     --min-obstacle-spacing 1.0 \
+     --local-density-window 3.0 \
+     --max-obstacles-per-window 3 \
+     --max-local-area-fraction 0.35 \
+     --require-connectivity \
+     --gazebo-z-mode policy_clamped \
+     --gazebo-policy-z-max 0.50 \
+     --safety-min-dist 0.35 \
      --launch-timeout 100 \
      --run-retries 1
 ```

@@ -1,4 +1,5 @@
 # PCD-map LiDAR generation for real PX4 SRLC deployment.
+# The default odom topic is published by nokov_uav/src/nokov.cpp from VRPN.
 odom_topic: "/mavros/local_position/odom"
 range_image_topic: "/srlc/lidar/range_image"
 raycast_points_topic: "/srlc/lidar/raycast_points"

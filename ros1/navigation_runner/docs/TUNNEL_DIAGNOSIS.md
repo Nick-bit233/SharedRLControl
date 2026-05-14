@@ -44,8 +44,8 @@
 | 状态/阈值 | 默认值 | 行为 |
 | --- | ---: | --- |
 | `safety_start_takeoff_delta` | `0.5m` | 起飞前不启用安全/碰撞检测，避免 PCD 地面点被误判为碰撞；超过初始高度 `+0.5m` 后永久启用 |
-| `safety_min_dist` | `0.2m` | 可恢复安全介入阈值：默认 `safety_mode=hold` 时发布 `_publish_stop()`；`safety_mode=recover` 时发布低速远离障碍/回中心线命令 |
-| `collision_dist` | `0.05m` | 不可恢复碰撞：设置 `collision=True`，发布 `/tunnel_nav/collision=True`，控制循环永久停止本 run 的 RL 推理 |
+| `safety_min_dist` | `0.35m` | 可恢复安全介入阈值：默认 `safety_mode=recover` 时发布低速远离障碍/回中心线命令；`safety_mode=hold` 时发布 `_publish_stop()` |
+| `collision_dist` | `0.20m` | 不可恢复碰撞：设置 `collision=True`，发布 `/tunnel_nav/collision=True`，控制循环永久停止本 run 的 RL 推理 |
 
 距离来源优先使用 Python `PcdRaycaster.nearest_distance()` 对同一份 PCD 地图做全图最近点查询；只有未启用 Python PCD raycaster 时，才 fallback 到稀疏 raycast hit 点距离。这个设计是为了避免“上一帧 raycast 命中点 + 当前高速位姿”产生 stale-hit 假碰撞。
 
@@ -111,12 +111,12 @@ Gazebo world 里的障碍物有 SDF collision geometry，真实接触会影响�
 | --- | --- | --- |
 | PCD 包含地面，起飞前最近距离很小 | 曾导致 RL 一启动就被判 collision，模型完全不推理 | 已用 `safety_start_takeoff_delta=0.5` 让 TunnelNav 和 recorder 都从 airborne 后开始监控 |
 | `safety_stop` 是可恢复护栏，不是终止事件 | 可能把“非常危险但未碰撞”的 episode 变成 timeout，影响 success/collision 解读 | 分析结果时同时看 `pct_close_*`、`min_obstacle_dist` 和 `termination_reason`；如果论文指标需要“护栏介入率”，应单独记录 safety_stop 时间占比 |
-| recorder 与 TunnelNav 都能判 collision | 双通道提高安全性，但也可能出现来源不一致 | 当前两者都使用 PCD 最近距离，并共享 `collision_dist=0.05`；建议后续在 `run_summary.json` 增加 `collision_source` |
+| recorder 与 TunnelNav 都能判 collision | 双通道提高安全性，但也可能出现来源不一致 | 当前两者都使用 PCD 最近距离，并共享 `collision_dist=0.20`；建议后续在 `run_summary.json` 增加 `collision_source` |
 | Gazebo contact 没有直接进入 recorder | 真实接触可能只表现为 tumble 或 timeout | 若要严格统计物理碰撞，应增加 Gazebo contact topic 或插件输出，并接入 recorder |
 | RL 的 `cmd[2]` 默认不直接执行 | 默认 `gazebo_z_mode=alt_hold` 仍使用高度保持覆盖 z 速度，闭环状态分布会偏离完整 3D 速度执行 | 已加入 `gazebo_z_mode=policy|policy_clamped|blend` 做 A/B；recorder 同时保存 `policy_cmd_*`、最终 `cmd_vel*` 和 `z_policy_active` |
 | 低空就执行完整 policy z | policy mode 若从 `z≈0.4m` 开始接管 z，M3 会大量输出 `±1.96m/s`，这不是 user model z 采样问题，而是起飞阶段 OOD 推理 | 已默认启用 policy z 起飞门控；如需复现纯 policy mode，可显式关闭 `gazebo_policy_z_takeoff_gate` |
 | 低空就运行/执行 policy x-y | 只门控 z 轴时，日志仍会出现 policy `cmd=[...]`，且 x/y 已经在低空执行 | 已默认启用完整 `policy_takeoff_gate`；gate 前不会 forward policy，也不会推进 online user model |
-| `safety_min_dist=0.2` 小于训练碰撞半径 `0.3` | ROS1 护栏比训练终止更宽松，可能允许进入训练中已接近终止的区域 | 如果目标是保守验证，可考虑把 `safety_min_dist` 提到 `0.3` 并把它作为 safety-intervention，而不是 collision 指标 |
+| `safety_min_dist=0.35` 大于碰撞半径 | ROS1 护栏在不可恢复碰撞前留出恢复带 | 默认 `safety_mode=recover`，避免 `hold` 导致长时间原地卡死 |
 
 当前推荐解读是：`goal_reached/collision/timeout` 是 batch 终止标签；`min_obstacle_dist` 和接近障碍比例描述风险暴露；`safety_stop` 是外部护栏介入，不应被混同为模型自身成功避障。
 

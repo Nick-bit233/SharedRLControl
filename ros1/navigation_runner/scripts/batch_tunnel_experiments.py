@@ -85,11 +85,11 @@ def parse_args():
     parser.add_argument("--inter-run-delay", type=float, default=2.0,
                         help="Delay between sequential runs")
     parser.add_argument("--goal-x", type=float, default=10.0)
-    parser.add_argument("--collision-dist", type=float, default=0.05)
+    parser.add_argument("--collision-dist", type=float, default=0.20)
     parser.add_argument("--safety-min-dist", type=float, default=None,
-                        help="RL safety stop distance passed to tunnel_navigation.py (default: 0.2)")
+                        help="RL safety stop distance passed to tunnel_navigation.py (default: 0.35)")
     parser.add_argument("--safety-mode", default=None, choices=("hold", "recover"),
-                        help="RL safety intervention mode: hold or recover (default: hold)")
+                        help="RL safety intervention mode: hold or recover (default: recover)")
     parser.add_argument("--safety-recover-speed", type=float, default=None,
                         help="Max horizontal escape speed for safety_mode=recover")
     parser.add_argument("--safety-recover-forward-speed", type=float, default=None,
@@ -300,9 +300,9 @@ def apply_default_args(args):
     if args.master_seed is None:
         args.master_seed = 42
     if args.safety_min_dist is None:
-        args.safety_min_dist = 0.2
+        args.safety_min_dist = 0.35
     if args.safety_mode is None:
-        args.safety_mode = "hold"
+        args.safety_mode = "recover"
     if args.safety_recover_speed is None:
         args.safety_recover_speed = 0.35
     if args.safety_recover_forward_speed is None:
@@ -422,8 +422,8 @@ def apply_resume_config(args, output_root):
         raise ValueError(
             f"--methods {requested_methods} does not match existing methods {config_methods}"
         )
-    config_safety_min_dist = float(config.get("safety_min_dist", 0.2))
-    config_safety_mode = str(config.get("safety_mode", "hold"))
+    config_safety_min_dist = float(config.get("safety_min_dist", 0.35))
+    config_safety_mode = str(config.get("safety_mode", "recover"))
     config_safety_recover_speed = float(config.get("safety_recover_speed", 0.35))
     config_safety_recover_forward_speed = float(
         config.get("safety_recover_forward_speed", 0.15)

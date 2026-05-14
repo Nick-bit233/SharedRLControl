@@ -42,7 +42,7 @@ class FlightRecorder:
         self.trial_id = rospy.get_param('~trial_id', 0)
         self.auto_start = rospy.get_param('~auto_start', True)
         self.goal_x = rospy.get_param('~goal_x', 15.0)
-        self.collision_dist = rospy.get_param('~collision_dist', 0.05)
+        self.collision_dist = rospy.get_param('~collision_dist', 0.20)
         self.collision_topic = str(rospy.get_param('~collision_topic', '')).strip()
         self.pcd_file = rospy.get_param('~pcd_file', '')
         self.auto_terminate = rospy.get_param('~auto_terminate', True)

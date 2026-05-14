@@ -49,7 +49,7 @@ class ExperimentAnalyzer:
             output_dir or os.path.join(self.data_dir, 'analysis')
         )
         self.override_pcd_file = pcd_file
-        self.safety_min_dist = 0.2 if safety_min_dist is None else float(safety_min_dist)
+        self.safety_min_dist = 0.35 if safety_min_dist is None else float(safety_min_dist)
         self.tree_cache = {}
         os.makedirs(self.output_dir, exist_ok=True)
 

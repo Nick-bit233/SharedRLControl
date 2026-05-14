@@ -42,9 +42,9 @@
     <arg name="replay_loop" default="true"/>
     <arg name="output_dir" default="/root/results"/>
     <arg name="goal_x" default="12.0"/>
-    <arg name="collision_dist" default="0.05"/>
-    <arg name="safety_min_dist" default="0.2"/>
-    <arg name="safety_mode" default="hold"/>
+    <arg name="collision_dist" default="0.20"/>
+    <arg name="safety_min_dist" default="0.35"/>
+    <arg name="safety_mode" default="recover"/>
     <arg name="safety_recover_speed" default="0.35"/>
     <arg name="safety_recover_forward_speed" default="0.15"/>
     <arg name="safety_recover_centerline_gain" default="0.4"/>

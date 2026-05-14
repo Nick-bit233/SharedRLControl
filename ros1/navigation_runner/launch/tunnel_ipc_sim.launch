@@ -34,7 +34,7 @@
     <arg name="replay_loop" default="true"/>
     <arg name="output_dir" default="/root/results"/>
     <arg name="goal_x" default="12.0"/>
-    <arg name="collision_dist" default="0.05"/>
+    <arg name="collision_dist" default="0.20"/>
     <arg name="auto_terminate" default="true"/>
     <arg name="shutdown_on_complete" default="true"/>
     <arg name="timeout_sec" default="0.0"/>

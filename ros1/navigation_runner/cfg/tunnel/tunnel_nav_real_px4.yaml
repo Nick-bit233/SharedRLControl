@@ -39,6 +39,10 @@ estop_hold_mode: "AUTO.LOITER"
 estop_fallback_mode: "POSCTL"
 hold_verify_timeout: 1.0
 odom_timeout: 0.3
+# nokov_uav publishes /mavros/local_position/odom from VRPN pose/twist.
+odom_topic: "/mavros/local_position/odom"
+setpoint_raw_topic: "/mavros/setpoint_raw/local"
+setpoint_pose_topic: "/mavros/setpoint_position/local"
 
 # Conservative real-flight command limits.
 max_xy_speed_real: 1.0

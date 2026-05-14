@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dry-run recorder for the SRLC MAVROS topic contract."""
+"""Recorder for the SRLC MAVROS topic contract."""
 
 import json
 import math
@@ -24,6 +24,15 @@ class SrlcDryRunRecorder:
         self.lidar_hbeams = int(rospy.get_param("~lidar_hbeams", 36))
         self.lidar_vbeams = int(rospy.get_param("~lidar_vbeams", 4))
         self.run_id = rospy.get_param("~run_id", "srlc_dry_run")
+        self.odom_topic = rospy.get_param("~odom_topic", "/mavros/local_position/odom")
+        self.rc_topic = rospy.get_param("~rc_topic", "/mavros/rc/in")
+        self.human_action_topic = rospy.get_param("~human_action_topic", "/srlc/human_action")
+        self.assist_enable_topic = rospy.get_param("~assist_enable_topic", "/srlc/assist_enable")
+        self.policy_cmd_topic = rospy.get_param("~policy_cmd_topic", "/tunnel_nav/policy_cmd")
+        self.setpoint_raw_topic = rospy.get_param("~setpoint_raw_topic", "/mavros/setpoint_raw/local")
+        self.lidar_min_distance_topic = rospy.get_param("~lidar_min_distance_topic", "/srlc/lidar/min_distance")
+        self.lidar_range_image_topic = rospy.get_param("~lidar_range_image_topic", "/srlc/lidar/range_image")
+        self.status_topic = rospy.get_param("~status_topic", "/tunnel_nav/status")
 
         self.odom = None
         self.rc = None
@@ -41,15 +50,15 @@ class SrlcDryRunRecorder:
 
         os.makedirs(self.output_dir, exist_ok=True)
 
-        rospy.Subscriber("/mavros/local_position/odom", Odometry, self._odom_cb, queue_size=1)
-        rospy.Subscriber("/mavros/rc/in", RCIn, self._rc_cb, queue_size=1)
-        rospy.Subscriber("/srlc/human_action", TwistStamped, self._human_cb, queue_size=1)
-        rospy.Subscriber("/srlc/assist_enable", Bool, self._assist_cb, queue_size=1)
-        rospy.Subscriber("/tunnel_nav/policy_cmd", TwistStamped, self._policy_cb, queue_size=1)
-        rospy.Subscriber("/mavros/setpoint_raw/local", PositionTarget, self._setpoint_cb, queue_size=1)
-        rospy.Subscriber("/srlc/lidar/min_distance", Float32, self._min_distance_cb, queue_size=1)
-        rospy.Subscriber("/srlc/lidar/range_image", Float32MultiArray, self._range_image_cb, queue_size=1)
-        rospy.Subscriber("/tunnel_nav/status", String, self._status_cb, queue_size=1)
+        rospy.Subscriber(self.odom_topic, Odometry, self._odom_cb, queue_size=1)
+        rospy.Subscriber(self.rc_topic, RCIn, self._rc_cb, queue_size=1)
+        rospy.Subscriber(self.human_action_topic, TwistStamped, self._human_cb, queue_size=1)
+        rospy.Subscriber(self.assist_enable_topic, Bool, self._assist_cb, queue_size=1)
+        rospy.Subscriber(self.policy_cmd_topic, TwistStamped, self._policy_cb, queue_size=1)
+        rospy.Subscriber(self.setpoint_raw_topic, PositionTarget, self._setpoint_cb, queue_size=1)
+        rospy.Subscriber(self.lidar_min_distance_topic, Float32, self._min_distance_cb, queue_size=1)
+        rospy.Subscriber(self.lidar_range_image_topic, Float32MultiArray, self._range_image_cb, queue_size=1)
+        rospy.Subscriber(self.status_topic, String, self._status_cb, queue_size=1)
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.rate_hz), self._record_cb)
         rospy.on_shutdown(self._save)
