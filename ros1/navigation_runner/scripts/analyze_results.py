@@ -28,8 +28,20 @@ except ImportError:
 
 
 class ExperimentAnalyzer:
-    COLORS = {'rl': '#2196F3', 'ipc': '#FF5722'}
-    LABELS = {'rl': 'RL Policy', 'ipc': 'IPC Algorithm'}
+    METHOD_ORDER = ('naive_raw', 'naive_safe', 'ipc', 'rl')
+    SUPPORTED_METHODS = set(METHOD_ORDER)
+    COLORS = {
+        'naive_raw': '#9E9E9E',
+        'naive_safe': '#FFC107',
+        'ipc': '#FF5722',
+        'rl': '#2196F3',
+    }
+    LABELS = {
+        'naive_raw': 'Naive Raw',
+        'naive_safe': 'Naive Safe',
+        'ipc': 'IPC Algorithm',
+        'rl': 'RL Policy',
+    }
 
     def __init__(self, data_dir, output_dir=None, pcd_file=None, safety_min_dist=None):
         self.data_dir = os.path.abspath(data_dir)
@@ -40,6 +52,15 @@ class ExperimentAnalyzer:
         self.safety_min_dist = 0.2 if safety_min_dist is None else float(safety_min_dist)
         self.tree_cache = {}
         os.makedirs(self.output_dir, exist_ok=True)
+
+    @classmethod
+    def _ordered_methods(cls, methods):
+        order = {method: idx for idx, method in enumerate(cls.METHOD_ORDER)}
+        return sorted(set(methods), key=lambda method: (order.get(method, len(order)), method))
+
+    @classmethod
+    def _methods_present(cls, results):
+        return cls._ordered_methods(method for method, rows in results.items() if rows)
 
     @staticmethod
     def _load_json(path):
@@ -165,7 +186,7 @@ class ExperimentAnalyzer:
         normalized = []
         for run in runs:
             method = str(run.get('method', '')).lower()
-            if method not in ('rl', 'ipc'):
+            if method not in self.SUPPORTED_METHODS:
                 continue
             run_dir = run.get('run_dir')
             if not run_dir:
@@ -218,7 +239,7 @@ class ExperimentAnalyzer:
                 continue
             data = dict(np.load(path, allow_pickle=True))
             method = str(data.get('method', '')).lower()
-            if method not in ('rl', 'ipc'):
+            if method not in self.SUPPORTED_METHODS:
                 continue
             pcd_file = self.override_pcd_file or str(data.get('pcd_file', ''))
             if pcd_file and not os.path.isabs(pcd_file):
@@ -241,9 +262,10 @@ class ExperimentAnalyzer:
                 'summary': {},
             })
         runs.sort(key=lambda item: (item['trial_id'], item['method']))
+        method_counts = [len([r for r in runs if r['method'] == method])
+                         for method in self.SUPPORTED_METHODS]
         return runs, {
-            'num_trials': max(len([r for r in runs if r['method'] == 'rl']),
-                              len([r for r in runs if r['method'] == 'ipc'])),
+            'num_trials': max(method_counts) if method_counts else 0,
             'completed_trials': len(runs),
         }
 
@@ -512,18 +534,26 @@ class ExperimentAnalyzer:
             ('likely_safety_hold_trap', 'Likely Safety Trap (%)', lambda v: np.mean(v) * 100),
         ]
 
-        print("\n" + "=" * 76)
-        print(f"{'Metric':<30} {'RL':>20} {'IPC':>20}")
-        print("-" * 76)
+        methods_present = self._methods_present(results)
+        if not methods_present:
+            print("No supported methods found in results")
+            return
+
+        width = 30 + 20 * len(methods_present)
+        print("\n" + "=" * width)
+        print(f"{'Metric':<30}" + "".join(
+            f"{self.LABELS[method]:>20}" for method in methods_present
+        ))
+        print("-" * width)
         for key, name, agg in metrics_spec:
             row = {}
-            for method in ('rl', 'ipc'):
+            for method in methods_present:
                 values = [item[key] for item in results.get(method, []) if key in item]
                 if values:
                     row[method] = f"{agg(values):.2f} +/- {np.std(values):.2f}"
                 else:
                     row[method] = "N/A"
-            print(f"{name:<30} {row['rl']:>20} {row['ipc']:>20}")
+            print(f"{name:<30}" + "".join(f"{row[method]:>20}" for method in methods_present))
 
     def plot_comparison(self, trajectories, results):
         if not HAS_MPL:
@@ -532,7 +562,7 @@ class ExperimentAnalyzer:
 
         fig = plt.figure(figsize=(16, 12))
         gs = GridSpec(3, 3, figure=fig, hspace=0.4, wspace=0.35)
-        methods_present = [method for method in ('rl', 'ipc') if results.get(method)]
+        methods_present = self._methods_present(results)
 
         def draw_metric_boxplot(ax, metric_key, title, ylabel):
             series = []
@@ -637,15 +667,16 @@ class ExperimentAnalyzer:
             ax.set_title('Key Metrics (TCR@k = trajectory coverage rate within k meters)')
 
         ax = fig.add_subplot(gs[0, :2])
-        for method, tlist in trajectories.items():
+        for method in self._ordered_methods(trajectories.keys()):
+            tlist = trajectories.get(method, [])
             for idx, traj in enumerate(tlist):
                 pos = np.array(traj['position'])
                 ax.plot(
                     pos[:, 0], pos[:, 1],
-                    color=self.COLORS[method],
+                    color=self.COLORS.get(method, '#666666'),
                     alpha=0.2 + 0.5 * (idx == 0),
                     linewidth=1.0,
-                    label=self.LABELS[method] if idx == 0 else None,
+                    label=self.LABELS.get(method, method) if idx == 0 else None,
                 )
         ax.set_title('Trajectories (Top-Down)')
         ax.set_xlabel('X (m)')
@@ -667,8 +698,8 @@ class ExperimentAnalyzer:
             ]
             if speeds:
                 speed_series.append(np.concatenate(speeds))
-                speed_labels.append(self.LABELS[method])
-                speed_colors.append(self.COLORS[method])
+                speed_labels.append(self.LABELS.get(method, method))
+                speed_colors.append(self.COLORS.get(method, '#666666'))
         if speed_series:
             ax.hist(
                 speed_series,
@@ -698,12 +729,13 @@ class ExperimentAnalyzer:
         draw_metric_boxplot(ax, 'min_obstacle_dist', 'Minimum Obstacle Distance', 'm')
 
         ax = fig.add_subplot(gs[2, :2])
-        for method, tlist in trajectories.items():
+        for method in self._ordered_methods(trajectories.keys()):
+            tlist = trajectories.get(method, [])
             for traj in tlist:
                 ax.plot(
                     np.array(traj['timestamps']),
                     np.array(traj['min_dist_series']),
-                    color=self.COLORS[method],
+                    color=self.COLORS.get(method, '#666666'),
                     alpha=0.25,
                     linewidth=0.8,
                 )
@@ -795,9 +827,17 @@ class ExperimentAnalyzer:
         payload = {
             'batch_config': batch_config,
             'data_dir': 'render_data',
-            'per_trial': {'IPC': [], 'RL': []},
+            'per_trial': {},
         }
-        for method, label in (('ipc', 'IPC'), ('rl', 'RL')):
+        render_labels = {
+            'ipc': 'IPC',
+            'rl': 'RL',
+            'naive_raw': 'NaiveRaw',
+            'naive_safe': 'NaiveSafe',
+        }
+        for method in self._methods_present(results):
+            label = render_labels.get(method, self.LABELS.get(method, method))
+            payload['per_trial'].setdefault(label, [])
             for row in results.get(method, []):
                 source_npz = os.path.join(self.data_dir, row['data_file'])
                 target_npz = os.path.join(render_data_dir, row['data_file'])

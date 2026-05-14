@@ -180,6 +180,7 @@ catkin_install_python(PROGRAMS
   scripts/rc_sim_node.py
   scripts/srlc_alignment_viz_node.py
   scripts/lidar_sim_node.py
+  scripts/naive_replay_node.py
   scripts/pcd_map_publisher.py
   scripts/imu_bridge_node.py
   scripts/cmd_bridge_node.py

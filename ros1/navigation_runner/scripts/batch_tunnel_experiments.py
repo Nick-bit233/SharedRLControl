@@ -15,6 +15,8 @@ import time
 from datetime import datetime
 
 DEFAULT_CHECKPOINT = "$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"
+ALLOWED_METHODS = ("rl", "ipc", "naive_raw", "naive_safe")
+NAIVE_METHODS = {"naive_raw", "naive_safe"}
 
 FATAL_LOG_MARKERS = (
     "Call to publish() on an invalid Publisher",
@@ -57,7 +59,7 @@ def parse_args():
     parser.add_argument("--runs-per-batch", type=int, default=None,
                         help="Paired RL/IPC runs per batch (default: 5)")
     parser.add_argument("--methods", default=None,
-                        help="Comma-separated method order, e.g. rl,ipc (default: rl,ipc)")
+                        help="Comma-separated method order, e.g. rl,ipc,naive_raw,naive_safe (default: rl,ipc)")
     parser.add_argument("--master-seed", type=int, default=None,
                         help="Master RNG seed for map/user-model seeds (default: 42)")
     parser.add_argument("--output-dir", default=None,
@@ -337,6 +339,36 @@ def apply_default_args(args):
         args.min_bottleneck_width = 0.4
     if args.max_resample_attempts is None:
         args.max_resample_attempts = 2000
+
+
+def normalize_methods(methods_arg):
+    methods = [m.strip().lower() for m in str(methods_arg).split(",") if m.strip()]
+    if not methods:
+        raise ValueError("--methods must contain at least one method")
+
+    unknown = [method for method in methods if method not in ALLOWED_METHODS]
+    if unknown:
+        raise ValueError(
+            f"Unknown method(s): {','.join(unknown)}. "
+            f"Allowed methods: {','.join(ALLOWED_METHODS)}"
+        )
+
+    duplicates = sorted({method for method in methods if methods.count(method) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate method(s) in --methods: {','.join(duplicates)}")
+    return methods
+
+
+def validate_method_config(args):
+    methods = normalize_methods(args.methods)
+    args.methods = ",".join(methods)
+
+    if any(method in NAIVE_METHODS for method in methods) and args.input_source != "offline":
+        raise ValueError(
+            "naive_raw/naive_safe are dataset replay baselines and require "
+            "--input-source offline with --replay-dataset-path"
+        )
+    return methods
 
 
 def apply_resume_config(args, output_root):
@@ -1101,7 +1133,8 @@ def run_batch(args, output_root):
             )
     else:
         seed_plan = generate_seed_plan(args)
-    methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    methods = normalize_methods(args.methods)
+    args.methods = ",".join(methods)
     execution_plan, selected_batch_indices = select_seed_plan(args, seed_plan)
     cleanup_experiment_processes("batch start")
     existing_manifest = load_existing_manifest(output_root)
@@ -1373,6 +1406,7 @@ def main():
     if args.user_model_simple:
         args.user_model_profile = "simple"
     args.device = resolve_device(args.device)
+    validate_method_config(args)
     validate_offline_replay_config(args)
     manifest = run_batch(args, output_root)
     maybe_run_analysis(args, output_root)

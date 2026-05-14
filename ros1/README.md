@@ -38,7 +38,9 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
 ```
 
 use other checkpoints (with same actor net structure)
-- M3
+- 最终实验配置（master seed，地图生成参数不再改变）
+
+主要模型
 ```python
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
@@ -63,21 +65,21 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --launch-timeout 100 \
      --run-retries 1
 ```
-- A6-stage2
-```pythonreplay_pt_04sA6s2_h5_mapconstrained_seed5716
+- ipc和零安全基线
+
+````python
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
-     --checkpoint /root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_safetyconstrained_A6_stage2_best.pt \
-     --num-batches 64 \
-     --output-dir /root/results/batch_compare_models_04sA6 \
-     --methods rl \
-     --master-seed 325 \
+     --num-batches 100 \
+     --output-dir /root/results/batch_1000_for_report_ipc_baseline_seed5716 \
+     --methods naive_raw,ipc \
+     --master-seed 5716 \
      --runs-per-batch 10 \
      --input-source offline \
      --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
      --replay-start-offset 0 \
      --map-sampling-mode constrained \
-     --min-obstacle-spacing 0.6 \
+     --min-obstacle-spacing 1.0 \
      --local-density-window 3.0 \
      --max-obstacles-per-window 3 \
      --max-local-area-fraction 0.35 \
@@ -88,6 +90,7 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --launch-timeout 100 \
      --run-retries 1
 ```
+
 
 [TODO] use other checkpoints with no residual (for ablation)
 
