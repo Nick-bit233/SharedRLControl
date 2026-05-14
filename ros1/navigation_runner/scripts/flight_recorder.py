@@ -4,6 +4,7 @@
 import json
 import math
 import os
+import sys
 import time
 
 import numpy as np
@@ -11,6 +12,10 @@ import rospy
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 from tunnel_deployment.pcd_io import read_pcd_xyz
 
