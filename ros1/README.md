@@ -5,6 +5,9 @@
 `docker exec tunnel_debug ...` 或默认挂载宿主 X11 显示器；手动可视化调试时再显式启动
 `tunnel_debug`。
 
+新主机从零配置 Docker、Python、镜像和 `navigation_runner` 编译环境时，先参考
+`navigation_runner/docs/BATCH_CONTAINER_HOST_SETUP.md`。
+
 ## 方式一：宿主机长时间批量实验（推荐）
 
 以下命令会为每个 batch 启动一个一次性 `tunnel_batch` 容器，默认不挂载宿主显示器，
@@ -70,7 +73,7 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
 ````python
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
-     --num-batches 1000 \
+     --num-batches 100 \
      --output-dir /root/results/batch_1000_for_report_ipc_seed5716 \
      --methods ipc \
      --master-seed 5716 \
@@ -97,7 +100,7 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
      --num-batches 100 \
-     --output-dir /root/results/batch_1000_report_naive_baseline_seed5716 \
+     --output-dir /root/results/batch_1k_REPORT_naive_baseline_seed5716 \
      --methods naive_raw,naive_safe \
      --master-seed 5716 \
      --runs-per-batch 10 \
