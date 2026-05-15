@@ -224,77 +224,35 @@ SRLC 真机配置默认 **不会自动 arm，也不会自动切 OFFBOARD**：
 6. **OFFBOARD setpoint 方向**：无桨或架高测试时，轻推前进摇杆，确认 `/mavros/setpoint_raw/local/velocity.x` 与期望前进方向一致，再上桨。
 7. **记录文件**：每次实验后检查 `/tmp/srlc_real/*.json`，确认 `assist_enabled`、`human_action`、`policy_cmd`、`setpoint_velocity`、`min_distance` 和 `front_distance` 被记录。
 
-## 足球无人机+动捕启动拓扑
+## 足球无人机+动捕真机部署文档修订
 
-┌─────────────────┬──────────────────────────┬───────────────────────────────────────────────────────────────────┐
-│ 位置            │ 节点                     │ 作用                                                              │
-├─────────────────┼──────────────────────────┼───────────────────────────────────────────────────────────────────┤
-│ 机载电脑        │ roscore                  │ 全系统唯一 ROS master                                             │
-├─────────────────┼──────────────────────────┼───────────────────────────────────────────────────────────────────┤
-│ 机载电脑        │ mavros                   │ 连接 PX4，发布 /mavros/rc/in，订阅 /mavros/setpoint_raw/local     │
-├─────────────────┼──────────────────────────┼───────────────────────────────────────────────────────────────────┤
-│ 机载电脑        │ nokov_node               │ 发布 /mavros/local_position/odom、/mavros/vision_pose/pose        │
-├─────────────────┼──────────────────────────┼───────────────────────────────────────────────────────────────────┤
-│ 推理电脑 Docker │ tunnel_real_px4.launch   │ 策略推理、PCD LiDAR、RC bridge、recorder、可选 RViz               │
-└─────────────────┴──────────────────────────┴───────────────────────────────────────────────────────────────────┘
+# 注意：需要按照下面的真机实验部署限制，修订本文档中（包括前文内容）的过时内容，重新给出并修复桥接代码
 
-关键原则：所有控制安全相关链路留在机载电脑；推理电脑只作为可失效的外部 setpoint 生成器。 如果 LAN 或 Docker 掉线，PX4 OFFBOARD failsafe 应接管。
+要求：
+- 所有ros节点在推理电脑（Docker容器）上运行，足球无人机机载芯片仅具有和mavros的数传功能，通过推理电脑与其连接到同一局域网来通信
 
-机载电脑启动
+网络环境：
+推理机：192.168.31.xx（宿主机网络，docker 容器使用host模式以便和无人机通信）
+机载：192.168.31.155
 
- export ROS_MASTER_URI=http://<ONBOARD_IP>:11311
- export ROS_IP=<ONBOARD_IP>
- unset ROS_HOSTNAME
- 
- roscore
+MAVROS启动：需要使用下面的launch文件：
 
-另开终端启动 MAVROS：
+nokov：推理机终端启动
 
- source /opt/ros/noetic/setup.bash
- roslaunch mavros px4.launch fcu_url:=/dev/ttyACM0:921600
+注意：nokov部署的源代码已经改变，其中话题名称变为：
+pub_imu = nh.advertise<sensor_msgs::Imu>("nokov/imu/data", 1);
+pub_odom = nh.advertise<nav_msgs::Odometry>("nokov/local_position/odom", 1);
+无人机定位以nokov话题为准，不采用mavros回报的话题。
 
-另开终端启动 nokov：
-
+启动命令：
+```
  source /opt/ros/noetic/setup.bash
  source ~/nokov_ws/devel/setup.bash
  
- roslaunch vrpn_client_ros sample.launch server:=<NOKOV_SERVER_IP>
+ roslaunch nokov_uav sample.launch
+```
 
-确认机载端话题：
-
- rostopic echo -n 1 /mavros/state
- rostopic echo -n 1 /mavros/rc/in
- rostopic echo -n 1 /mavros/local_position/odom
-
-推理电脑 Docker 启动
-
-Docker 必须用 host network，ROS1 的 TCPROS 动态端口不适合 bridge 网络。
-
- docker run --rm -it \
-   --net=host \
-   --ipc=host \
-   --name srlc_infer \
-   -e ROS_MASTER_URI=http://<ONBOARD_IP>:11311 \
-   -e ROS_IP=<INFER_PC_IP> \
-   <your_srlc_ros_image> \
-   bash
-
-容器内：
-
- unset ROS_HOSTNAME
- export ROS_MASTER_URI=http://<ONBOARD_IP>:11311
- export ROS_IP=<INFER_PC_IP>
- 
- source /opt/ros/noetic/setup.bash
- source /root/catkin_ws/devel/setup.bash
-
-先检查跨机 ROS 通信：
-
- rostopic echo -n 1 /mavros/local_position/odom
- rostopic echo -n 1 /mavros/rc/in
- rostopic info /mavros/setpoint_raw/local
-
-然后启动 SRLC：
+启动 SRLC：
 
  roslaunch navigation_runner tunnel_real_px4.launch \
    start_mavros:=false \
@@ -313,11 +271,13 @@ Docker 必须用 host network，ROS1 的 TCPROS 动态端口不适合 bridge 网
    rviz:=true \
    record:=true
 
-上机前必须确认
 
- 1. /mavros/local_position/odom 只有一个可信定位源；如果 MAVROS 和 nokov 同时发布同名 odom，要先解决重复 publisher。
- 2. /mavros/setpoint_raw/local 有 MAVROS subscriber，SRLC 启动后有 tunnel_navigator publisher。
- 3. PX4 设置好 OFFBOARD loss failsafe，例如 LAN/Docker 掉线后切 POSCTL/ALTCTL/LAND。
- 4. 两台电脑用 chrony 或 NTP 同步时间。
- 5. 首次测试把速度降到： max_xy_speed_real:=0.3
- 6. assist 关闭时飞手仍用 PX4 遥控器控制；assist 打开后 SRLC 才接管 setpoint 输出。
+[重要]对SRLC可迁移确认的额外要求：
+- scripts/rc_input_node.py：现在确认使用/mavros/rc/in中的频道9输入作为遥控器切换assist是否生效的信号，检查目前实现使用什么信号，如果不一致对齐到ch9,
+- 紧急停止问题：从目前的脚本实现中去除紧急停止的功能实现，无人机硬件上已经支持通过特定遥控器杆位实现信号切断和offboard failsafe，因此无需srlc节点外部干预。
+    在文档中给出以下确认：
+    - tunnel_real_px4.launch 后，无人机是否会自动起飞，是否需要遥控器信号输入或命令行指令起飞
+    - 起飞后无输入时，无人机的idle状态确认（注意确定无人机不会受到模型推理指令影响，也不会默认输入前进的速度信号）
+    - 如何从命令行（或其他方式）确认assist模式是否处于生效状态（飞触及设定地图边界时应该自动退出）
+    - 如果无人机从外部切断信号，如何确认。
+

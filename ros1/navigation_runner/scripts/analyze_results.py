@@ -50,6 +50,7 @@ class ExperimentAnalyzer:
         )
         self.override_pcd_file = pcd_file
         self.safety_min_dist = 0.35 if safety_min_dist is None else float(safety_min_dist)
+        self.collision_dist = 0.20
         self.tree_cache = {}
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -195,14 +196,14 @@ class ExperimentAnalyzer:
                 )
             run_dir = self._resolve_run_dir(run_dir)
             data_file = run.get('data_file', '')
-            npz_path = os.path.join(run_dir, data_file) if data_file else ''
+            npz_path = self._resolve_artifact_path(data_file, run_dir) if data_file else ''
             if not npz_path or not os.path.exists(npz_path):
                 matches = sorted(glob.glob(os.path.join(run_dir, '*.npz')))
                 npz_path = matches[-1] if matches else ''
 
             pcd_file = self.override_pcd_file or run.get('pcd_file', '')
-            if pcd_file and not os.path.isabs(pcd_file):
-                pcd_file = os.path.abspath(os.path.join(run_dir, pcd_file))
+            pcd_file = self._resolve_artifact_path(pcd_file, run_dir)
+            tunnel_world = self._resolve_artifact_path(run.get('tunnel_world', ''), run_dir)
 
             normalized.append({
                 'method': method,
@@ -216,7 +217,7 @@ class ExperimentAnalyzer:
                 'goal_reached': bool(run.get('goal_reached', False)),
                 'collision': bool(run.get('collision', False)),
                 'pcd_file': pcd_file,
-                'tunnel_world': run.get('tunnel_world', ''),
+                'tunnel_world': tunnel_world,
                 'run_dir': run_dir,
                 'npz_path': npz_path,
                 'summary': run,
@@ -242,8 +243,8 @@ class ExperimentAnalyzer:
             if method not in self.SUPPORTED_METHODS:
                 continue
             pcd_file = self.override_pcd_file or str(data.get('pcd_file', ''))
-            if pcd_file and not os.path.isabs(pcd_file):
-                pcd_file = os.path.abspath(os.path.join(self.data_dir, pcd_file))
+            pcd_file = self._resolve_artifact_path(pcd_file, self.data_dir)
+            tunnel_world = self._resolve_artifact_path(str(data.get('tunnel_world', '')), self.data_dir)
             runs.append({
                 'method': method,
                 'trial_id': int(data.get('trial_id', len(runs))),
@@ -256,7 +257,7 @@ class ExperimentAnalyzer:
                 'goal_reached': bool(data.get('goal_reached', False)),
                 'collision': bool(data.get('collision', False)),
                 'pcd_file': pcd_file,
-                'tunnel_world': str(data.get('tunnel_world', '')),
+                'tunnel_world': tunnel_world,
                 'run_dir': self.data_dir,
                 'npz_path': path,
                 'summary': {},
@@ -294,6 +295,96 @@ class ExperimentAnalyzer:
         values = np.asarray(values)
         finite = values[np.isfinite(values)]
         return float(np.mean(finite)) if finite.size else float('nan')
+
+    @staticmethod
+    def _to_float(value, default=float('nan')):
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return default
+        return out if np.isfinite(out) else default
+
+    @staticmethod
+    def _align_series(values, length, fill_value=None):
+        if values is None:
+            return None
+        arr = np.asarray(values)
+        if arr.ndim == 0:
+            return None
+        if len(arr) == length:
+            return arr
+        if len(arr) > length:
+            return arr[:length]
+        if length - len(arr) <= 2 and len(arr) > 0:
+            if fill_value is None:
+                fill = arr[-1]
+            else:
+                fill = fill_value
+            pad_shape = (length - len(arr),) + arr.shape[1:]
+            pad = np.full(pad_shape, fill, dtype=arr.dtype)
+            return np.concatenate([arr, pad], axis=0)
+        return None
+
+    @staticmethod
+    def _fraction_below(values, threshold):
+        values = np.asarray(values)
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            return float('nan')
+        return float(np.mean(finite < threshold) * 100.0)
+
+    @staticmethod
+    def _decimate_indices(length, max_points=800):
+        if length <= max_points:
+            return np.arange(length)
+        return np.unique(np.linspace(0, length - 1, max_points).astype(int))
+
+    @classmethod
+    def _json_safe(cls, value):
+        if isinstance(value, dict):
+            return {key: cls._json_safe(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, (np.bool_, bool)):
+            return bool(value)
+        if isinstance(value, (np.integer,)):
+            return int(value)
+        if isinstance(value, (np.floating, float)):
+            out = float(value)
+            return out if np.isfinite(out) else None
+        return value
+
+    def _resolve_artifact_path(self, path, base_dir=None):
+        if path is None:
+            return ''
+        path = str(path)
+        if not path:
+            return ''
+        if os.path.exists(path):
+            return os.path.abspath(path)
+
+        candidates = []
+        if not os.path.isabs(path):
+            if base_dir:
+                candidates.append(os.path.join(base_dir, path))
+            candidates.append(os.path.join(self.data_dir, path))
+        else:
+            parts = path.split(os.sep)
+            batch_root = os.path.basename(self.data_dir.rstrip(os.sep))
+            if batch_root in parts:
+                suffix = parts[parts.index(batch_root) + 1:]
+                candidates.append(os.path.join(self.data_dir, *suffix))
+            for idx, part in enumerate(parts):
+                if part.startswith('batch_') and len(part) == len('batch_000') and part[6:].isdigit():
+                    candidates.append(os.path.join(self.data_dir, *parts[idx:]))
+                    break
+
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return os.path.abspath(candidate)
+        return path
 
     @staticmethod
     def _resample_by_arclength(traj, spacing):
@@ -380,16 +471,20 @@ class ExperimentAnalyzer:
         if ts is None or len(ts) != len(pos):
             ts = np.arange(len(pos), dtype=np.float32) * 0.02
         vel = self._first_present(data, ['velocity'])
-        if vel is None or len(vel) != len(pos):
+        vel = self._align_series(vel, len(pos))
+        if vel is None:
             dt = np.diff(ts, prepend=ts[0] if len(ts) else 0.0)
             dt[dt == 0] = 0.02
             vel = np.vstack([np.zeros(3, dtype=np.float32), np.diff(pos, axis=0)]) / dt[:, None]
         cmd_world = self._first_present(data, ['cmd_vel_world', 'ctrl_vels_w', 'cmd_vel'])
-        if cmd_world is None or len(cmd_world) != len(pos):
+        cmd_world = self._align_series(cmd_world, len(pos), fill_value=0.0)
+        if cmd_world is None:
             cmd_world = np.zeros_like(pos)
         human_cmd_world = self._first_present(data, ['human_cmd_world', 'human_vels_w'])
+        human_cmd_world = self._align_series(human_cmd_world, len(pos), fill_value=0.0)
         collision_flags = self._first_present(data, ['collision_flags', 'collisions'])
-        if collision_flags is None or len(collision_flags) != len(pos):
+        collision_flags = self._align_series(collision_flags, len(pos), fill_value=False)
+        if collision_flags is None:
             collision_flags = np.zeros(len(pos), dtype=bool)
 
         metric = {
@@ -437,25 +532,37 @@ class ExperimentAnalyzer:
         metric['tcr_at_5'] = tcr_metrics[5]
 
         min_dist_series = self._first_present(data, ['min_obstacle_dist'])
-        if min_dist_series is None or len(min_dist_series) != len(pos):
+        min_dist_series = self._align_series(min_dist_series, len(pos))
+        if min_dist_series is None:
             tree = self._get_tree(run['pcd_file'])
             if tree is not None:
                 min_dist_series = tree.query(pos)[0]
             else:
                 min_dist_series = np.full(len(pos), np.nan, dtype=np.float32)
         monitored_dist_series = self._first_present(data, ['min_obstacle_dist_monitored'])
-        if monitored_dist_series is None or len(monitored_dist_series) != len(pos):
+        monitored_dist_series = self._align_series(monitored_dist_series, len(pos))
+        if monitored_dist_series is None:
             monitored_dist_series = min_dist_series
 
         metric['min_obstacle_dist'] = self._finite_min(min_dist_series)
         metric['avg_obstacle_dist'] = self._finite_mean(min_dist_series)
         metric['monitored_min_obstacle_dist'] = self._finite_min(monitored_dist_series)
         metric['monitored_avg_obstacle_dist'] = self._finite_mean(monitored_dist_series)
-        metric['pct_close_05m'] = float(np.nanmean(min_dist_series < 0.5) * 100.0)
-        metric['pct_close_1m'] = float(np.nanmean(min_dist_series < 1.0) * 100.0)
-        metric['pct_close_02m'] = float(np.nanmean(monitored_dist_series < 0.2) * 100.0)
-        metric['pct_close_safety_min'] = float(
-            np.nanmean(monitored_dist_series < self.safety_min_dist) * 100.0
+        if not np.isfinite(metric['min_obstacle_dist']):
+            metric['min_obstacle_dist'] = self._to_float(
+                run['summary'].get('min_obstacle_dist_raw',
+                                   run['summary'].get('min_obstacle_dist'))
+            )
+        if not np.isfinite(metric['monitored_min_obstacle_dist']):
+            metric['monitored_min_obstacle_dist'] = self._to_float(
+                run['summary'].get('min_obstacle_dist',
+                                   run['summary'].get('min_obstacle_dist_raw'))
+            )
+        metric['pct_close_05m'] = self._fraction_below(min_dist_series, 0.5)
+        metric['pct_close_1m'] = self._fraction_below(min_dist_series, 1.0)
+        metric['pct_close_02m'] = self._fraction_below(monitored_dist_series, 0.2)
+        metric['pct_close_safety_min'] = self._fraction_below(
+            monitored_dist_series, self.safety_min_dist
         )
 
         last_window = ts >= max(ts[-1] - 10.0, ts[0])
@@ -479,19 +586,21 @@ class ExperimentAnalyzer:
         )
         metric['likely_safety_hold_trap'] = bool(likely_trap)
 
+        plot_idx = self._decimate_indices(len(pos))
         trajectory = {
-            'position': pos,
-            'velocity': vel,
-            'timestamps': ts,
-            'cmd_world': cmd_world,
-            'min_dist_series': min_dist_series,
-            'monitored_dist_series': monitored_dist_series,
+            'position': np.asarray(pos[plot_idx], dtype=np.float32),
+            'velocity': np.asarray(vel[plot_idx], dtype=np.float32),
+            'timestamps': np.asarray(ts[plot_idx], dtype=np.float32),
+            'cmd_world': np.asarray(cmd_world[plot_idx], dtype=np.float32),
+            'min_dist_series': np.asarray(min_dist_series[plot_idx], dtype=np.float32),
+            'monitored_dist_series': np.asarray(monitored_dist_series[plot_idx], dtype=np.float32),
         }
         return metric, trajectory
 
     def analyze_all(self):
         runs, batch_config = self.discover_runs()
         self.safety_min_dist = float(batch_config.get('safety_min_dist', self.safety_min_dist))
+        self.collision_dist = float(batch_config.get('collision_dist', self.collision_dist))
         metrics_by_method = defaultdict(list)
         trajectories_by_method = defaultdict(list)
         all_metrics = []
@@ -550,7 +659,12 @@ class ExperimentAnalyzer:
             for method in methods_present:
                 values = [item[key] for item in results.get(method, []) if key in item]
                 if values:
-                    row[method] = f"{agg(values):.2f} +/- {np.std(values):.2f}"
+                    numeric = np.asarray(values, dtype=float)
+                    finite = numeric[np.isfinite(numeric)]
+                    if finite.size:
+                        row[method] = f"{agg(finite):.2f} +/- {np.std(finite):.2f}"
+                    else:
+                        row[method] = "N/A"
                 else:
                     row[method] = "N/A"
             print(f"{name:<30}" + "".join(f"{row[method]:>20}" for method in methods_present))
@@ -580,7 +694,10 @@ class ExperimentAnalyzer:
                     methods.append(method)
 
             if series:
-                box = ax.boxplot(series, labels=labels, patch_artist=True)
+                try:
+                    box = ax.boxplot(series, tick_labels=labels, patch_artist=True)
+                except TypeError:
+                    box = ax.boxplot(series, labels=labels, patch_artist=True)
                 for patch, method in zip(box['boxes'], methods):
                     patch.set_facecolor(self.COLORS[method])
                     patch.set_alpha(0.7)
@@ -742,7 +859,8 @@ class ExperimentAnalyzer:
         ax.axhline(y=0.5, color='red', linestyle='--', alpha=0.5, label='0.5m')
         ax.axhline(y=self.safety_min_dist, color='orange', linestyle='-.', alpha=0.6,
                    label=f'safety_min={self.safety_min_dist:.2f}m')
-        ax.axhline(y=0.05, color='black', linestyle=':', alpha=0.5, label='0.05m')
+        ax.axhline(y=self.collision_dist, color='black', linestyle=':', alpha=0.5,
+                   label=f'collision={self.collision_dist:.2f}m')
         ax.set_title('Nearest Obstacle Distance')
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Distance (m)')
@@ -778,6 +896,9 @@ class ExperimentAnalyzer:
         for method, rows in results.items():
             if not rows:
                 continue
+            metric_mean = lambda key, default=np.nan: self._finite_mean(
+                [row.get(key, default) for row in rows]
+            )
             summary['methods'][method] = {
                 'count': len(rows),
                 'success_rate': float(np.mean([row['goal_reached'] for row in rows])),
@@ -791,24 +912,20 @@ class ExperimentAnalyzer:
                 'likely_safety_hold_trap_rate': float(
                     np.mean([row.get('likely_safety_hold_trap', False) for row in rows])
                 ),
-                'max_x_mean': float(np.mean([row['max_x'] for row in rows])),
-                'tcr_at_1_mean': float(np.nanmean([row.get('tcr_at_1', np.nan) for row in rows])),
-                'tcr_at_2_mean': float(np.nanmean([row.get('tcr_at_2', np.nan) for row in rows])),
-                'tcr_at_5_mean': float(np.nanmean([row.get('tcr_at_5', np.nan) for row in rows])),
-                'min_obstacle_dist_mean': float(np.mean([row['min_obstacle_dist'] for row in rows])),
-                'monitored_min_obstacle_dist_mean': float(
-                    np.nanmean([row.get('monitored_min_obstacle_dist', np.nan) for row in rows])
-                ),
-                'pct_close_safety_min_mean': float(
-                    np.mean([row.get('pct_close_safety_min', 0.0) for row in rows])
-                ),
-                'last_dx_10s_mean': float(np.mean([row.get('last_dx_10s', 0.0) for row in rows])),
-                'last_speed_10s_mean': float(np.mean([row.get('last_speed_10s', 0.0) for row in rows])),
-                'avg_speed_mean': float(np.mean([row['avg_speed'] for row in rows])),
+                'max_x_mean': metric_mean('max_x'),
+                'tcr_at_1_mean': metric_mean('tcr_at_1'),
+                'tcr_at_2_mean': metric_mean('tcr_at_2'),
+                'tcr_at_5_mean': metric_mean('tcr_at_5'),
+                'min_obstacle_dist_mean': metric_mean('min_obstacle_dist'),
+                'monitored_min_obstacle_dist_mean': metric_mean('monitored_min_obstacle_dist'),
+                'pct_close_safety_min_mean': metric_mean('pct_close_safety_min'),
+                'last_dx_10s_mean': metric_mean('last_dx_10s', 0.0),
+                'last_speed_10s_mean': metric_mean('last_speed_10s', 0.0),
+                'avg_speed_mean': metric_mean('avg_speed'),
             }
         path = os.path.join(self.output_dir, 'summary.json')
         with open(path, 'w', encoding='utf-8') as handle:
-            json.dump(summary, handle, indent=2)
+            json.dump(self._json_safe(summary), handle, indent=2, allow_nan=False)
         print(f"Summary saved: {path}")
 
     def export_render_results(self, batch_config, results):
@@ -859,13 +976,15 @@ class ExperimentAnalyzer:
                 })
         path = os.path.join(self.output_dir, 'compare_results_ros1.json')
         with open(path, 'w', encoding='utf-8') as handle:
-            json.dump(payload, handle, indent=2)
+            json.dump(self._json_safe(payload), handle, indent=2, allow_nan=False)
         print(f"Render-compatible JSON saved: {path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze ROS1 tunnel experiment data')
-    parser.add_argument('--data-dir', required=True,
+    parser.add_argument('data_dir_pos', nargs='?',
+                        help='Flat run directory or batch output root')
+    parser.add_argument('--data-dir', default=None,
                         help='Flat run directory or batch output root')
     parser.add_argument('--output-dir', default=None)
     parser.add_argument('--pcd-file', default=None,
@@ -873,9 +992,12 @@ def main():
     parser.add_argument('--safety-min-dist', type=float, default=None,
                         help='Override safety_min_dist for trap metrics')
     args = parser.parse_args()
+    data_dir = args.data_dir or args.data_dir_pos
+    if not data_dir:
+        parser.error('the following arguments are required: --data-dir or data_dir')
 
     analyzer = ExperimentAnalyzer(
-        args.data_dir,
+        data_dir,
         args.output_dir,
         args.pcd_file,
         safety_min_dist=args.safety_min_dist,
