@@ -1,283 +1,595 @@
-## SRLC模型真实无人机部署实验 设计稿
+# SRLC 足球无人机 + 动捕真机部署手册
 
-目标：实现真实ROS环境下已经训练好的模型推理和用户输入结合的共享控制，并通过加载真实地图构建真机运行环境，
-进行dry-run以确认此套部署方案可以无缝迁移到真实无人机实验
+本文是当前真机实验的唯一部署说明。旧版“机载电脑运行 SRLC、使用 `/mavros/local_position/odom` 作为状态”的方案已经废弃。
 
-## 范围
+当前真实实验设定：
 
-- 模型：使用经过ConstrainedResidualPPO训练完成的权重（对应训练中的实验SharedRLControl/isaac-training/experiments/04_tunnel_task），动作网络使用Beta分布
-    - 权重文件位置：/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/ros1/navigation_runner/cfg/ckpts/checkpoint_tunnel_M3_21500.pt
+- **推理电脑**：`192.168.31.xx`，运行 Docker，容器使用 `--net=host`。
+- **足球无人机/机载芯片**：`192.168.31.155`，只负责 PX4/MAVROS 数传链路，接收速度 setpoint。
+- **ROS 节点位置**：MAVROS、nokov bridge、SRLC 推理、PCD map LiDAR、RViz/recorder 均运行在推理电脑 Docker 容器内。
+- **定位来源**：只使用 nokov 输出的 `/nokov/local_position/odom` 和 `/nokov/imu/data`；SRLC 不使用 `/mavros/local_position/odom`。
+- **控制输出**：SRLC 只向 MAVROS 发布 `/mavros/setpoint_raw/local` 速度 setpoint。
+- **assist 开关**：确认使用 `/mavros/rc/in` 的 **遥控器通道 9**。
+- **急停/信号切断**：由无人机硬件、遥控器杆位和 PX4 failsafe 负责；SRLC 不再发布 `/experiment_control/stop`，也不主动请求 `AUTO.LOITER`/`POSCTL`/`AUTO.LAND`。
 
-- 地图：使用/home/haoming/wht/IsaacLab_drones_5.1/SharedRLControl/ros1/real_maps/merged中的真实地图pcd文件，pcd地图已经经过下采样为ascii编码，
-但可能仍然需要进一步处理（如去除中心范围外的噪声等）
-
-- 无人机控制器：使用marvos px4控制器（速度控制模式），在接入真实遥控器信号前，使用键盘输入来模拟所有遥控信号
-
-- 激光雷达：使用模拟数据，即根据无人机定位信息和真实pcd地图，生成激光雷达扫描点云信号，部署到真机时，无人机实时定位数据将由一套动作捕捉系统提供。
-    - dry-run时，无人机位置信息需要对齐，但我不清楚对齐方式，给我一套合理的方案
-
-## 在当前仓库中有实现，但不要考虑的范围
-
-- 其他类型的模型结构，以及使用Usermodel数据集代替人类输入的控制
-- 安全围栏（safety_mode）机制的接入
-- IPC控制算法的接入 
-
-## 实验设计
-
-- 地图大小：仅包含中央约6*6*5m的矩形区域，忽略外部的非动作捕捉区域，为无人机的速度控制添加限制，如果位置超出边界，立刻刹车悬停
-    - 因为高度限制低于训练和仿真测试，无人机起飞高度修改为2m，考虑到此不一致性对模型的影响，应加入一个配置，开启后可禁止所有z轴控制（保持高度平飞）
-
-- 用户输入：默认情况下，起飞后测试员输入向起飞朝向前进的指令（将此方向对齐为模型推理时接受输入坐标系的x方向），
-可能伴随小幅度的y方向指令抖动，观察无人机能否绕过真实地图前方的障碍物（严格按照指令速度控制将会碰撞）。
-
-- 共享控制切换需求：
-    1）起飞后才能接通共享控制的介入
-    2）飞行过程中，可以通过特定频道的遥控信号打开和关闭共享控制模型的介入
-    3）输入死区：接受到遥控信号的量过小时，阻止共享控制模型的介入，保持无人机悬停指令
-    4）紧急停止按钮：提供一行指令允许立刻终止所有控制并自动降落
-
-- 实验过程设想：
-    - 发送无人机起飞指令
-    - 不开启共享控制，操作员控制无人机穿越障碍，如果发生碰撞（无人机使用球形桨叶保护，真实障碍物为软体），紧急停止并记录结果
-    - 重新起飞（从同一起飞点）
-    - 操作员确认起飞后，开启共享控制模式，然后进行相同的输入操作，记录结果
-
-## 可视化
-
-- 在dry-run和真实部署时，可以在rivz中看到可视化数据，包括：地图点云、无人机位置、激光雷达射线
-
-## 第一阶段 dry-run 入口
-
-当前第一阶段使用 fake MAVROS 和 fake odom，但接入真实 PCD 地图数据：
-
-```bash
-roslaunch navigation_runner tunnel_dry_run_px4.launch \
-    mode:=fake_mavros \
-    pcd_file:="$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
-    rviz:=true
-```
-
-默认链路为：`mavros_fake_node.py` 发布 `/mavros/state`、MAVROS 服务和 `/mavros/local_position/odom`，`srlc_fake_rc_node.py` 发布 `/mavros/rc/in`，`rc_input_node.py` 转换为 `/srlc/human_action` 与 `/srlc/assist_enable`，`map_lidar_node.py` 用真实 PCD + fake odom 生成 `/srlc/lidar/range_image`，`tunnel_navigation.py` 加载策略并向 `/mavros/setpoint_raw/local` 输出速度/锁高 setpoint。
-
-常用调参项：
-
-- `map_origin_x/y/z`、`map_yaw_deg`：把 fake local ENU 起飞点对齐到 PCD 地图。
-- `fake_forward_stick`、`fake_lateral_stick`：模拟测试员前进和小幅横向扰动。
-- `assist_input_deadzone_norm`：输入过小时保持悬停，不执行共享控制输出。
-- `lock_z_control:=true`、`takeoff_height:=2.0`：禁用 z 轴共享控制并保持 2m 平飞。
-- `geofence_x_min/max`、`geofence_y_min/max`、`min_altitude`、`max_altitude`：dry-run 边界保护。
-
-真实 merged map 的默认 dry-run 裁剪图由以下命令生成：
-
-```bash
-rosrun navigation_runner crop_real_pcd_map.py \
-    --input "$(rospack find navigation_runner)/cfg/real_maps/merged/real_map_merged_ascii.pcd" \
-    --output "$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
-    --center 0 0 2 \
-    --size 6 6 5
-```
-
-启动前可先离线检查 PCD、raycast shape、checkpoint 和 launch XML：
-
-```bash
-rosrun navigation_runner srlc_dry_run_smoke_check.py \
-    --pcd-file "$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
-    --checkpoint "$(rospack find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt" \
-    --launch-file "$(rospack find navigation_runner)/launch/tunnel_dry_run_px4.launch" \
-    --device cpu
-```
-
-## 真机部署入口：机载电脑 + nokov + MAVROS/PX4
-
-当前真机目标链路如下：
+## 1. 当前 ROS 数据链路
 
 ```text
-nokov/VRPN -> nokov_uav/nokov_node
-  -> /mavros/vision_pose/pose
-  -> /mavros/local_position/odom  ─┬─ map_lidar_node.py -> /srlc/lidar/range_image
-                                  └─ tunnel_navigation.py state
+推理电脑 Docker(--net=host)
 
-PX4/MAVROS -> /mavros/rc/in -> rc_input_node.py
-  -> /srlc/human_action
-  -> /srlc/assist_enable
-  -> /experiment_control/stop
+NOKOV / VRPN
+  -> nokov_uav/sample.launch
+  -> /nokov/local_position/odom   ─┬─ map_lidar_node.py
+  -> /nokov/imu/data               │    -> /srlc/lidar/range_image
+                                   │    -> /srlc/lidar/min_distance
+                                   └─ tunnel_navigation.py state
+
+MAVROS over LAN
+  -> /mavros/state
+  -> /mavros/rc/in
+       └─ rc_input_node.py
+            -> /srlc/human_action
+            -> /srlc/assist_enable
+            -> /srlc/rc_status
 
 tunnel_navigation.py
-  -> /mavros/setpoint_raw/local  (PX4 OFFBOARD velocity setpoint)
+  <- /srlc/lidar/range_image
+  <- /srlc/human_action
+  <- /srlc/assist_enable
+  -> /mavros/setpoint_raw/local
+  -> /tunnel_nav/status
+  -> /tunnel_nav/policy_active
 ```
 
-`nokov_ws/src/nokov_uav/src/nokov.cpp` 的默认话题已经与 SRLC 对齐：
+关键约束：
 
-- 输入：`/vrpn_client_node/soccer/pose`、`/vrpn_client_node/soccer/twist`、`/vrpn_client_node/soccer/accel`
-- 输出给 MAVROS/PX4 external vision：`/mavros/vision_pose/pose`
-- 输出给 SRLC/map LiDAR：`/mavros/local_position/odom`
-- 输出 IMU：`/mavros/imu/data`
+1. `/nokov/local_position/odom` 是 SRLC、map LiDAR 和 RViz 对齐显示的唯一真实状态源。
+2. `/mavros/local_position/odom` 即使存在也只作为 PX4/MAVROS 回报，不参与 SRLC 状态估计。
+3. `tunnel_real_px4.launch` 不解锁、不起飞、不切 OFFBOARD；这些都由飞手、地面站或既有 PX4 流程完成。
+4. assist 关闭、输入死区、未进入 OFFBOARD、越界、定位/LiDAR/RC 超时都会使 SRLC 发布零速度/锁高 setpoint，并让 `/tunnel_nav/policy_active=False`。
 
-### 真机理论步骤
+## 2. 代码侧默认配置
 
-以下步骤应在机载电脑上执行，开发机没有 MAVROS/PX4 环境时只做代码和参数准备。
+真机入口：
 
-1. 配置 ROS 网络，避免 hostname 自连失败：
+```bash
+roslaunch navigation_runner tunnel_real_px4.launch ...
+```
 
-   ```bash
-   export ROS_MASTER_URI=http://127.0.0.1:11311
-   export ROS_HOSTNAME=127.0.0.1
-   export ROS_IP=127.0.0.1
-   ```
+当前默认已经对齐真机设定：
 
-   多机 ROS 时，把 `ROS_MASTER_URI`、`ROS_IP` 改为机载电脑实际 IP，并确认 `ping` 和 `rostopic list` 双向可用。
+| 项目 | 当前默认 |
+| --- | --- |
+| odom | `/nokov/local_position/odom` |
+| RC | `/mavros/rc/in` |
+| assist 通道 | CH9 |
+| setpoint | `/mavros/setpoint_raw/local` |
+| 自动 arm | `false` |
+| 自动 OFFBOARD | `false` |
+| 要求 OFFBOARD 后才允许策略介入 | `true` |
+| SRLC 外部 stop topic | 关闭 |
+| SRLC 请求 PX4 hold/land | 关闭 |
+| 起飞/平飞高度 | `2.0m` |
+| z 轴共享控制 | `lock_z_control=true` |
+| 默认水平边界 | `x,y ∈ [-3, 3]m` |
+| 默认高度边界 | `z ∈ [0.5, 5.0]m` |
 
-2. source 所有工作空间：
+相关文件：
 
-   ```bash
-   source /opt/ros/noetic/setup.bash
-   source ~/nokov_ws/devel/setup.bash
-   source ~/catkin_ws/devel/setup.bash
-   ```
+- `launch/tunnel_real_px4.launch`
+- `cfg/tunnel/tunnel_nav_real_px4.yaml`
+- `cfg/tunnel/rc_input_real_px4.yaml`
+- `cfg/tunnel/map_lidar_real_px4.yaml`
+- `scripts/rc_input_node.py`
+- `scripts/tunnel_navigation.py`
+- `scripts/srlc_dry_run_recorder.py`
 
-   如果仓库路径保持为 `SharedRLControl/ros1`，则 `navigation_runner` 应位于机载 `catkin_ws/src`，`nokov_ws` 单独编译。
+## 3. 推理电脑 Docker 启动方式
 
-3. 启动 MAVROS 连接 PX4。若已经由系统服务启动，则跳过；否则先单独启动 MAVROS：
+推荐容器使用 host 网络，否则 MAVROS、nokov、RViz 和多机 ROS 通信容易被 Docker bridge 隔离。
 
-   ```bash
-   roslaunch mavros px4.launch fcu_url:=/dev/ttyACM0:921600
-   ```
+```bash
+docker run --rm -it \
+  --net=host \
+  --ipc=host \
+  --shm-size=2g \
+  -e ROS_MASTER_URI=http://127.0.0.1:11311 \
+  -e ROS_IP=<推理电脑局域网IP> \
+  -e ROS_HOSTNAME=<推理电脑局域网IP> \
+  -v /path/to/SharedRLControl:/root/SharedRLControl \
+  tunnel_comparison:20260415-ipcfix-cpu \
+  bash
+```
 
-   也可以在第 5 步用 `start_mavros:=true` 让 SRLC launch 代为 include MAVROS，但不要两边重复启动。确认：
+如果在同一个容器内启动所有节点，也可以把 ROS master 固定为本机回环：
 
-   ```bash
-   rostopic echo -n 1 /mavros/state
-   rostopic echo -n 1 /mavros/rc/in
-   ```
+```bash
+export ROS_MASTER_URI=http://127.0.0.1:11311
+export ROS_IP=127.0.0.1
+export ROS_HOSTNAME=127.0.0.1
+```
 
-4. 启动 nokov/VRPN 定位桥：
+如果 RViz 或其他电脑需要跨主机访问 ROS topic，则使用推理电脑局域网 IP：
 
-   ```bash
-   roslaunch vrpn_client_ros sample.launch server:=<NOKOV_SERVER_IP>
-   ```
+```bash
+export ROS_MASTER_URI=http://<推理电脑IP>:11311
+export ROS_IP=<推理电脑IP>
+unset ROS_HOSTNAME
+```
 
-   该 launch 会启动 `vrpn_client_node` 和 `nokov_node`。确认：
+## 4. 容器内 workspace 准备
 
-   ```bash
-   rostopic hz /vrpn_client_node/soccer/pose
-   rostopic hz /mavros/local_position/odom
-   rostopic echo -n 1 /mavros/local_position/odom
-   ```
+每个终端都先 source：
 
-   理论要求：无人机位姿和速度在 `map` frame 下连续、低延迟、无跳变；起飞点附近 odom 可视为 local ENU 原点或通过 `map_origin_x/y/z` 对齐到 PCD 地图起飞点。
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/nokov_ws/devel/setup.bash
+source ~/catkin_ws/devel/setup.bash
+```
 
-5. 启动 SRLC 真机部署链路：
+如果 `navigation_runner` 来自当前仓库：
 
-   ```bash
-   roslaunch navigation_runner tunnel_real_px4.launch \
-       start_mavros:=false \
-       pcd_file:="$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
-       checkpoint:="$(rospack find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt" \
-       takeoff_height:=2.0 \
-       lock_z_control:=true \
-       rviz:=true \
-       record:=true
-   ```
+```bash
+cd /root/SharedRLControl/ros1
+catkin_make -DCMAKE_BUILD_TYPE=Release \
+            -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+source devel/setup.bash
+```
 
-   默认真机话题：
+确认包可见：
 
-   | 功能 | 默认话题 |
-   | --- | --- |
-   | nokov odom | `/mavros/local_position/odom` |
-   | PX4 RC 输入 | `/mavros/rc/in` |
-   | human action | `/srlc/human_action` |
-   | assist 开关 | `/srlc/assist_enable` |
-   | LiDAR range image | `/srlc/lidar/range_image` |
-   | PX4 速度 setpoint | `/mavros/setpoint_raw/local` |
-   | 记录输出 | `output_dir`，默认 `/tmp/srlc_real` |
+```bash
+rospack find navigation_runner
+rospack find nokov_uav
+rospack find mavros
+```
 
-### 起飞与 PX4 遥控器切换流程
+## 5. 启动顺序
 
-SRLC 真机配置默认 **不会自动 arm，也不会自动切 OFFBOARD**：
+建议使用 4 个终端，均在推理电脑 Docker 容器内执行。
 
-- `auto_arm=false`
-- `auto_offboard=false`
-- `hold_on_stop=true`
+### 5.1 终端 A：ROS master
+
+```bash
+source /opt/ros/noetic/setup.bash
+roscore
+```
+
+如果后续第一个 `roslaunch` 自动启动了 roscore，也可以不单独开此终端；但真机实验建议显式启动，便于排查。
+
+### 5.2 终端 B：MAVROS 连接足球无人机
+
+默认按 LAN UDP 连接机载地址 `192.168.31.155`：
+
+```bash
+source /opt/ros/noetic/setup.bash
+roslaunch mavros px4.launch \
+  fcu_url:=udp://:14540@192.168.31.155:14557 \
+  gcs_url:=
+```
+
+如果实验现场已有固定 MAVROS launch 文件，使用现场 launch，但必须保证以下 topic 可用：
+
+```bash
+rostopic echo -n 1 /mavros/state
+rostopic echo -n 1 /mavros/rc/in
+rostopic info /mavros/setpoint_raw/local
+```
+
+期望：
+
+- `/mavros/state.connected=True`
+- `/mavros/rc/in` 能看到遥控器通道 PWM
+- `/mavros/setpoint_raw/local` 有 subscriber，即 MAVROS 正在接收 raw setpoint
+
+### 5.3 终端 C：nokov 动捕 bridge
+
+当前 nokov 源码发布的话题为：
+
+```cpp
+pub_imu  = nh.advertise<sensor_msgs::Imu>("nokov/imu/data", 1);
+pub_odom = nh.advertise<nav_msgs::Odometry>("nokov/local_position/odom", 1);
+```
+
+启动：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/nokov_ws/devel/setup.bash
+roslaunch nokov_uav sample.launch
+```
+
+确认：
+
+```bash
+rostopic hz /nokov/local_position/odom
+rostopic echo -n 1 /nokov/local_position/odom
+rostopic hz /nokov/imu/data
+```
+
+要求：
+
+- odom frame 与场地 local/map 坐标一致，位置连续、低延迟、无跳变。
+- 起飞点附近的 z 与实际高度一致。
+- yaw 朝向与实验前进方向可通过 `map_yaw_deg` 和 `map_origin_x/y/z` 对齐。
+
+### 5.4 终端 D：SRLC 真机链路
+
+无 RViz 的飞行版：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/nokov_ws/devel/setup.bash
+source ~/catkin_ws/devel/setup.bash
+
+roslaunch navigation_runner tunnel_real_px4.launch \
+  start_mavros:=false \
+  rviz:=false \
+  record:=true \
+  takeoff_height:=2.0 \
+  lock_z_control:=true \
+  odom_topic:=/nokov/local_position/odom \
+  rc_topic:=/mavros/rc/in \
+  setpoint_raw_topic:=/mavros/setpoint_raw/local
+```
+
+需要在推理电脑上看 RViz：
+
+```bash
+roslaunch navigation_runner tunnel_real_px4.launch \
+  start_mavros:=false \
+  rviz:=true \
+  record:=true \
+  odom_topic:=/nokov/local_position/odom
+```
+
+如需让该 launch 同时启动 MAVROS，可显式打开：
+
+```bash
+roslaunch navigation_runner tunnel_real_px4.launch \
+  start_mavros:=true \
+  fcu_url:=udp://:14540@192.168.31.155:14557 \
+  rviz:=false \
+  record:=true
+```
+
+不要同时在其他终端重复启动 MAVROS。
+
+## 6. 起飞、OFFBOARD 与 assist 流程
+
+`tunnel_real_px4.launch` 启动后：
+
+- **不会自动起飞**
+- **不会自动解锁**
+- **不会自动切 OFFBOARD**
+- **不需要命令行向 SRLC 发送起飞指令**
 
 推荐流程：
 
-1. 起飞前保持 SRLC assist 开关关闭，estop/reset 通道按 `cfg/tunnel/rc_input_real_px4.yaml` 标定。
-2. 用 PX4 遥控器或地面站按原流程解锁、起飞并稳定到约 `2m`。
-3. 确认 `/mavros/local_position/odom`、`/srlc/lidar/range_image`、`/srlc/human_action` 都在更新。
-4. 在 PX4 允许 OFFBOARD 的前提下切入 OFFBOARD/外部速度控制模式；SRLC 在 assist 关闭时只发布零 setpoint，不主动请求 LOITER，飞手仍可保持 PX4 遥控器控制。
-5. 打开 assist 开关后，`rc_input_node.py` 发布 `/srlc/assist_enable=True`；当摇杆输入幅值超过 `assist_input_deadzone_norm` 后，模型输出才会写入 `/mavros/setpoint_raw/local`。
-6. 关闭 assist 开关会回到飞手控制；estop 通道或 `/experiment_control/stop=True` 会触发 SRLC 请求 `AUTO.LOITER`，失败时尝试 `POSCTL` fallback，并持续输出零速度。
+1. 保持 CH9 assist 关闭。
+2. 启动 MAVROS、nokov、SRLC。
+3. 检查 `/tunnel_nav/status`，确认不是 `NO_ODOM`、`NO_LIDAR`、`MAVROS_NOT_CONNECTED`、`NO_RC_ACTION`。
+4. 由飞手/地面站按现场流程解锁并起飞到约 `2m`。
+5. 飞手或地面站按现场流程切入 OFFBOARD/外部速度控制。
+6. 确认 `/mavros/state.mode` 为 `OFFBOARD`。
+7. 打开遥控器 CH9 assist。
+8. 摇杆输入超过 `assist_input_deadzone_norm` 后，SRLC 策略才会介入并发布非零速度 setpoint。
+9. 关闭 CH9 assist 后，SRLC 立即回到零速度/锁高 setpoint，`/tunnel_nav/policy_active=False`。
 
-### 上机前检查清单
+## 7. 无输入/idle 状态确认
 
-1. **RC 通道标定**：检查 `cfg/tunnel/rc_input_real_px4.yaml` 中 `forward_channel`、`lateral_channel`、`vertical_channel`、`assist_channel`、`estop_channel`、`reset_channel` 与真实遥控器一致。用：
+启动 SRLC 后、assist 关闭或摇杆处于死区时，无人机不应受到模型前进指令影响。
 
-   ```bash
-   rostopic echo -n 1 /mavros/rc/in
-   rostopic echo /srlc/rc_status
-   ```
+检查命令：
 
-2. **坐标对齐**：RViz 中 `/real_map/cloud`、`/srlc/alignment/odom_map`、`/srlc/lidar/raycast_points` 必须重合。若起飞点不在 PCD 期望位置，调 `map_origin_x/y/z`；若前进方向不对，调 `map_yaw_deg`。
-3. **高度策略**：默认 `takeoff_height=2.0`、`lock_z_control=true`、`height_control=false`，即共享控制只负责 x/y，PX4/定位系统保持高度。
-4. **边界保护**：默认 geofence 是 local ENU `x,y ∈ [-3,3]`、`z ∈ [0.5,5.0]`。越界会停止共享控制输出并请求 hold。
-5. **速度限制**：默认 `max_xy_speed_real=1.0`、`max_z_speed_real=0.3`。首次真机建议进一步降低 `max_xy_speed_real:=0.3~0.5`。
-6. **OFFBOARD setpoint 方向**：无桨或架高测试时，轻推前进摇杆，确认 `/mavros/setpoint_raw/local/velocity.x` 与期望前进方向一致，再上桨。
-7. **记录文件**：每次实验后检查 `/tmp/srlc_real/*.json`，确认 `assist_enabled`、`human_action`、`policy_cmd`、`setpoint_velocity`、`min_distance` 和 `front_distance` 被记录。
-
-## 足球无人机+动捕真机部署文档修订
-
-# 注意：需要按照下面的真机实验部署限制，修订本文档中（包括前文内容）的过时内容，重新给出并修复桥接代码
-
-要求：
-- 所有ros节点在推理电脑（Docker容器）上运行，足球无人机机载芯片仅具有和mavros的数传功能，通过推理电脑与其连接到同一局域网来通信
-
-网络环境：
-推理机：192.168.31.xx（宿主机网络，docker 容器使用host模式以便和无人机通信）
-机载：192.168.31.155
-
-MAVROS启动：需要使用下面的launch文件：
-
-nokov：推理机终端启动
-
-注意：nokov部署的源代码已经改变，其中话题名称变为：
-pub_imu = nh.advertise<sensor_msgs::Imu>("nokov/imu/data", 1);
-pub_odom = nh.advertise<nav_msgs::Odometry>("nokov/local_position/odom", 1);
-无人机定位以nokov话题为准，不采用mavros回报的话题。
-
-启动命令：
-```
- source /opt/ros/noetic/setup.bash
- source ~/nokov_ws/devel/setup.bash
- 
- roslaunch nokov_uav sample.launch
+```bash
+rostopic echo /srlc/assist_enable
+rostopic echo /srlc/rc_status
+rostopic echo /tunnel_nav/policy_active
+rostopic echo /tunnel_nav/status
+rostopic echo /mavros/setpoint_raw/local
 ```
 
-启动 SRLC：
+期望：
 
- roslaunch navigation_runner tunnel_real_px4.launch \
-   start_mavros:=false \
-   rviz:=false \
-   record:=true \
-   takeoff_height:=2.0 \
-   lock_z_control:=true \
-   odom_topic:=/mavros/local_position/odom \
-   rc_topic:=/mavros/rc/in \
-   setpoint_raw_topic:=/mavros/setpoint_raw/local
+- `/srlc/assist_enable=False`
+- `/tunnel_nav/policy_active=False`
+- `/tunnel_nav/status` 显示 `ASSIST_DISABLED`、`INPUT_DEADZONE` 或 `PX4_NOT_OFFBOARD`
+- `/mavros/setpoint_raw/local` 的 `velocity.x/y` 为 0
+- 没有默认前进速度；真实部署不启动 fake RC，也不启用 user_model 输入
 
-如果要在推理电脑上看 RViz：
+## 8. assist 是否生效的确认方法
 
- roslaunch navigation_runner tunnel_real_px4.launch \
-   start_mavros:=false \
-   rviz:=true \
-   record:=true
+### 8.1 RC bridge 层
 
+```bash
+rostopic echo /srlc/assist_enable
+rostopic echo /srlc/rc_status
+```
 
-[重要]对SRLC可迁移确认的额外要求：
-- scripts/rc_input_node.py：现在确认使用/mavros/rc/in中的频道9输入作为遥控器切换assist是否生效的信号，检查目前实现使用什么信号，如果不一致对齐到ch9,
-- 紧急停止问题：从目前的脚本实现中去除紧急停止的功能实现，无人机硬件上已经支持通过特定遥控器杆位实现信号切断和offboard failsafe，因此无需srlc节点外部干预。
-    在文档中给出以下确认：
-    - tunnel_real_px4.launch 后，无人机是否会自动起飞，是否需要遥控器信号输入或命令行指令起飞
-    - 起飞后无输入时，无人机的idle状态确认（注意确定无人机不会受到模型推理指令影响，也不会默认输入前进的速度信号）
-    - 如何从命令行（或其他方式）确认assist模式是否处于生效状态（飞触及设定地图边界时应该自动退出）
-    - 如果无人机从外部切断信号，如何确认。
+CH9 高电平且 RC 新鲜时：
 
+```text
+/srlc/assist_enable: True
+/srlc/rc_status: "ASSIST vx=... vy=... vz=... assist_ch=9 ..."
+```
+
+CH9 关闭或 RC 超时时：
+
+```text
+/srlc/assist_enable: False
+/srlc/rc_status: "DIRECT ..." 或 "RC_TIMEOUT"
+```
+
+### 8.2 策略层
+
+```bash
+rostopic echo /tunnel_nav/policy_active
+rostopic echo /tunnel_nav/status
+rostopic echo /tunnel_nav/policy_cmd
+```
+
+只有同时满足以下条件，`policy_active` 才应为 `True`：
+
+1. MAVROS connected。
+2. PX4 mode 为 `OFFBOARD`。
+3. nokov odom 新鲜。
+4. PCD LiDAR range image 新鲜。
+5. CH9 assist 开启。
+6. 摇杆输入超过死区。
+7. 没有越界、低/高高度、碰撞/近障碍停止。
+
+如果触及地图边界，`/tunnel_nav/status` 会显示 `GEOFENCE_X` 或 `GEOFENCE_Y`，`/tunnel_nav/policy_active=False`，最终 setpoint 为零速度/锁高；这就是 SRLC 的“自动退出 assist 输出”。CH9 的物理开关状态不会被软件改写，飞手应关闭 CH9 或切回手动/POSCTL。
+
+## 9. 外部切断信号如何确认
+
+硬件遥控器/PX4 failsafe 切断后，SRLC 不主动请求模式切换，但可以从 ROS 侧确认系统已经不再处于可介入状态。
+
+检查：
+
+```bash
+rostopic echo /mavros/state
+rostopic echo /mavros/rc/in
+rostopic echo /srlc/rc_status
+rostopic echo /srlc/assist_enable
+rostopic echo /tunnel_nav/status
+rostopic echo /tunnel_nav/policy_active
+```
+
+常见确认信号：
+
+- RC 断开：`/srlc/rc_status=RC_TIMEOUT`，`/srlc/assist_enable=False`，`/tunnel_nav/status` 通常回到 `ASSIST_DISABLED`。
+- MAVROS 断开：`/tunnel_nav/status` 出现 `MAVROS_NOT_CONNECTED`。
+- PX4 退出 OFFBOARD：`/mavros/state.mode` 不再是 `OFFBOARD`，`/tunnel_nav/status=PX4_NOT_OFFBOARD`。
+- SRLC 策略退出：`/tunnel_nav/policy_active=False`，`/mavros/setpoint_raw/local` 速度为 0。
+
+## 10. PCD 地图与坐标对齐
+
+默认地图：
+
+```text
+$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd
+```
+
+该地图来自真实 merged PCD 的中心 `6m x 6m x 5m` 裁剪。重新生成：
+
+```bash
+rosrun navigation_runner crop_real_pcd_map.py \
+  --input "$(rospack find navigation_runner)/cfg/real_maps/merged/real_map_merged_ascii.pcd" \
+  --output "$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
+  --center 0 0 2 \
+  --size 6 6 5
+```
+
+对齐参数：
+
+```bash
+map_origin_x:=0.0
+map_origin_y:=0.0
+map_origin_z:=0.0
+map_yaw_deg:=0.0
+```
+
+含义：
+
+- `map_origin_*`：把 nokov/local odom 原点平移到 PCD 地图中的起飞点。
+- `map_yaw_deg`：把无人机起飞朝向/实验前进方向对齐到 PCD 地图障碍方向。
+
+RViz 中必须同时检查：
+
+```bash
+/real_map/cloud
+/srlc/alignment/odom_map
+/srlc/alignment/markers
+/srlc/lidar/raycast_points
+```
+
+验收标准：
+
+1. 起飞点处无人机 marker 与 PCD 中实际起飞位置重合。
+2. 无人机前进方向 marker 指向实验障碍方向。
+3. `/srlc/lidar/raycast_points` 与 PCD 障碍表面相交合理。
+4. 推动前进输入时，`/srlc/lidar/min_distance` 与前方障碍距离变化一致。
+
+## 11. 飞行前检查清单
+
+### 11.1 网络
+
+```bash
+ping 192.168.31.155
+rostopic list | grep -E 'mavros|nokov|srlc|tunnel_nav'
+```
+
+### 11.2 MAVROS
+
+```bash
+rostopic echo -n 1 /mavros/state
+rostopic hz /mavros/rc/in
+rostopic info /mavros/setpoint_raw/local
+```
+
+### 11.3 nokov
+
+```bash
+rostopic hz /nokov/local_position/odom
+rostopic echo -n 1 /nokov/local_position/odom
+```
+
+不要用以下 topic 判断 SRLC 状态：
+
+```bash
+/mavros/local_position/odom
+```
+
+### 11.4 RC CH9
+
+```bash
+rostopic echo /mavros/rc/in
+rostopic echo /srlc/assist_enable
+rostopic echo /srlc/rc_status
+```
+
+拨动 CH9，确认 `/srlc/assist_enable` 跟随变化。
+
+### 11.5 SRLC gate
+
+```bash
+rostopic echo /tunnel_nav/status
+rostopic echo /tunnel_nav/policy_active
+rostopic echo /mavros/setpoint_raw/local
+```
+
+起飞前或未 OFFBOARD 时应看到 `PX4_NOT_OFFBOARD` 或 `ASSIST_DISABLED`，且速度为 0。
+
+### 11.6 速度方向
+
+首次上桨前建议无桨或架高测试：
+
+1. 切 OFFBOARD。
+2. 打开 CH9 assist。
+3. 轻推前进摇杆。
+4. 确认 `/mavros/setpoint_raw/local.velocity.x/y` 与 RViz 中期望前进方向一致。
+
+## 12. 记录与数据检查
+
+`tunnel_real_px4.launch record:=true` 会启动 `srlc_dry_run_recorder.py`，默认输出：
+
+```text
+/tmp/srlc_real
+```
+
+记录内容包括：
+
+- nokov odom 位置/速度/yaw
+- 原始 `/mavros/rc/in` PWM
+- `/srlc/assist_enable`
+- `/srlc/human_action`
+- `/tunnel_nav/policy_cmd`
+- `/mavros/setpoint_raw/local`
+- `/srlc/lidar/min_distance`
+- 前向 LiDAR 距离估计
+- `/tunnel_nav/status`
+
+实验后检查：
+
+```bash
+ls -lh /tmp/srlc_real
+python3 -m json.tool /tmp/srlc_real/<run_id>_*.json | sed -n '1,80p'
+```
+
+## 13. 软件 dry-run 入口
+
+无真实无人机/MAVROS/nokov 时，可用 fake MAVROS + fake odom + 真实 PCD 进行端到端软件 dry-run：
+
+```bash
+roslaunch navigation_runner tunnel_dry_run_px4.launch \
+  mode:=fake_mavros \
+  pcd_file:="$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
+  rviz:=true \
+  record:=true
+```
+
+该模式仅用于验证：
+
+- 模型 checkpoint 可加载
+- fake RC CH9 assist 可触发
+- PCD raycast LiDAR 正常
+- geofence/输入死区/锁高逻辑正常
+- `/mavros/setpoint_raw/local` 输出符合预期
+
+离线 smoke check：
+
+```bash
+rosrun navigation_runner srlc_dry_run_smoke_check.py \
+  --pcd-file "$(rospack find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd" \
+  --checkpoint "$(rospack find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt" \
+  --launch-file "$(rospack find navigation_runner)/launch/tunnel_dry_run_px4.launch" \
+  --device cpu
+```
+
+## 14. 常见故障
+
+### `/tunnel_nav/status=NO_ODOM`
+
+SRLC 没收到 `/nokov/local_position/odom`。检查：
+
+```bash
+rostopic hz /nokov/local_position/odom
+rosparam get /tunnel_navigator/odom_topic
+```
+
+### `/tunnel_nav/status=PX4_NOT_OFFBOARD`
+
+MAVROS 已连接，但 PX4 当前不是 OFFBOARD。SRLC 会保持零速度，不执行模型。由飞手/地面站按现场流程切 OFFBOARD。
+
+### `/srlc/assist_enable` 不随遥控器变化
+
+检查 CH9 PWM：
+
+```bash
+rostopic echo /mavros/rc/in
+rosparam get /rc_input_node/assist_channel
+rosparam get /rc_input_node/switch_threshold
+```
+
+默认 CH9 PWM 高于 `1700` 视为 assist 开。
+
+### 边界内却显示 `GEOFENCE_X/Y`
+
+检查 nokov 坐标原点是否与配置边界一致。默认 geofence 是 nokov/local 坐标：
+
+```bash
+rosparam get /tunnel_navigator/geofence_x
+rosparam get /tunnel_navigator/geofence_y
+rostopic echo -n 1 /nokov/local_position/odom
+```
+
+### RViz 地图和无人机不重合
+
+调整：
+
+```bash
+map_origin_x:=...
+map_origin_y:=...
+map_origin_z:=...
+map_yaw_deg:=...
+```
+
+并观察 `/srlc/alignment/markers`。
+
+### MAVROS 连接不上 `192.168.31.155`
+
+确认推理电脑和无人机在同一局域网，防火墙未拦截 UDP，现场 PX4/MAVLink 端口与 `fcu_url` 一致。必要时把 `fcu_url` 改为现场给定的 MAVROS launch 参数。
+
+## 15. 最小验收标准
+
+上机前至少满足：
+
+1. `rostopic hz /nokov/local_position/odom` 稳定。
+2. `rostopic echo /mavros/state` 显示 connected。
+3. CH9 能控制 `/srlc/assist_enable`。
+4. 未 OFFBOARD 或 CH9 关闭时，`/tunnel_nav/policy_active=False` 且 setpoint 速度为 0。
+5. OFFBOARD + CH9 开 + 摇杆超过死区后，`/tunnel_nav/policy_active=True`，`/tunnel_nav/policy_cmd` 和 `/mavros/setpoint_raw/local` 更新。
+6. 触发 geofence 后，`/tunnel_nav/status=GEOFENCE_X/Y`，`policy_active=False`，setpoint 速度为 0。
+7. 关闭遥控器或退出 OFFBOARD 后，`/srlc/rc_status=RC_TIMEOUT` 或 `/tunnel_nav/status` 反映 `PX4_NOT_OFFBOARD`/`MAVROS_NOT_CONNECTED`/`ASSIST_DISABLED`，SRLC 不继续输出模型速度。

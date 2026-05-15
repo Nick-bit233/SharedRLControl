@@ -74,7 +74,7 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
      --num-batches 100 \
-     --output-dir /root/results/batch_1000_for_report_ipc_seed5716 \
+     --output-dir /root/results/batch_1k_REPORT_ipc_seed5716 \
      --methods ipc \
      --master-seed 5716 \
      --runs-per-batch 10 \

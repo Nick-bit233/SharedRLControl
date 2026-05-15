@@ -34,13 +34,17 @@ lock_z_control: true
 takeoff_height: 2.0
 auto_arm: false
 auto_offboard: false
-hold_on_stop: true
+require_offboard: true
+hold_on_stop: false
+enable_external_stop: false
+external_stop_topic: "/experiment_control/stop"
 estop_hold_mode: "AUTO.LOITER"
 estop_fallback_mode: "POSCTL"
 hold_verify_timeout: 1.0
 odom_timeout: 0.3
-# nokov_uav publishes /mavros/local_position/odom from VRPN pose/twist.
-odom_topic: "/mavros/local_position/odom"
+# Current nokov_uav publishes odometry directly on /nokov/local_position/odom.
+# Do not use /mavros/local_position/odom for SRLC state in real deployment.
+odom_topic: "/nokov/local_position/odom"
 setpoint_raw_topic: "/mavros/setpoint_raw/local"
 setpoint_pose_topic: "/mavros/setpoint_position/local"
 

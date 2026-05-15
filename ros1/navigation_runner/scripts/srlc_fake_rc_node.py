@@ -15,7 +15,7 @@ class SrlcFakeRcNode:
         self.forward_channel = int(rospy.get_param("~forward_channel", 2))
         self.lateral_channel = int(rospy.get_param("~lateral_channel", 1))
         self.vertical_channel = int(rospy.get_param("~vertical_channel", 3))
-        self.assist_channel = int(rospy.get_param("~assist_channel", 6))
+        self.assist_channel = int(rospy.get_param("~assist_channel", 9))
         self.estop_channel = int(rospy.get_param("~estop_channel", 7))
         self.reset_channel = int(rospy.get_param("~reset_channel", 8))
 

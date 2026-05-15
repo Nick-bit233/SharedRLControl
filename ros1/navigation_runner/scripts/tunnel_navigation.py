@@ -104,10 +104,13 @@ class TunnelConfig:
         )
         self.auto_arm = _param_bool(rospy.get_param("~auto_arm", False))
         self.auto_offboard = _param_bool(rospy.get_param("~auto_offboard", False))
+        self.require_offboard = _param_bool(rospy.get_param("~require_offboard", False))
         self.estop_hold_mode = str(rospy.get_param("~estop_hold_mode", "AUTO.LOITER"))
         self.estop_fallback_mode = str(rospy.get_param("~estop_fallback_mode", "POSCTL"))
         self.hold_verify_timeout = float(rospy.get_param("~hold_verify_timeout", 1.0))
         self.hold_on_stop = _param_bool(rospy.get_param("~hold_on_stop", True))
+        self.enable_external_stop = _param_bool(rospy.get_param("~enable_external_stop", True))
+        self.external_stop_topic = rospy.get_param("~external_stop_topic", "/experiment_control/stop")
         self.max_xy_speed_real = float(rospy.get_param("~max_xy_speed_real", 1.0))
         self.max_z_speed_real = float(rospy.get_param("~max_z_speed_real", 0.5))
         self.min_altitude = float(rospy.get_param("~min_altitude", 0.3))
@@ -360,7 +363,9 @@ class TunnelNavigator:
         if self.cfg.use_px4:
             rospy.loginfo(
                 f"[TunnelNav]   PX4 safety    : auto_arm={self.cfg.auto_arm}, "
-                f"auto_offboard={self.cfg.auto_offboard}, hold_mode={self.cfg.estop_hold_mode}"
+                f"auto_offboard={self.cfg.auto_offboard}, "
+                f"require_offboard={self.cfg.require_offboard}, "
+                f"hold_on_stop={self.cfg.hold_on_stop}"
             )
         rospy.loginfo(f"[TunnelNav] ===================")
 
@@ -543,9 +548,11 @@ class TunnelNavigator:
         self.human_cmd_pub = rospy.Publisher(
             "/experiment_control/human_cmd", TwistStamped, queue_size=2
         )
-        self.external_stop_sub = rospy.Subscriber(
-            "/experiment_control/stop", Bool, self._external_stop_cb, queue_size=1
-        )
+        self.external_stop_sub = None
+        if self.cfg.enable_external_stop:
+            self.external_stop_sub = rospy.Subscriber(
+                self.cfg.external_stop_topic, Bool, self._external_stop_cb, queue_size=1
+            )
         if self.cfg.lidar_source == "topic":
             self.lidar_range_sub = rospy.Subscriber(
                 self.cfg.lidar_range_image_topic,
@@ -793,6 +800,8 @@ class TunnelNavigator:
             return False, "EXTERNAL_STOP"
         if self.mavros_state is None or not self.mavros_state.connected:
             return False, "MAVROS_NOT_CONNECTED"
+        if self.cfg.require_offboard and self.mavros_state.mode != "OFFBOARD":
+            return False, "PX4_NOT_OFFBOARD"
         if self.last_odom_time is None:
             return False, "NO_ODOM"
         if (now - self.last_odom_time).to_sec() > self.cfg.odom_timeout:
