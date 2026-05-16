@@ -81,7 +81,14 @@ def register_ours(args: argparse.Namespace, tag: str) -> None:
     write_manifest(Path(f"./outputs/tunnel_ablation/manifests/{tag}_ours.json"), manifest)
 
 
-def run_no_curriculum(seed: int, tag: str, dry_run: bool, skip_existing: bool, extra: list[str]) -> int:
+def run_no_curriculum(
+    seed: int,
+    tag: str,
+    dry_run: bool,
+    skip_existing: bool,
+    resume_checkpoint: str | None,
+    extra: list[str],
+) -> int:
     manifest_path = Path(f"./outputs/tunnel_ablation/manifests/{tag}_no_curriculum_seed{seed}.json")
     if skip_existing and manifest_path.exists():
         print(f"[AblationMatrix] Skipping existing manifest: {manifest_path}")
@@ -94,8 +101,10 @@ def run_no_curriculum(seed: int, tag: str, dry_run: bool, skip_existing: bool, e
         f"seed={seed}",
         f"wandb.group={tag}",
         f"hydra.run.dir={output_base}/${{now:%Y-%m-%d_%H-%M-%S}}",
-        *extra,
     ]
+    if resume_checkpoint:
+        cmd.append(f"resume_checkpoint={os.path.abspath(resume_checkpoint)}")
+    cmd.extend(extra)
     print(f"[AblationMatrix] NoCurriculum command: {' '.join(cmd)}")
     if dry_run:
         return 0
@@ -114,6 +123,7 @@ def run_no_curriculum(seed: int, tag: str, dry_run: bool, skip_existing: bool, e
             "config": "tunnel_ablation_no_curriculum",
             "run_dirs": [str(run_dir)],
             "checkpoint": checkpoint,
+            "resume_checkpoint": os.path.abspath(resume_checkpoint) if resume_checkpoint else None,
             "trained_by_matrix": True,
             "commands": [cmd],
             "extra_overrides": extra,
@@ -128,6 +138,7 @@ def run_curriculum_variant(
     tag: str,
     dry_run: bool,
     skip_existing: bool,
+    resume_checkpoint: str | None,
     extra: list[str],
 ) -> int:
     manifest_path = Path(f"./outputs/tunnel_ablation/manifests/{tag}_{variant}_seed{seed}.json")
@@ -143,6 +154,8 @@ def run_curriculum_variant(
     ]
     if dry_run:
         cmd.append("--dry-run")
+    if resume_checkpoint:
+        cmd.append(f"--resume-checkpoint={os.path.abspath(resume_checkpoint)}")
     cmd.extend(extra)
     print(f"[AblationMatrix] Curriculum command: {' '.join(cmd)}")
     return subprocess.run(cmd, cwd=os.getcwd()).returncode
@@ -155,6 +168,11 @@ def main() -> None:
     parser.add_argument("--tag", default=None)
     parser.add_argument("--ours-checkpoint", default=None)
     parser.add_argument("--ours-config", default="tunnel_m3_finetune")
+    parser.add_argument(
+        "--resume-checkpoint",
+        default=None,
+        help="Resume a single selected training variant/seed from an interrupted checkpoint.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-existing", action="store_true")
     args, extra = parser.parse_known_args()
@@ -162,6 +180,9 @@ def main() -> None:
         extra = extra[1:]
 
     tag = args.tag or f"tunnel_ablation_{datetime.datetime.now():%Y%m%d_%H%M%S}"
+    train_variants = [variant for variant in args.variants if variant != "ours"]
+    if args.resume_checkpoint and (len(train_variants) != 1 or len(args.seeds) != 1):
+        parser.error("--resume-checkpoint requires exactly one trainable variant and one seed")
     failures: list[tuple[str, int, int]] = []
 
     if "ours" in args.variants:
@@ -172,9 +193,24 @@ def main() -> None:
             continue
         for seed in args.seeds:
             if variant in TRAINED_CURRICULUM_VARIANTS:
-                rc = run_curriculum_variant(variant, seed, tag, args.dry_run, args.skip_existing, extra)
+                rc = run_curriculum_variant(
+                    variant,
+                    seed,
+                    tag,
+                    args.dry_run,
+                    args.skip_existing,
+                    args.resume_checkpoint,
+                    extra,
+                )
             elif variant == "no_curriculum":
-                rc = run_no_curriculum(seed, tag, args.dry_run, args.skip_existing, extra)
+                rc = run_no_curriculum(
+                    seed,
+                    tag,
+                    args.dry_run,
+                    args.skip_existing,
+                    args.resume_checkpoint,
+                    extra,
+                )
             else:
                 raise ValueError(f"Unhandled variant: {variant}")
             if rc != 0:

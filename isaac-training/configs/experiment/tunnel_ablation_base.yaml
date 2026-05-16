@@ -24,6 +24,7 @@ curriculum:
 early_stopping:
   enable: False
 
+init_checkpoint: null
 record_video: False
 
 wandb:

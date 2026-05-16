@@ -64,37 +64,39 @@ ours 不需要重训，直接注册当前最佳 checkpoint：
 
 4.1 一次性启动完整消融矩阵
 
+> only use seed 42 for quick turnaround; can expand to more seeds if time allows
+
  python experiments/04a_tunnel_ablation/run_matrix.py \
    --variants no_residual no_curriculum follow_only safety_reg \
-   --seeds 42 43 44 \
+   --seeds 42 \
    --tag paper_ablation_v1
 
 4.2 单独训练 NoResidual
 
  python experiments/04a_tunnel_ablation/run_matrix.py \
    --variants no_residual \
-   --seeds 42 43 44 \
+   --seeds 42 \
    --tag paper_ablation_v1
 
 4.3 单独训练 NoCurriculum
 
  python experiments/04a_tunnel_ablation/run_matrix.py \
    --variants no_curriculum \
-   --seeds 42 43 44 \
+   --seeds 42 \
    --tag paper_ablation_v1
 
 4.4 单独训练 FollowOnly
 
  python experiments/04a_tunnel_ablation/run_matrix.py \
    --variants follow_only \
-   --seeds 42 43 44 \
+   --seeds 42 \
    --tag paper_ablation_v1
 
 4.5 单独训练 SafetyRegOnly
 
  python experiments/04a_tunnel_ablation/run_matrix.py \
    --variants safety_reg \
-   --seeds 42 43 44 \
+   --seeds 42 \
    --tag paper_ablation_v1
 
 训练完成后，每个 run 的 manifest 会写到：
@@ -282,3 +284,18 @@ ROS1 Docker 内推荐使用：
  - FollowOnly 若碰撞高，说明局部 safety reward 必要。
  - SafetyRegOnly 若速度慢、timeout 高或 TCR 差，说明 following reward 对飞手意图满足必要。
  - Ours 应体现成功率、效率、安全性之间的最佳折中。
+
+
+## 重跑恢复指令
+- NoCurriculum 可从你现有的最新 checkpoint 继续：
+
+python experiments/04a_tunnel_ablation/run_matrix.py \
+  --variants no_curriculum \
+  --seeds 42 \
+  --tag paper_ablation_v1 \
+  --resume-checkpoint outputs/tunnel_ablation/no_curriculum/paper_ablation_v1_seed42/2026-05-14_03-05-40/wandb/run-20260514_030557-x8wta239/files/checkpoint_6250.pt
+
+python experiments/04a_tunnel_ablation/run_curriculum.py \
+   --variant no_residual --seed 42 --tag paper_ablation_v1_fixed \
+   --start-stage 2 \
+   --checkpoint "$(cat outputs/tunnel_ablation/no_residual/stage1/paper_ablation_v1_seed42/2026-05-13_17-57-01/final_checkpoint_path.txt)"

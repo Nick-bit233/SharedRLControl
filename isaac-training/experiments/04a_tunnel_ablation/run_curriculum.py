@@ -68,7 +68,8 @@ def run_stage(
     variant: str,
     stage_idx: int,
     config_name: str,
-    checkpoint: str | None,
+    init_checkpoint: str | None,
+    resume_checkpoint: str | None,
     seed: int,
     tag: str,
     dry_run: bool,
@@ -84,8 +85,10 @@ def run_stage(
         f"wandb.group={tag}",
         f"hydra.run.dir={output_base}/${{now:%Y-%m-%d_%H-%M-%S}}",
     ]
-    if checkpoint:
-        cmd.append(f"resume_checkpoint={os.path.abspath(checkpoint)}")
+    if resume_checkpoint:
+        cmd.append(f"resume_checkpoint={os.path.abspath(resume_checkpoint)}")
+    elif init_checkpoint:
+        cmd.append(f"init_checkpoint={os.path.abspath(init_checkpoint)}")
     cmd.extend(extra)
 
     print(f"[AblationCurriculum] Stage {stage_num}: {' '.join(cmd)}")
@@ -116,7 +119,16 @@ def main() -> None:
     parser.add_argument("--tag", default=None)
     parser.add_argument("--start-stage", type=int, default=1)
     parser.add_argument("--end-stage", type=int, default=3)
-    parser.add_argument("--checkpoint", default=None)
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Warm-start the first requested stage from policy weights only.",
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        default=None,
+        help="Resume the first requested stage from an interrupted rich checkpoint.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args, extra = parser.parse_known_args()
     if extra and extra[0] == "--":
@@ -124,6 +136,8 @@ def main() -> None:
 
     if args.start_stage < 1 or args.end_stage > 3 or args.start_stage > args.end_stage:
         parser.error("--start-stage/--end-stage must describe a non-empty range within 1..3")
+    if args.checkpoint and args.resume_checkpoint:
+        parser.error("--checkpoint and --resume-checkpoint are mutually exclusive")
 
     tag = args.tag or f"tunnel_ablation_{args.variant}_{datetime.datetime.now():%Y%m%d_%H%M%S}"
     checkpoint = args.checkpoint
@@ -132,11 +146,14 @@ def main() -> None:
     configs = VARIANT_STAGE_CONFIGS[args.variant]
 
     for stage_idx in range(args.start_stage - 1, args.end_stage):
+        resume_checkpoint = args.resume_checkpoint if stage_idx == args.start_stage - 1 else None
+        init_checkpoint = None if resume_checkpoint else checkpoint
         checkpoint, run_dir, cmd = run_stage(
             args.variant,
             stage_idx,
             configs[stage_idx],
-            checkpoint,
+            init_checkpoint,
+            resume_checkpoint,
             args.seed,
             tag,
             args.dry_run,
@@ -153,6 +170,8 @@ def main() -> None:
         "configs": configs[args.start_stage - 1:args.end_stage],
         "run_dirs": run_dirs,
         "checkpoint": checkpoint,
+        "input_checkpoint": args.checkpoint,
+        "resume_checkpoint": args.resume_checkpoint,
         "dry_run": args.dry_run,
         "commands": commands,
         "extra_overrides": extra,
