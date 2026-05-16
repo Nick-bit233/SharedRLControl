@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 
 
-TRAINED_CURRICULUM_VARIANTS = {"no_residual", "follow_only", "safety_reg"}
-ALL_VARIANTS = ["ours", "no_residual", "no_curriculum", "follow_only", "safety_reg"]
+TRAINED_CURRICULUM_VARIANTS = {"ours_retrain", "no_residual", "follow_only", "safety_reg"}
+ALL_VARIANTS = ["ours", "ours_retrain", "no_residual", "no_curriculum", "follow_only", "safety_reg"]
 
 
 def git_sha() -> str | None:

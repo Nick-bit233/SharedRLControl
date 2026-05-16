@@ -12,6 +12,11 @@ from pathlib import Path
 
 
 VARIANT_STAGE_CONFIGS = {
+    "ours_retrain": [
+        "tunnel_ablation_ours_stage1",
+        "tunnel_ablation_ours_stage2",
+        "tunnel_ablation_ours_stage3",
+    ],
     "no_residual": [
         "tunnel_ablation_no_residual_stage1",
         "tunnel_ablation_no_residual_stage2",

@@ -16,7 +16,7 @@ from pathlib import Path
 ISAAC_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = ISAAC_ROOT.parent
 DEFAULT_LOG_DIR = ISAAC_ROOT / "outputs" / "tunnel_ablation" / "tmux_logs"
-CURRICULUM_VARIANTS = ("no_residual", "follow_only", "safety_reg")
+CURRICULUM_VARIANTS = ("ours_retrain", "no_residual", "follow_only", "safety_reg")
 
 
 def strip_separator(args: list[str]) -> list[str]:
