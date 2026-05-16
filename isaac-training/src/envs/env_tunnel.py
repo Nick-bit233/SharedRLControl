@@ -130,7 +130,16 @@ class EnvTunnelResidual(IsaacEnv):
         self.max_action_vel = cfg.algo.actor.action_limit
 
         # Reward Function Params
-        self.enable_task_reward = cfg.env.get("enable_task_reward", True)
+        reward_cfg = cfg.env.get("reward", {})
+        self.enable_following_reward = reward_cfg.get(
+            "enable_following",
+            cfg.env.get("enable_task_reward", True),
+        )
+        self.enable_safety_reward = reward_cfg.get("enable_safety", True)
+        self.enable_survival_reward = reward_cfg.get("enable_survival", True)
+        self.enable_smoothness_penalty = reward_cfg.get("enable_smoothness", True)
+        # Backward-compatible alias used by older configs and analysis notes.
+        self.enable_task_reward = self.enable_following_reward
 
         # User Model Initialization
         # Check for offline mode configuration
@@ -639,6 +648,9 @@ class EnvTunnelResidual(IsaacEnv):
                 w_cmd * (p_cmd * mask_cmd)
             )
 
+        if not self.enable_safety_reward:
+            r_safety = 0.0
+
         # c. Velocity following reward (Positive)
         # c1. 方向奖励 (Alignment)
         cosine_sim = torch.cosine_similarity(target_vel_w, drone_vel_w, dim=-1).unsqueeze(-1)
@@ -659,11 +671,11 @@ class EnvTunnelResidual(IsaacEnv):
         # [Analysis]: If enable_task_reward is False, the agent acts as a pure "Safety Shield".
         # It has no incentive to follow velocity other than the Residual Regularization term in the loss.
         # This removes the conflict where deviating for safety penalizes task reward.
-        task_reward_term = reward_task if self.enable_task_reward else 0.0
+        task_reward_term = reward_task if self.enable_following_reward else 0.0
 
         # Survival reward: positive reward per step alive
         # Reduced to prevent hovering from being optimal (was 0.5)
-        reward_survival = 0.2
+        reward_survival = 0.2 if self.enable_survival_reward else 0.0
 
         # Forward progress reward: incentivize moving along tunnel length axis (pos[0])
         # pos[0] starts at -7.0, increases toward +12.0
@@ -688,7 +700,7 @@ class EnvTunnelResidual(IsaacEnv):
             + reward_survival
             + 3.0 * r_safety  # Stronger safety signal (was 2.0)
             - 10.0 * penalty_height  # Stronger height penalty (was -8.0 linear, now quadratic)
-            - 0.5 * penalty_action_smoothness  # Smoothness penalty: penalize large action jumps
+            - (0.5 * penalty_action_smoothness if self.enable_smoothness_penalty else 0.0)
         )
         
         # Terminate Conditions & Terminal Penalty

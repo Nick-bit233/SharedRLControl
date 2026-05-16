@@ -1,0 +1,26 @@
+# @package _global_
+# NoResidual stage 1: direct PPO-Beta policy, easy tunnel.
+
+defaults:
+  - tunnel_ablation_base
+
+env:
+  num_obstacles: 30
+  obstacle_width_range: [0.4, 0.8]
+  obstacle_height_range: [8.0, 16.0]
+
+algo:
+  policy_mode: direct
+
+max_iterations: 3003
+eval_interval: 125
+save_interval: 125
+
+wandb:
+  name: tunnel_ablation_no_residual_stage1
+
+hydra:
+  run:
+    dir: ./outputs/tunnel_ablation/no_residual/stage1/${now:%Y-%m-%d_%H-%M-%S}
+
+job_name: tunnel_ablation_no_residual_stage1

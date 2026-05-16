@@ -90,10 +90,12 @@ def main(cfg):
     # Imports that depend on sim app
     from src.envs.env_tunnel import EnvTunnelResidual
     algo_distribution = cfg.algo.get("distribution", "tanh_normal")
+    algo_policy_mode = cfg.algo.get("policy_mode", "residual")
     if algo_distribution == "beta":
         from src.algos.ppo_constrained_beta import (
             ConstrainedResidualPPO_Beta as ConstrainedResidualPPO,
         )
+        print(f"[EvalVideo] Using Beta distribution PPO ({algo_policy_mode} policy mode)")
     else:
         from src.algos.ppo_constrained import ConstrainedResidualPPO
 
@@ -130,7 +132,8 @@ def main(cfg):
         cfg.algo, env.observation_spec, env.action_spec, cfg.device
     )
 
-    state_dict = torch.load(resume_ckpt, map_location=cfg.device)
+    loaded = torch.load(resume_ckpt, map_location=cfg.device)
+    state_dict = loaded["policy"] if isinstance(loaded, dict) and "policy" in loaded else loaded
     policy.load_state_dict(state_dict)
     print("[EvalVideo] Checkpoint loaded.")
 

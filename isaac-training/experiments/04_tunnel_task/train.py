@@ -52,9 +52,10 @@ def main(cfg):
     from src.envs.env_tunnel import EnvTunnelResidual
     # Import PPO algorithm — select via cfg.algo.distribution: "tanh_normal" (default) or "beta"
     algo_distribution = cfg.algo.get("distribution", "tanh_normal")
+    algo_policy_mode = cfg.algo.get("policy_mode", "residual")
     if algo_distribution == "beta":
         from src.algos.ppo_constrained_beta import ConstrainedResidualPPO_Beta as ConstrainedResidualPPO
-        print("[Train] Using Beta distribution PPO")
+        print(f"[Train] Using Beta distribution PPO ({algo_policy_mode} policy mode)")
     else:
         from src.algos.ppo_constrained import ConstrainedResidualPPO
         print("[Train] Using TanhNormal distribution PPO")
@@ -168,27 +169,39 @@ def main(cfg):
     # === CHANGED: Use ConstrainedResidualPPO ===
     policy = ConstrainedResidualPPO(cfg.algo, env.observation_spec, env.action_spec, cfg.device)
 
-    # === Resume from checkpoint (for multi-stage curriculum / fine-tune) ===
-    # Supports two formats:
-    #   (1) Legacy "weights-only" ckpt — a plain state_dict produced by
-    #       torch.save(policy.state_dict(), ...). Only model weights restored.
-    #   (2) Rich ckpt (M3+) — a dict with keys:
-    #         policy, actor_optim, critic_optim, feature_extractor_optim,
-    #         iter, env_frames, reg_scheduler (optional), best_eval_success
+    # === Checkpoint loading ===
+    # resume_checkpoint: continue the same interrupted run, including optimizer
+    # state and iteration counters.
+    # init_checkpoint: warm-start a new stage/run from policy weights only.
     resume_ckpt = cfg.get("resume_checkpoint", None)
-    resume_state = None
-    if resume_ckpt is not None:
-        print(f"[Train] Loading checkpoint: {resume_ckpt}")
-        loaded = torch.load(resume_ckpt, map_location=cfg.device)
+    init_ckpt = cfg.get("init_checkpoint", None)
+    if resume_ckpt is not None and init_ckpt is not None:
+        raise ValueError("Use only one of resume_checkpoint or init_checkpoint")
+
+    def load_policy_state(checkpoint_path: str):
+        loaded = torch.load(checkpoint_path, map_location=cfg.device)
         if isinstance(loaded, dict) and "policy" in loaded and any(
             k in loaded for k in ("actor_optim", "critic_optim", "iter")
         ):
+            return loaded["policy"], loaded
+        return loaded, None
+
+    resume_state = None
+    if init_ckpt is not None:
+        print(f"[Train] Initializing policy from checkpoint: {init_ckpt}")
+        policy_state, _ = load_policy_state(init_ckpt)
+        policy.load_state_dict(policy_state)
+        print("[Train] Init checkpoint loaded as policy weights only.")
+
+    if resume_ckpt is not None:
+        print(f"[Train] Loading checkpoint: {resume_ckpt}")
+        policy_state, loaded_state = load_policy_state(resume_ckpt)
+        policy.load_state_dict(policy_state)
+        if loaded_state is not None:
             print("[Train] Detected RICH checkpoint format (weights + optimizer + state).")
-            policy.load_state_dict(loaded["policy"])
-            resume_state = loaded
+            resume_state = loaded_state
         else:
             print("[Train] Detected legacy WEIGHTS-ONLY checkpoint format.")
-            policy.load_state_dict(loaded)
         print(f"[Train] Checkpoint loaded successfully.")
 
     # === Restore optimizer / curriculum / iter counters from rich ckpt ===
@@ -205,15 +218,25 @@ def main(cfg):
             print("[Train] Optimizer states restored from rich checkpoint.")
         except Exception as e:
             print(f"[Train] WARNING: optimizer restore failed: {e} — continuing with fresh optimizer.")
-        start_iter = int(resume_state.get("iter", 0))
+        last_completed_iter = int(resume_state.get("iter", -1))
+        start_iter = max(0, last_completed_iter + 1)
         start_env_frames = int(resume_state.get("env_frames", 0))
-        print(f"[Train] Resuming at iter={start_iter}, env_frames={start_env_frames}")
+        print(
+            f"[Train] Resuming after iter={last_completed_iter}; "
+            f"next_iter={start_iter}, env_frames={start_env_frames}"
+        )
 
     # Shrink the collector budget so that absolute iter target (max_iterations)
     # is honored even when resuming partway through.
-    if start_iter > 0:
+    if resume_ckpt is not None and start_iter > 0:
         remaining = max(0, max_iterations - start_iter) if not profiling_mode else 0
-        if not profiling_mode and remaining > 0:
+        if not profiling_mode and remaining <= 0:
+            raise ValueError(
+                f"resume_checkpoint already reached max_iterations: "
+                f"next_iter={start_iter}, max_iterations={max_iterations}. "
+                "Increase max_iterations or use init_checkpoint for a new stage."
+            )
+        if not profiling_mode:
             MAX_FRAME_NUM = cfg.algo.training_frame_num * cfg.env.num_envs * remaining
             print(f"[Train] Resuming: shrinking collector budget to {remaining} more iters.")
 
@@ -455,25 +478,34 @@ def main(cfg):
         policy(td)
         
         net_output_norm = td["agents", "action_normalized"]
-        human_input_phys = td["agents", "observation", "human_action"]
-        human_input_norm = human_input_phys / cfg.algo.actor.action_limit
-
-        # Diff between network output (normalized) and human input (normalized)
-        # In this architecture, net_output_norm is the FINAL action.
-        # Human input is injected via Residual Module.
-        # If residuals are 0, then net_output_norm should be equal to human_input_norm
-        # (assuming 1-to-1 mapping via residual scale=1.0)
-        
-        diff = (net_output_norm - human_input_norm).norm(dim=-1).mean()
-
-        print(f"[Sanity Check] Initial Mean Error (Norm Space): {diff.item():.6f}")
-        
-        if diff.item() < 1e-2:
-            print("✅ Initialization SUCCESS: Network starts as Identity Mapping.")
+        if cfg.algo.get("policy_mode", "residual") == "direct":
+            finite = torch.isfinite(net_output_norm).all()
+            within_bounds = (net_output_norm.abs() <= 1.0 + 1e-5).all()
+            print("[Sanity Check] Direct policy mode: identity mapping is not expected.")
+            print(f"[Sanity Check] action_normalized finite={bool(finite)}, within_bounds={bool(within_bounds)}")
+            if finite and within_bounds:
+                print("✅ Initialization SUCCESS: Direct policy emits finite bounded actions.")
+            else:
+                print(f"❌ Initialization WARNING: Direct policy emitted invalid action sample: {net_output_norm[0]}")
         else:
-            print(f"❌ Initialization WARNING: Initial error is large ({diff.item()}).")
-            print(f"   Sample Net Out: {net_output_norm[0]}")
-            print(f"   Sample Human In: {human_input_norm[0]}")
+            human_input_phys = td["agents", "observation", "human_action"]
+            human_input_norm = human_input_phys / cfg.algo.actor.action_limit
+
+            # Diff between network output (normalized) and human input (normalized)
+            # In this architecture, net_output_norm is the FINAL action.
+            # Human input is injected via Residual Module.
+            # If residuals are 0, then net_output_norm should be equal to human_input_norm
+            # (assuming 1-to-1 mapping via residual scale=1.0)
+            diff = (net_output_norm - human_input_norm).norm(dim=-1).mean()
+
+            print(f"[Sanity Check] Initial Mean Error (Norm Space): {diff.item():.6f}")
+            
+            if diff.item() < 1e-2:
+                print("✅ Initialization SUCCESS: Network starts as Identity Mapping.")
+            else:
+                print(f"❌ Initialization WARNING: Initial error is large ({diff.item()}).")
+                print(f"   Sample Net Out: {net_output_norm[0]}")
+                print(f"   Sample Human In: {human_input_norm[0]}")
     env.train()
     env.reset()
 
@@ -604,6 +636,9 @@ def main(cfg):
             if reg_scheduler is not None:
                 rich_ckpt["reg_scheduler"] = reg_scheduler.state_dict()
             torch.save(rich_ckpt, ckpt_path)
+            latest_marker_path = os.path.join(cfg.log_output_dir, "latest_checkpoint_path.txt")
+            with open(latest_marker_path, "w") as f:
+                f.write(ckpt_path)
             print("[RunnerSimple]: model saved at training step: ", global_iter)
 
     # === Save final checkpoint ===
@@ -613,7 +648,7 @@ def main(cfg):
         final_ckpt_path = os.path.join(save_dir, "checkpoint_final.pt")
         final_rich = {
             "policy": policy.state_dict(),
-            "iter": start_iter + max(i, 0),
+            "iter": start_iter + i if i >= 0 else start_iter - 1,
             "env_frames": collector._frames + start_env_frames,
             "best_eval_success": best_eval_success,
         }

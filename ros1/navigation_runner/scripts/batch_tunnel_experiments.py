@@ -99,6 +99,8 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT,
                         help="RL checkpoint passed to tunnel_comparison.launch")
+    parser.add_argument("--policy-mode", default="residual", choices=("residual", "direct"),
+                        help="RL policy architecture mode for checkpoint loading")
     parser.add_argument("--gazebo-z-mode", default="alt_hold",
                         choices=("alt_hold", "policy", "policy_clamped", "blend"),
                         help="Gazebo vertical command execution mode for RL cmd_vel")
@@ -806,6 +808,7 @@ def build_roslaunch_cmd(args, method, run_dir, trial_id, run_id, batch_idx,
         f"safety_recover_centerline_gain:={args.safety_recover_centerline_gain}",
         f"device:={args.device}",
         f"checkpoint:={args.checkpoint}",
+        f"policy_mode:={args.policy_mode}",
         f"gazebo_z_mode:={args.gazebo_z_mode}",
         f"gazebo_policy_z_max:={args.gazebo_policy_z_max}",
         f"gazebo_z_blend_alpha:={args.gazebo_z_blend_alpha}",

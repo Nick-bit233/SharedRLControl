@@ -86,6 +86,7 @@ class TunnelConfig:
         # Policy
         self.action_limit = rospy.get_param("~action_limit", 2.0)
         self.checkpoint_path = rospy.get_param("~checkpoint_path", "")
+        self.policy_mode = str(rospy.get_param("~policy_mode", "residual")).lower()
         self.device = self._resolve_device(rospy.get_param("~device", "cpu"))
 
         # Control
@@ -289,6 +290,7 @@ class TunnelNavigator:
             action_limit=self.cfg.action_limit,
             min_concentration=2.0,
             device=self.cfg.device,
+            policy_mode=self.cfg.policy_mode,
         )
         self.policy.eval()
         rospy.loginfo("[TunnelNav] Policy loaded successfully.")
@@ -324,6 +326,7 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   takeoff_height : {self.cfg.takeoff_height} m")
         rospy.loginfo(f"[TunnelNav]   control_freq   : {self.cfg.control_freq} Hz")
         rospy.loginfo(f"[TunnelNav]   action_limit   : {self.cfg.action_limit} m/s")
+        rospy.loginfo(f"[TunnelNav]   policy_mode    : {self.cfg.policy_mode}")
         rospy.loginfo(f"[TunnelNav]   safety_min_dist: {self.cfg.safety_min_dist} m")
         rospy.loginfo(f"[TunnelNav]   safety_mode    : {self.cfg.safety_mode}")
         rospy.loginfo(f"[TunnelNav]   collision_dist : {self.cfg.collision_dist} m")

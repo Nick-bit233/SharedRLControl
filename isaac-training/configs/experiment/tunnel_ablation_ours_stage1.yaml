@@ -1,0 +1,23 @@
+# @package _global_
+# Ours-Retrain stage 1: residual PPO-Beta policy with full rewards, easy tunnel.
+
+defaults:
+  - tunnel_ablation_base
+
+env:
+  num_obstacles: 30
+  obstacle_width_range: [0.4, 0.8]
+  obstacle_height_range: [8.0, 16.0]
+
+max_iterations: 3003
+eval_interval: 125
+save_interval: 125
+
+wandb:
+  name: tunnel_ablation_ours_stage1
+
+hydra:
+  run:
+    dir: ./outputs/tunnel_ablation/ours_retrain/stage1/${now:%Y-%m-%d_%H-%M-%S}
+
+job_name: tunnel_ablation_ours_stage1
