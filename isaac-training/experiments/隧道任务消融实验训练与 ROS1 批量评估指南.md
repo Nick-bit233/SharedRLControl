@@ -112,7 +112,7 @@ ours 不需要重训，直接注册当前最佳 checkpoint：
  python experiments/04a_tunnel_ablation/run_eval_matrix.py \
    --manifests outputs/tunnel_ablation/manifests \
    --output-dir outputs/tunnel_ablation/eval \
-   --num-envs 256
+   --num-envs 1024
 
 汇总 Isaac eval：
 

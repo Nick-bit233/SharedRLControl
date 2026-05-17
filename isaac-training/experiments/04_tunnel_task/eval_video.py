@@ -49,6 +49,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import json
 import logging
+import math
 
 import hydra
 import imageio
@@ -101,8 +102,12 @@ def main(cfg):
 
     # ---------------- output dir ----------------
     from hydra.core.hydra_config import HydraConfig
-    hydra_run_dir = HydraConfig.get().runtime.output_dir
+    hydra_cfg = HydraConfig.get()
+    hydra_run_dir = hydra_cfg.runtime.output_dir
+    runtime_cwd = hydra_cfg.runtime.cwd
     video_dir = cfg.get("video_dir", None) or hydra_run_dir
+    if not os.path.isabs(video_dir):
+        video_dir = os.path.abspath(os.path.join(runtime_cwd, video_dir))
     os.makedirs(video_dir, exist_ok=True)
     print(f"[EvalVideo] Output dir: {video_dir}")
     print(f"[EvalVideo] Checkpoint: {resume_ckpt}")
@@ -234,6 +239,8 @@ def run_single_eval(env, policy, cfg, video_dir: str, seed: int = 42) -> dict:
         else:
             for suf, val in zip(["x", "y", "z", "w"][:v_mean.numel()], v_mean.reshape(-1)):
                 info[f"eval_debug/{k}/{suf}"] = val.item()
+
+    info.update(compute_intent_safety_metrics(trajs, env, cfg))
     print("[EvalVideo] eval info (single rollout):")
     for k, v in sorted(info.items()):
         print(f"    {k}: {v}")
@@ -256,6 +263,124 @@ def run_single_eval(env, policy, cfg, video_dir: str, seed: int = 42) -> dict:
     env.set_visualization(enabled=False)
     env.enable_render(False)
     env.train()
+    return info
+
+
+def _first_done_indices(done: torch.Tensor) -> torch.Tensor:
+    done = done.squeeze(-1).bool().cpu()
+    has_done = done.any(dim=1)
+    first_done = torch.argmax(done.long(), dim=1)
+    fallback = torch.full_like(first_done, done.shape[1] - 1)
+    return torch.where(has_done, first_done, fallback)
+
+
+def _point_to_polyline_dist(points: np.ndarray, polyline: np.ndarray) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32)
+    polyline = np.asarray(polyline, dtype=np.float32)
+    if len(points) == 0 or len(polyline) == 0:
+        return np.full(len(points), np.nan, dtype=np.float32)
+    if len(polyline) == 1:
+        return np.linalg.norm(points - polyline[0], axis=1)
+    seg_starts = polyline[:-1]
+    seg_ends = polyline[1:]
+    seg_vecs = seg_ends - seg_starts
+    seg_len_sq = np.sum(seg_vecs * seg_vecs, axis=1)
+    seg_len_sq[seg_len_sq == 0.0] = 1e-12
+    min_dists = np.full(len(points), np.inf, dtype=np.float32)
+    for start, vec, length_sq in zip(seg_starts, seg_vecs, seg_len_sq):
+        rel = points - start
+        t = np.clip(np.sum(rel * vec, axis=1) / length_sq, 0.0, 1.0)
+        closest = start + t[:, None] * vec
+        min_dists = np.minimum(min_dists, np.linalg.norm(points - closest, axis=1))
+    return min_dists
+
+
+def _resample_by_arclength(path: np.ndarray, spacing: float) -> np.ndarray:
+    path = np.asarray(path, dtype=np.float32)
+    if len(path) < 2:
+        return path.copy()
+    seg_lens = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    total = float(np.sum(seg_lens))
+    if not np.isfinite(total) or total <= 1e-6:
+        return path[:1].copy()
+    targets = np.arange(0.0, total + spacing, spacing, dtype=np.float32)
+    cumulative = np.concatenate([[0.0], np.cumsum(seg_lens)])
+    samples = []
+    seg_idx = 0
+    for target in targets:
+        target = min(float(target), total)
+        while seg_idx < len(seg_lens) - 1 and cumulative[seg_idx + 1] < target:
+            seg_idx += 1
+        denom = max(float(seg_lens[seg_idx]), 1e-6)
+        alpha = float((target - cumulative[seg_idx]) / denom)
+        samples.append(path[seg_idx] + alpha * (path[seg_idx + 1] - path[seg_idx]))
+    return np.asarray(samples, dtype=np.float32)
+
+
+def compute_intent_safety_metrics(trajs, env, cfg) -> dict:
+    done = trajs.get(("next", "done"))
+    first_done = _first_done_indices(done)
+    stats = trajs[("next", "stats")]
+    positions = stats["debug_pos_world"].detach().cpu()
+    target_vel = stats["debug_vec_target"].detach().cpu()
+    success = stats["success"].detach().cpu().squeeze(-1)
+    truncated = stats["truncated"].detach().cpu().squeeze(-1)
+    dt = float(getattr(env, "dt", cfg.sim.dt * cfg.sim.substeps))
+    tcr_thresholds = (1.0, 2.0, 5.0)
+    tcr_values = {threshold: [] for threshold in tcr_thresholds}
+    cte_values = []
+
+    lidar = trajs.get(("next", "agents", "observation", "lidar"), None)
+    dmin_values = []
+    if lidar is not None:
+        lidar_scan = lidar.detach().cpu()
+        lidar_range = float(getattr(env, "lidar_range", cfg.sensor.lidar_range))
+        dmin = lidar_range * (1.0 - lidar_scan.flatten(start_dim=2).amax(dim=-1))
+    else:
+        dmin = None
+
+    timeout_values = []
+    for env_idx, end_idx_tensor in enumerate(first_done):
+        end_idx = int(end_idx_tensor.item())
+        pos_ep = positions[env_idx, : end_idx + 1].numpy()
+        vel_ep = target_vel[env_idx, : end_idx + 1].numpy()
+        if len(pos_ep) >= 2:
+            reference = np.empty_like(pos_ep, dtype=np.float32)
+            reference[0] = pos_ep[0]
+            for idx in range(1, len(pos_ep)):
+                reference[idx] = reference[idx - 1] + vel_ep[idx - 1] * dt
+            sampled_reference = _resample_by_arclength(reference, spacing=0.5)
+            ref_to_actual = _point_to_polyline_dist(sampled_reference, pos_ep)
+            for threshold in tcr_thresholds:
+                tcr_values[threshold].append(float(np.nanmean(ref_to_actual < threshold)))
+            actual_to_ref = _point_to_polyline_dist(pos_ep, reference)
+            cte_values.append(float(np.nanmean(actual_to_ref)))
+        if dmin is not None:
+            dmin_values.append(dmin[env_idx, : end_idx + 1])
+        timeout_values.append(
+            bool(truncated[env_idx, end_idx]) and not bool(success[env_idx, end_idx])
+        )
+
+    info = {
+        "eval/timeout": float(np.mean(timeout_values)) if timeout_values else math.nan,
+        "eval/cte": float(np.nanmean(cte_values)) if cte_values else math.nan,
+    }
+    for threshold in tcr_thresholds:
+        info[f"eval/tcr_at_{int(threshold)}"] = (
+            float(np.nanmean(tcr_values[threshold])) if tcr_values[threshold] else math.nan
+        )
+
+    if dmin_values:
+        dmin_all = torch.cat([value.reshape(-1) for value in dmin_values])
+        info["eval/dmin_min"] = float(torch.min(dmin_all).item())
+        info["eval/dmin_mean"] = float(torch.mean(dmin_all.float()).item())
+        info["eval/crr_0.5m"] = float(torch.mean((dmin_all < 0.5).float()).item())
+        info["eval/crr_1.0m"] = float(torch.mean((dmin_all < 1.0).float()).item())
+    else:
+        info["eval/dmin_min"] = math.nan
+        info["eval/dmin_mean"] = math.nan
+        info["eval/crr_0.5m"] = math.nan
+        info["eval/crr_1.0m"] = math.nan
     return info
 
 

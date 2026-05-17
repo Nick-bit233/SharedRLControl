@@ -12,6 +12,8 @@ Usage: swap import in train.py:
     from src.algos.ppo_constrained_beta import ConstrainedResidualPPO_Beta as ConstrainedResidualPPO
 """
 
+from collections import OrderedDict
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -466,6 +468,34 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
                 nn.init.constant_(module.bias, 0.)
 
         self.actor_net.module[-1].apply(init_beta_output)
+
+    @staticmethod
+    def _upgrade_legacy_state_dict_keys(state_dict):
+        """Map old residual Beta action-module keys to the current module name."""
+        legacy_prefix = "residual_action_module."
+        current_prefix = "action_parameter_module."
+        if not any(key.startswith(legacy_prefix) for key in state_dict):
+            return state_dict
+
+        upgraded = OrderedDict()
+        for key, value in state_dict.items():
+            if key.startswith(legacy_prefix):
+                new_key = current_prefix + key[len(legacy_prefix):]
+                if new_key not in state_dict:
+                    upgraded[new_key] = value
+                continue
+            upgraded[key] = value
+
+        if hasattr(state_dict, "_metadata"):
+            upgraded._metadata = state_dict._metadata
+        return upgraded
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        state_dict = self._upgrade_legacy_state_dict_keys(state_dict)
+        try:
+            return super().load_state_dict(state_dict, strict=strict, assign=assign)
+        except TypeError:
+            return super().load_state_dict(state_dict, strict=strict)
     
     def set_reg_coeff(self, value):
         """Set the residual regularization coefficient (for curriculum)."""
