@@ -15,6 +15,10 @@
     <arg name="fake_initial_y" default="0.0"/>
     <arg name="fake_initial_z" default="$(arg takeoff_height)"/>
     <arg name="fake_initial_yaw_deg" default="0.0"/>
+    <arg name="odom_topic" default="/mavros/local_position/odom"/>
+    <arg name="rc_topic" default="/mavros/rc/in"/>
+    <arg name="setpoint_raw_topic" default="/mavros/setpoint_raw/local"/>
+    <arg name="setpoint_pose_topic" default="/mavros/setpoint_position/local"/>
 
     <arg name="map_origin_x" default="0.0"/>
     <arg name="map_origin_y" default="0.0"/>
@@ -60,6 +64,7 @@
         <node pkg="navigation_runner" type="srlc_fake_rc_node.py"
               name="srlc_fake_rc_node" output="screen" required="true">
             <rosparam file="$(find navigation_runner)/cfg/tunnel/rc_input_real_px4.yaml"/>
+            <param name="rc_topic" value="$(arg rc_topic)"/>
             <param name="forward_stick" value="$(arg fake_forward_stick)"/>
             <param name="lateral_stick" value="$(arg fake_lateral_stick)"/>
             <param name="vertical_stick" value="0.0"/>
@@ -85,12 +90,14 @@
           name="map_lidar_node" output="screen" required="true">
         <rosparam file="$(find navigation_runner)/cfg/tunnel/map_lidar_real_px4.yaml"/>
         <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
         <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
     </node>
 
     <node pkg="navigation_runner" type="srlc_alignment_viz_node.py"
           name="srlc_alignment_viz_node" output="screen">
+        <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
         <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
         <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>
@@ -102,6 +109,7 @@
     <node pkg="navigation_runner" type="rc_input_node.py"
           name="rc_input_node" output="screen" required="true">
         <rosparam file="$(find navigation_runner)/cfg/tunnel/rc_input_real_px4.yaml"/>
+        <param name="rc_topic" value="$(arg rc_topic)"/>
     </node>
 
     <node pkg="navigation_runner" type="tunnel_navigation.py"
@@ -109,6 +117,9 @@
         <rosparam file="$(find navigation_runner)/cfg/tunnel/tunnel_nav_real_px4.yaml"/>
         <param name="checkpoint_path" value="$(arg checkpoint)"/>
         <param name="device" value="$(arg device)"/>
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
+        <param name="setpoint_pose_topic" value="$(arg setpoint_pose_topic)"/>
         <param name="takeoff_height" value="$(arg takeoff_height)"/>
         <param name="height_control" value="false"/>
         <param name="lock_z_control" value="$(arg lock_z_control)"/>
@@ -132,6 +143,9 @@
               name="srlc_dry_run_recorder" output="screen">
             <param name="output_dir" value="$(arg output_dir)"/>
             <param name="run_id" value="$(arg run_id)"/>
+            <param name="odom_topic" value="$(arg odom_topic)"/>
+            <param name="rc_topic" value="$(arg rc_topic)"/>
+            <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
             <param name="lidar_range" value="4.0"/>
             <param name="lidar_hbeams" value="36"/>
             <param name="lidar_vbeams" value="4"/>

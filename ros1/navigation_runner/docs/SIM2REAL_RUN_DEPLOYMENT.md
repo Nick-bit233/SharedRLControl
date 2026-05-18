@@ -510,6 +510,26 @@ roslaunch navigation_runner tunnel_dry_run_px4.launch \
   record:=true
 ```
 
+dry-run 会显式覆盖真机默认定位源：
+
+```text
+odom_topic:=/mavros/local_position/odom
+rc_topic:=/mavros/rc/in
+setpoint_raw_topic:=/mavros/setpoint_raw/local
+```
+
+其中 `/mavros/local_position/odom` 由 `mavros_fake_node.py` 发布，并根据 `/mavros/setpoint_raw/local` 积分移动；`/mavros/rc/in` 由 `srlc_fake_rc_node.py` 发布，默认按 CH9 打开 assist。不要在 dry-run 中使用 `/nokov/local_position/odom`，否则没有真实 nokov 节点时 `tunnel_navigation.py` 会一直等待 odom。
+
+按当前真机地图/权重配置做软件验证的示例：
+
+```bash
+roslaunch navigation_runner tunnel_dry_run_px4.launch \
+  rviz:=true \
+  record:=true \
+  fake_forward_stick:=0.15 \
+  fake_lateral_stick:=0.0
+```
+
 该模式仅用于验证：
 
 - 模型 checkpoint 可加载
@@ -532,12 +552,22 @@ rosrun navigation_runner srlc_dry_run_smoke_check.py \
 
 ### `/tunnel_nav/status=NO_ODOM`
 
-SRLC 没收到 `/nokov/local_position/odom`。检查：
+真机模式下，SRLC 没收到 `/nokov/local_position/odom`。检查：
 
 ```bash
 rostopic hz /nokov/local_position/odom
 rosparam get /tunnel_navigator/odom_topic
 ```
+
+dry-run 模式下，SRLC 应使用 fake MAVROS odom。检查：
+
+```bash
+rostopic hz /mavros/local_position/odom
+rosparam get /tunnel_navigator/odom_topic
+rosparam get /map_lidar_node/odom_topic
+```
+
+期望两个参数都是 `/mavros/local_position/odom`。
 
 ### `/tunnel_nav/status=PX4_NOT_OFFBOARD`
 
