@@ -2,16 +2,16 @@
     <!-- First-stage SRLC dry-run: fake MAVROS/odom + real PCD map. -->
 
     <arg name="mode" default="fake_mavros" doc="Currently supported: fake_mavros"/>
-    <arg name="checkpoint" default="$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"/>
-    <arg name="pcd_file" default="$(find navigation_runner)/cfg/real_maps/dry_run/real_map_dry_run_6x6x5_ascii.pcd"/>
+    <arg name="checkpoint" default="$(find navigation_runner)/cfg/ckpts/checkpoint_9400.pt"/>
+    <arg name="pcd_file" default="$(find navigation_runner)/cfg/real_maps/merged/0517_crop_xyz_0p05_ascii.pcd"/>
     <arg name="device" default="cpu"/>
     <arg name="rviz" default="true"/>
     <arg name="record" default="true"/>
     <arg name="output_dir" default="/tmp/srlc_dry_run"/>
     <arg name="run_id" default="fake_mavros_real_pcd"/>
 
-    <arg name="takeoff_height" default="2.0"/>
-    <arg name="fake_initial_x" default="0.0"/>
+    <arg name="takeoff_height" default="1.2"/>
+    <arg name="fake_initial_x" default="-2.5"/>
     <arg name="fake_initial_y" default="0.0"/>
     <arg name="fake_initial_z" default="$(arg takeoff_height)"/>
     <arg name="fake_initial_yaw_deg" default="0.0"/>

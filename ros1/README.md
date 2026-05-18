@@ -270,3 +270,12 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
    - `cfg/tunnel/rc_input_real_px4.yaml` 中 RC 通道、方向、deadband、reset/estop/assist 开关
    - `cfg/tunnel/map_lidar_real_px4.yaml` 中 `map_origin_xyz` 与 `map_yaw_deg`
    - 真机限速、限高、geofence 与 `safety_min_dist`
+
+
+## 转换pcd地图
+python3 ros1/navigation_runner/scripts/tunnel_deployment/merge_real_pcd_maps.py \
+ --inputs ros1/real_maps/room601/0517.pcd \
+ --output ros1/real_maps/room601/0517_crop_xyz_0p05_ascii.pcd \
+ --crop-min -3.5 -3.0 0.0 \
+ --crop-max 3.5 3.0 3.0 \
+ --voxel-size 0.0

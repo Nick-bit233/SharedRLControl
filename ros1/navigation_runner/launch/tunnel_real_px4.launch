@@ -20,7 +20,7 @@
     <arg name="map_origin_y" default="0.0"/>
     <arg name="map_origin_z" default="0.0"/>
 
-    <arg name="takeoff_height" default="2.0"/>
+    <arg name="takeoff_height" default="1.2"/>
     <arg name="estop_hold_mode" default="AUTO.LOITER"/>
     <arg name="max_xy_speed_real" default="1.0"/>
     <arg name="max_z_speed_real" default="0.3"/>

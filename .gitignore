@@ -133,6 +133,7 @@ ros1/results/
 # paper works
 PAPER_PLAN.md
 paper/
+Paper_data_handler/
 
 # pcd maps
 ros1/real_maps/

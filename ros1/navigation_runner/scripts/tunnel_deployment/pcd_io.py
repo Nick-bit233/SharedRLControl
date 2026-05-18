@@ -84,9 +84,10 @@ def _parse_header(blob: bytes) -> PcdHeader:
 
 def _numpy_dtype(header: PcdHeader) -> np.dtype:
     dtype_fields = []
-    for name, size, typ, count in zip(
+    seen: dict[str, int] = {}
+    for idx, (name, size, typ, count) in enumerate(zip(
         header.fields, header.size, header.type, header.count
-    ):
+    )):
         typ = typ.upper()
         if typ == "F" and size == 4:
             base = "<f4"
@@ -107,10 +108,17 @@ def _numpy_dtype(header: PcdHeader) -> np.dtype:
         else:
             raise ValueError(f"Unsupported PCD field type: {name} {typ}{size}")
 
-        if count == 1:
-            dtype_fields.append((name, base))
+        dtype_name = name
+        if dtype_name in seen:
+            seen[dtype_name] += 1
+            dtype_name = f"{dtype_name}__{idx}"
         else:
-            dtype_fields.append((name, base, (count,)))
+            seen[dtype_name] = 0
+
+        if count == 1:
+            dtype_fields.append((dtype_name, base))
+        else:
+            dtype_fields.append((dtype_name, base, (count,)))
     return np.dtype(dtype_fields)
 
 
