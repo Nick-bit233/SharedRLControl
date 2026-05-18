@@ -42,6 +42,46 @@ from torchrl.envs.utils import set_exploration_type, ExplorationType
 from omni_drones.utils.torchrl import RenderCallback
 from torchrl.data import Unbounded
 
+
+def get_eval_metric(eval_info, name: str, default=None):
+    """Read current eval keys while remaining compatible with older stats-prefixed logs."""
+    for key in (f"eval/{name}", f"eval/stats_{name}"):
+        if key in eval_info:
+            return eval_info[key]
+    return default
+
+
+def serializable_eval_info(eval_info):
+    clean = {}
+    for key, value in eval_info.items():
+        if hasattr(value, "item"):
+            value = value.item()
+        if isinstance(value, (int, float, str, bool)) or value is None:
+            clean[key] = value
+    return clean
+
+
+def eval_summary(eval_info):
+    success = float(get_eval_metric(eval_info, "success", 0.0))
+    collision = float(get_eval_metric(eval_info, "collision", 1.0))
+    timeout = float(get_eval_metric(eval_info, "timeout", 0.0))
+    above_bound = float(get_eval_metric(eval_info, "above_bound", 0.0))
+    below_bound = float(get_eval_metric(eval_info, "below_bound", 0.0))
+    task_reward = float(get_eval_metric(eval_info, "diag_reward_task", 0.0))
+    eval_return = float(get_eval_metric(eval_info, "return", 0.0))
+    score = success - 0.5 * collision - 0.2 * timeout - 0.1 * above_bound - 0.1 * below_bound
+    rank = (score, success, -collision, -timeout, task_reward, eval_return)
+    return {
+        "score": score,
+        "success": success,
+        "collision": collision,
+        "timeout": timeout,
+        "task_reward": task_reward,
+        "return": eval_return,
+        "rank": rank,
+    }
+
+
 # Configs are now in the 'configs' directory
 @hydra.main(config_path="../../configs", config_name="train", version_base=None)
 def main(cfg):
@@ -49,7 +89,13 @@ def main(cfg):
     sim_app = init_simulation_app(cfg)  # headless option is configurable via cfg
 
     # Import environment and algorithm (must after sim_app is instantiated)
-    from src.envs.env_tunnel import EnvTunnelResidual
+    env_name = cfg.env.get("name", "tunnel")
+    if env_name == "real_room":
+        from src.envs.env_real_room import EnvRealRoomResidual as EnvClass
+    elif env_name == "tunnel":
+        from src.envs.env_tunnel import EnvTunnelResidual as EnvClass
+    else:
+        raise ValueError(f"Unknown env.name: {env_name}")
     # Import PPO algorithm — select via cfg.algo.distribution: "tanh_normal" (default) or "beta"
     algo_distribution = cfg.algo.get("distribution", "tanh_normal")
     algo_policy_mode = cfg.algo.get("policy_mode", "residual")
@@ -163,7 +209,7 @@ def main(cfg):
         print(f"[Train] Trajectory dataset loaded successfully")
 
     # === 初始化环境 ===
-    env = EnvTunnelResidual(cfg, trajectory_dataset=trajectory_dataset)
+    env = EnvClass(cfg, trajectory_dataset=trajectory_dataset)
     # env.enable_render(True)
     # === 初始化 PPO ===
     # === CHANGED: Use ConstrainedResidualPPO ===
@@ -443,7 +489,11 @@ def main(cfg):
               f"{cfg.curriculum.initial_reg_coeff} to {cfg.curriculum.max_reg_coeff}")
 
     # === Best Checkpoint Tracking ===
+    best_eval_score = -float("inf")
     best_eval_success = -1.0
+    best_eval_collision = 1.0
+    best_eval_info = None
+    best_eval_rank = None
     best_policy_state = None
     latest_eval_success = None  # Cached eval success for curriculum scheduler
 
@@ -458,9 +508,26 @@ def main(cfg):
                 policy.set_reg_coeff(reg_scheduler.current_reg_coeff)
             except Exception as e:
                 print(f"[Train] WARNING: curriculum restore failed: {e}")
+        if "best_eval_score" in resume_state:
+            best_eval_score = float(resume_state["best_eval_score"])
+            print(f"[Train] best_eval_score carried over: {best_eval_score:.3f}")
         if "best_eval_success" in resume_state:
             best_eval_success = float(resume_state["best_eval_success"])
             print(f"[Train] best_eval_success carried over: {best_eval_success:.3f}")
+        if "best_eval_collision" in resume_state:
+            best_eval_collision = float(resume_state["best_eval_collision"])
+            print(f"[Train] best_eval_collision carried over: {best_eval_collision:.3f}")
+        if "best_eval_info" in resume_state:
+            best_eval_info = resume_state["best_eval_info"]
+        if best_eval_score > -float("inf"):
+            best_eval_rank = (
+                best_eval_score,
+                best_eval_success,
+                -best_eval_collision,
+                -float(get_eval_metric(best_eval_info or {}, "timeout", 0.0)),
+                float(get_eval_metric(best_eval_info or {}, "diag_reward_task", 0.0)),
+                float(get_eval_metric(best_eval_info or {}, "return", 0.0)),
+            )
 
     # === Early Stopping ===
     es_cfg = cfg.get("early_stopping", {})
@@ -566,19 +633,27 @@ def main(cfg):
             print(f"[Train] Eval info at iter {global_iter} ({collector._frames} steps): DONE")
 
             # Cache latest eval success rate for curriculum scheduler
-            _latest_eval_success = eval_info.get("eval/stats_success", None)
+            current_eval = eval_summary(eval_info)
+            info["eval/checkpoint_score"] = current_eval["score"]
+            _latest_eval_success = get_eval_metric(eval_info, "success", None)
             if _latest_eval_success is not None:
-                latest_eval_success = _latest_eval_success
+                latest_eval_success = float(_latest_eval_success)
 
             if env_test_mode:
-                save_env_image(i)
+                if cfg.get("record_video", False):
+                    save_env_image(i)
                 print("[Training Loop] env_test_mode activated, exiting after evaluation.")
                 break
 
             # === Best Checkpoint Tracking ===
-            current_success = eval_info.get("eval/stats_success", -1.0)
-            if current_success > best_eval_success:
+            current_success = current_eval["success"]
+            current_rank = current_eval["rank"]
+            if best_eval_rank is None or current_rank > best_eval_rank:
+                best_eval_rank = current_rank
+                best_eval_score = current_eval["score"]
                 best_eval_success = current_success
+                best_eval_collision = current_eval["collision"]
+                best_eval_info = serializable_eval_info(eval_info)
                 best_policy_state = {k: v.clone() for k, v in policy.state_dict().items()}
                 # Save best checkpoint to disk
                 best_save_dir = run.dir if hasattr(run, 'dir') and run.dir and os.path.exists(run.dir) else cfg.log_output_dir
@@ -586,7 +661,11 @@ def main(cfg):
                 best_ckpt_path = os.path.join(best_save_dir, "checkpoint_best.pt")
                 torch.save(best_policy_state, best_ckpt_path)
                 es_degradation_count = 0
-                print(f"[Train] 🏆 New best model! success={current_success:.3f} at iter {global_iter}")
+                print(
+                    f"[Train] 🏆 New best model! score={best_eval_score:.3f} "
+                    f"success={best_eval_success:.3f} collision={best_eval_collision:.3f} "
+                    f"at iter {global_iter}"
+                )
             elif early_stopping_enabled and best_eval_success > 0:
                 # Check for performance degradation
                 if current_success < best_eval_success - es_min_delta:
@@ -595,7 +674,10 @@ def main(cfg):
                           f"(degradation {es_degradation_count}/{es_patience})")
                     if es_degradation_count >= es_patience:
                         print(f"[Train] 🛑 Early stopping triggered! Restoring best model (success={best_eval_success:.3f})")
-                        policy.load_state_dict(best_policy_state)
+                        if best_policy_state is not None:
+                            policy.load_state_dict(best_policy_state)
+                        else:
+                            print("[Train] WARNING: no in-memory best policy to restore after resume.")
                         break
                 else:
                     es_degradation_count = 0
@@ -624,8 +706,12 @@ def main(cfg):
                 "policy": policy.state_dict(),
                 "iter": global_iter,
                 "env_frames": collector._frames + start_env_frames,
+                "best_eval_score": best_eval_score,
                 "best_eval_success": best_eval_success,
+                "best_eval_collision": best_eval_collision,
             }
+            if best_eval_info is not None:
+                rich_ckpt["best_eval_info"] = best_eval_info
             try:
                 rich_ckpt["actor_optim"] = policy.actor_optim.state_dict()
                 rich_ckpt["critic_optim"] = policy.critic_optim.state_dict()
@@ -650,8 +736,12 @@ def main(cfg):
             "policy": policy.state_dict(),
             "iter": start_iter + i if i >= 0 else start_iter - 1,
             "env_frames": collector._frames + start_env_frames,
+            "best_eval_score": best_eval_score,
             "best_eval_success": best_eval_success,
+            "best_eval_collision": best_eval_collision,
         }
+        if best_eval_info is not None:
+            final_rich["best_eval_info"] = best_eval_info
         try:
             final_rich["actor_optim"] = policy.actor_optim.state_dict()
             final_rich["critic_optim"] = policy.critic_optim.state_dict()
@@ -676,7 +766,11 @@ def main(cfg):
             torch.save(best_policy_state, best_ckpt_path)
             with open(best_marker_path, "w") as f:
                 f.write(best_ckpt_path)
-            print(f"[Train] Best checkpoint saved: {best_ckpt_path} (success={best_eval_success:.3f})")
+            print(
+                f"[Train] Best checkpoint saved: {best_ckpt_path} "
+                f"(score={best_eval_score:.3f}, success={best_eval_success:.3f}, "
+                f"collision={best_eval_collision:.3f})"
+            )
         else:
             # No eval was run; fall back to final
             with open(best_marker_path, "w") as f:

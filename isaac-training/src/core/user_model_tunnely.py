@@ -121,6 +121,10 @@ class UserModelTunnel:
         self.repulsive_gain = 1.0  # Maxium repulsive force gain for APF
         self.max_speed = cfg.algo.actor.action_limit
         self.max_speed_z = 0
+        self.forward_speed = cfg.user_model.get("forward_speed", self.max_speed)
+        self.lateral_speed_limit = cfg.user_model.get("lateral_speed_limit", self.max_speed)
+        self.boundary_aware_y = cfg.user_model.get("boundary_aware_y", False)
+        self.y_boundary_margin = cfg.user_model.get("y_boundary_margin", 0.5)
         
         # 增加Z轴速度偏置 (Z-axis compensation for tilt-induced lift loss)
         # 【注意】在LeePositionController和模拟环境计算速度时均已考虑了对z轴速度的补偿，在多数情况下，此值应设为0
@@ -195,6 +199,8 @@ class UserModelTunnel:
             
             # 确定性的风格参数
             self.styles['noise_freq'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * self.freq_scale + self.freq_base
+            if self.cfg.user_model.get("max_noise_freq", None) is not None:
+                self.styles['noise_freq'][env_ids].clamp_(max=float(self.cfg.user_model.max_noise_freq))
             self.styles['smoothness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * self.smooth_scale + self.smooth_base
             self.styles['laziness'][env_ids] = torch.rand(K, 1, generator=gen, device=self.device) * self.laziness
 
@@ -207,6 +213,8 @@ class UserModelTunnel:
             # Training Mode: Random generate seeds and styles
             self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, self.num_channels), device=self.device)  # 3 channels for vx, vy, vz
             self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * self.freq_scale + self.freq_base
+            if self.cfg.user_model.get("max_noise_freq", None) is not None:
+                self.styles['noise_freq'][env_ids].clamp_(max=float(self.cfg.user_model.max_noise_freq))
             self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * self.smooth_scale + self.smooth_base
             self.styles['laziness'][env_ids] = torch.rand(K, 1, device=self.device) * self.laziness
 
@@ -395,7 +403,7 @@ class UserModelTunnel:
             
             # Scale noise to physical units
             scale = torch.tensor(
-                [self.max_speed, self.max_speed, self.max_speed_z], device=self.device)
+                [self.forward_speed, self.lateral_speed_limit, self.max_speed_z], device=self.device)
             
             noise_expanded = channel_noise.unsqueeze(-1) 
             # 拼接后形状变为 (K, T, C, 3)
@@ -418,6 +426,21 @@ class UserModelTunnel:
             # print(f"[UserModel] refill target vels mean z: {target_vels[:, :, 2].mean().item():.4f} m/s")##
 
         # No filtering, directly store target_vels
+        if self.boundary_aware_y:
+            room_size = self.cfg.env.get("room_size", None)
+            if room_size is not None:
+                y_half = float(room_size[1]) / 2.0
+                y_limit = max(0.0, y_half - float(self.y_boundary_margin))
+                start_y = start_pos[:, 1].reshape(K, 1)
+                delta_y = torch.cumsum(target_vels[:, :, 1] * dt, dim=1)
+                allowed_delta = (y_limit - start_y.abs()).clamp(min=0.0)
+                max_delta = delta_y.abs().amax(dim=1, keepdim=True)
+                scale_y = torch.minimum(
+                    torch.ones_like(max_delta),
+                    allowed_delta / (max_delta + 1e-6),
+                )
+                target_vels[:, :, 1] *= scale_y
+
         self.action_buffer[env_ids] = target_vels
         last_val = target_vels[:, -1, :]
         

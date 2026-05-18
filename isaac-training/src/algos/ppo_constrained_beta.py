@@ -658,13 +658,19 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             surr2 = advantage * ratio.clamp(1.-self.cfg.actor.clip_ratio, 1.+self.cfg.actor.clip_ratio)
             actor_loss = -torch.mean(torch.min(surr1, surr2)) * self.action_dim 
 
-            # 3. Regularization Loss — penalize residual deviation from human action.
-            # In direct no-residual mode, _mean_delta is a direct mean logit, not a
-            # residual, so reg_coeff is recorded for parity but has no loss effect.
+            # 3. Regularization Loss — penalize deviation from human intent.
+            # Residual mode regularizes the learned residual in Beta [0, 1] space.
+            # Direct mode regularizes the direct mean against the pilot command in
+            # the same [0, 1] space, so NoResidual removes only residual centering
+            # instead of also removing the intent-fidelity constraint.
             if self.policy_mode == "residual":
                 reg_loss = minibatch["_mean_delta"].pow(2).sum(dim=-1).mean()
             else:
-                reg_loss = actor_loss.new_zeros(())
+                direct_mean_01 = torch.sigmoid(minibatch["_mean_delta"]).clamp(0.01, 0.99)
+                human_action = minibatch[("agents", "observation", "human_action")]
+                human_action_norm = human_action / self.action_limit
+                human_action_01 = ((human_action_norm + 1.0) / 2.0).clamp(0.01, 0.99)
+                reg_loss = (direct_mean_01 - human_action_01).pow(2).sum(dim=-1).mean()
 
             # 4. Policy Loss
             loss_pi = actor_loss + self.reg_coeff * reg_loss

@@ -11,7 +11,7 @@
 │ ours            │ 完整方法基线                            │ 默认复用当前论文最佳 checkpoint，不重新三阶段训练                     │
 ├─────────────────┼─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
 │ no_residual     │ 验证 residual action parameterization   │ 改 PPO action-head 为 direct                                          │
-│                 │ 是否重要                                │ policy；仍接收飞手指令，但动作不再以飞手指令为中心                    │
+│                 │ 是否重要                                │ policy；仍接收飞手指令且保留同权重意图正则，但动作不再以飞手指令为中心 │
 ├─────────────────┼─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
 │ no_curriculum   │ 验证课程学习是否必要                    │ 直接在 hard/stage3 隧道上训练，预算等于三阶段总预算                   │
 ├─────────────────┼─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
@@ -27,6 +27,8 @@
  3. ours 可以直接使用当前最佳模型，但最终表格必须用同一套 ROS1/Gazebo batch protocol 评估。
  4. 不要比较 frozen ours 和新训练模型的训练曲线；只比较同协议最终测试结果。
  5. NoResidual 在 ROS1 测试时必须使用 --policy-mode direct。
+ 6. Isaac 侧统一评估使用 hard/stage3 隧道分布：80 obstacles、width [0.4, 0.9]、height [8.0, 18.0]。
+ 7. 旧版 NoResidual 若是在“direct policy 无意图正则”的代码上训练，不能作为最终公平消融结果，需要重训。
 
 ------------------------------------------------------------------------------------------------------------------------------------
 
@@ -112,6 +114,7 @@ ours 不需要重训，直接注册当前最佳 checkpoint：
  python experiments/04a_tunnel_ablation/run_eval_matrix.py \
    --manifests outputs/tunnel_ablation/manifests \
    --output-dir outputs/tunnel_ablation/eval \
+   --eval-seeds 101 102 103 104 105 \
    --num-envs 1024
 
 汇总 Isaac eval：
@@ -279,7 +282,7 @@ ROS1 Docker 内推荐使用：
 
 核心解释逻辑：
 
- - NoResidual 若 TCR / speed retention 变差，说明 residual centering 对意图保持重要。
+ - NoResidual 若 success/CRR 较高但 TCR/CTE 变差，说明 direct policy 更像自主避障器，residual centering 对共享控制中的意图保持重要。
  - NoCurriculum 若成功率低或碰撞高，说明 staged curriculum 有助于稳定学习。
  - FollowOnly 若碰撞高，说明局部 safety reward 必要。
  - SafetyRegOnly 若速度慢、timeout 高或 TCR 差，说明 following reward 对飞手意图满足必要。

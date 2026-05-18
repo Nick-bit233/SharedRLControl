@@ -89,7 +89,13 @@ def main(cfg):
     sim_app = init_simulation_app(cfg)
 
     # Imports that depend on sim app
-    from src.envs.env_tunnel import EnvTunnelResidual
+    env_name = cfg.env.get("name", "tunnel")
+    if env_name == "real_room":
+        from src.envs.env_real_room import EnvRealRoomResidual as EnvClass
+    elif env_name == "tunnel":
+        from src.envs.env_tunnel import EnvTunnelResidual as EnvClass
+    else:
+        raise ValueError(f"Unknown env.name: {env_name}")
     algo_distribution = cfg.algo.get("distribution", "tanh_normal")
     algo_policy_mode = cfg.algo.get("policy_mode", "residual")
     if algo_distribution == "beta":
@@ -132,7 +138,7 @@ def main(cfg):
         )
 
     # ---------------- env + policy ----------------
-    env = EnvTunnelResidual(cfg, trajectory_dataset=trajectory_dataset)
+    env = EnvClass(cfg, trajectory_dataset=trajectory_dataset)
     policy = ConstrainedResidualPPO(
         cfg.algo, env.observation_spec, env.action_spec, cfg.device
     )

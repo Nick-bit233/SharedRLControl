@@ -80,6 +80,48 @@ class HfTunnelObstaclesTerrainCfg(HfDiscreteObstaclesTerrainCfg):
     function = tunnel_obstacles_terrain
 
 
+@height_field_to_mesh
+def real_room_obstacles_terrain(difficulty: float, cfg: HfDiscreteObstaclesTerrainCfg) -> np.ndarray:
+    """Deterministic flat room terrain with fixed cylindrical obstacle footprints."""
+    size_x, size_y = cfg.size
+    horizontal_scale = cfg.horizontal_scale
+    vertical_scale = cfg.vertical_scale
+    rows = int(size_x / horizontal_scale)
+    cols = int(size_y / horizontal_scale)
+    hf_raw = np.zeros((rows, cols), dtype=np.int16)
+
+    centers = getattr(cfg, "obstacle_centers", ())
+    radius_range = tuple(getattr(cfg, "obstacle_radius_range", (0.1, 0.15)))
+    height_range = tuple(getattr(cfg, "obstacle_height_range", (1.8, 2.4)))
+    if not centers:
+        return hf_raw
+
+    xs = np.arange(rows, dtype=np.float32) * horizontal_scale - size_x / 2.0
+    ys = np.arange(cols, dtype=np.float32) * horizontal_scale - size_y / 2.0
+    grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
+
+    radius_min, radius_max = radius_range
+    height_min, height_max = height_range
+    denom = max(len(centers) - 1, 1)
+    for idx, center in enumerate(centers):
+        cx, cy = float(center[0]), float(center[1])
+        ratio = float(idx % (denom + 1)) / denom
+        radius = radius_min + (radius_max - radius_min) * ratio
+        height = height_min + (height_max - height_min) * ratio
+        mask = (grid_x - cx) ** 2 + (grid_y - cy) ** 2 <= radius ** 2
+        hf_raw[mask] = np.maximum(hf_raw[mask], int(height / vertical_scale))
+
+    return hf_raw
+
+
+@configclass
+class HfRealRoomObstaclesTerrainCfg(HfDiscreteObstaclesTerrainCfg):
+    function = real_room_obstacles_terrain
+    obstacle_centers: tuple = ()
+    obstacle_radius_range: tuple = (0.1, 0.15)
+    obstacle_height_range: tuple = (1.5, 2.4)
+
+
 class EnvTunnelResidual(IsaacEnv):
 
     # In one step:
@@ -100,6 +142,10 @@ class EnvTunnelResidual(IsaacEnv):
 
         # Train task configuration
         self.enable_yaw_control = cfg.get("enable_yaw_control", False)
+        self.env_name = cfg.env.get("name", "tunnel")
+        self.is_real_room = self.env_name == "real_room"
+        self.room_size = list(cfg.env.get("room_size", [6.0, 5.0, 2.5]))
+        self.start_pos_cfg = list(cfg.env.get("start_pos", [-7.0, 0.0, 5.0]))
         if self.enable_yaw_control:
             self.human_action_dim = 4  # (vel_b[3] + yaw_rate[1])
         else:
@@ -194,7 +240,8 @@ class EnvTunnelResidual(IsaacEnv):
         self.drone, self.controller = MultirotorBase.make(
             self.cfg.drone.model_name, self.cfg.drone.controller_name, self.device
         )
-        drone_prim = self.drone.spawn(translations=[(-7.0, 0.0, 5.0)])[0]
+        initial_translation = tuple(self.start_pos_cfg) if self.is_real_room else (-7.0, 0.0, 5.0)
+        drone_prim = self.drone.spawn(translations=[initial_translation])[0]
 
         # lighting
         light = AssetBaseCfg(
@@ -217,18 +264,56 @@ class EnvTunnelResidual(IsaacEnv):
             restitution=0.0,
         )
 
-        # Terrain generation, as static obstacles
-        terrain_cfg = TerrainImporterCfg(
-            num_envs=self.num_envs,
-            env_spacing=0.0,
-            prim_path="/World/ground",
-            terrain_type="generator",
-            terrain_generator=TerrainGeneratorCfg(
+        if self.is_real_room:
+            fixed_cfg = self.cfg.env.get("fixed_obstacles", {})
+            centers = []
+            for center in fixed_cfg.get("centers", []):
+                centers.append(tuple(float(v) for v in center[:2]))
+            for group in fixed_cfg.get("group_centers", []):
+                for center in group:
+                    centers.append(tuple(float(v) for v in center[:2]))
+            if fixed_cfg.get("include_origin", True):
+                origin = fixed_cfg.get("origin", [0.0, 0.0])
+                centers.append(tuple(float(v) for v in origin[:2]))
+
+            radius_range = tuple(fixed_cfg.get("radius_range", [0.1, 0.15]))
+            height_range = tuple(fixed_cfg.get("height_range", [1.5, 2.4]))
+            terrain_size = (float(self.room_size[0]), float(self.room_size[1]))
+            sub_terrain_cfg = HfRealRoomObstaclesTerrainCfg(
+                size=terrain_size,
+                horizontal_scale=0.05,
+                vertical_scale=0.05,
+                border_width=0.0,
+                num_obstacles=len(centers),
+                obstacle_height_mode="choice",
+                obstacle_width_range=(radius_range[0] * 2.0, radius_range[1] * 2.0),
+                obstacle_height_range=height_range,
+                platform_width=0,
+                obstacle_centers=tuple(centers),
+                obstacle_radius_range=radius_range,
+            )
+            terrain_generator_cfg = TerrainGeneratorCfg(
                 seed=0,
-                size=(24.0, 12.0), 
+                size=terrain_size,
+                border_width=0.0,
+                num_rows=1,
+                num_cols=1,
+                horizontal_scale=0.05,
+                vertical_scale=0.05,
+                slope_threshold=0.75,
+                use_cache=False,
+                color_scheme="height",
+                curriculum=False,
+                difficulty_range=(0.0, 1.0),
+                sub_terrains={"obstacles": sub_terrain_cfg},
+            )
+        else:
+            terrain_generator_cfg = TerrainGeneratorCfg(
+                seed=0,
+                size=(24.0, 12.0),
                 border_width=5.0,
-                num_rows=1, 
-                num_cols=1, 
+                num_rows=1,
+                num_cols=1,
                 horizontal_scale=0.1,
                 vertical_scale=0.1,
                 slope_threshold=0.75,
@@ -249,8 +334,16 @@ class EnvTunnelResidual(IsaacEnv):
                         platform_width=0,
                     ),
                 },
-            ),
-            visual_material = None,
+            )
+
+        # Terrain generation, as static obstacles
+        terrain_cfg = TerrainImporterCfg(
+            num_envs=self.num_envs,
+            env_spacing=0.0,
+            prim_path="/World/ground",
+            terrain_type="generator",
+            terrain_generator=terrain_generator_cfg,
+            visual_material=None,
             max_init_terrain_level=None,
             collision_group=-1,
             debug_vis=False,
@@ -340,6 +433,7 @@ class EnvTunnelResidual(IsaacEnv):
             "terminated": Unbounded(1),
             "truncated": Unbounded(1),
             "success": Unbounded(1),
+            "out_of_bounds": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
 
         info_spec = Composite({
@@ -359,7 +453,15 @@ class EnvTunnelResidual(IsaacEnv):
         sx, sy, sz = self.map_range  # half-extent in x, y, and z-max
         sx = sx * 0.8
         pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
-        if (self.training):  # get random start position
+        if self.is_real_room:
+            start_pos = torch.as_tensor(self.start_pos_cfg, dtype=torch.float, device=self.device)
+            pos[:, 0, :] = start_pos
+            start_y_randomization = float(self.cfg.env.get("start_y_randomization", 0.0))
+            if self.training and start_y_randomization > 0.0:
+                pos[:, 0, 1] += (
+                    torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * 2.0 - 1.0
+                ) * start_y_randomization
+        elif (self.training):  # get random start position
             # generate random start positions (within the platform area near the center of the map)
 
             pos[:, 0, 0] = -7.0  # y = -7
@@ -412,8 +514,15 @@ class EnvTunnelResidual(IsaacEnv):
         )
 
         # Set default height range for each env
-        self.height_range[env_ids, 0, 0] = 0.4 * sz    # min height
-        self.height_range[env_ids, 0, 1] = 1.6 * sz    # max height
+        if self.is_real_room:
+            reward_cfg = self.cfg.env.get("reward", {})
+            target_height = float(self.cfg.env.get("target_height", self.start_pos_cfg[2]))
+            height_tolerance = float(reward_cfg.get("height_tolerance", 0.25))
+            self.height_range[env_ids, 0, 0] = max(0.2, target_height - height_tolerance)
+            self.height_range[env_ids, 0, 1] = min(float(self.room_size[2]), target_height + height_tolerance)
+        else:
+            self.height_range[env_ids, 0, 0] = 0.4 * sz    # min height
+            self.height_range[env_ids, 0, 1] = 1.6 * sz    # max height
 
         # Reset visualization buffers if env 0 is reset
         if 0 in env_ids:
@@ -562,6 +671,7 @@ class EnvTunnelResidual(IsaacEnv):
         # Instead of a positive reward for being far, we apply a negative penalty for being close.
         # This decouples safety from the task when the agent is in safe space.
         # 只关注human_action输入方向（以及当前速度方向）上的障碍物，其他方向的障碍物降低权重
+        reward_params = self.cfg.env.get("reward", {})
         r_safety = 0.0
         if self.enable_lidar:
             # -------------------------------------------------------------------------
@@ -623,7 +733,7 @@ class EnvTunnelResidual(IsaacEnv):
             # -------------------------------------------------------------------------
             # 融合指数惩罚
             # -------------------------------------------------------------------------
-            r_safety_dist_scale = 1.0  # Wider gradient reach (was 0.5)
+            r_safety_dist_scale = float(reward_params.get("safety_dist_scale", 1.0))  # Wider gradient reach (was 0.5)
             
             # 计算三个独立的指数障碍物惩罚项 (范围 0 到 1，越近越接近1)
             p_min = torch.exp(-min_dist_to_obs / r_safety_dist_scale)
@@ -636,7 +746,7 @@ class EnvTunnelResidual(IsaacEnv):
             w_cmd = 0.4  # 主动寻死危险：指令导致撞墙
             
             # 安全区覆盖LiDAR 75%范围，让策略更早收到安全信号
-            safe_zone = 4.0  # was 3.0
+            safe_zone = float(reward_params.get("safe_zone", 4.0))  # was 3.0
             mask_min = (min_dist_to_obs < safe_zone).float()
             mask_vel = (dist_to_cur_vel_dir < safe_zone).float()
             mask_cmd = (dist_to_human_action_dir < safe_zone).float()
@@ -679,8 +789,8 @@ class EnvTunnelResidual(IsaacEnv):
 
         # Forward progress reward: incentivize moving along tunnel length axis (pos[0])
         # pos[0] starts at -7.0, increases toward +12.0
-        # forward_vel = drone_vel_w[..., 0:1]  # velocity along tunnel length axis
-        # reward_progress = 0.1 * forward_vel.clamp(min=0.0)  # only reward forward motion
+        forward_vel = drone_vel_w[..., 0:1]  # velocity along tunnel length axis
+        reward_progress = float(reward_params.get("progress_weight", 0.0)) * forward_vel.clamp(min=0.0)
 
         # height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
@@ -698,21 +808,45 @@ class EnvTunnelResidual(IsaacEnv):
         self.reward = (
             task_reward_term
             + reward_survival
-            + 3.0 * r_safety  # Stronger safety signal (was 2.0)
-            - 10.0 * penalty_height  # Stronger height penalty (was -8.0 linear, now quadratic)
-            - (0.5 * penalty_action_smoothness if self.enable_smoothness_penalty else 0.0)
+            + reward_progress
+            + float(reward_params.get("safety_weight", 3.0)) * r_safety  # Stronger safety signal (was 2.0)
+            - float(reward_params.get("height_penalty_weight", 10.0)) * penalty_height
+            - (float(reward_params.get("smoothness_weight", 0.5)) * penalty_action_smoothness if self.enable_smoothness_penalty else 0.0)
         )
         
         # Terminate Conditions & Terminal Penalty
-        below_bound = self.drone.pos[..., 2] < 0.2
-        above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0 
-        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (1.0 - 0.3 / self.lidar_range)
+        if self.is_real_room:
+            boundary_cfg = self.cfg.env.get("boundary_buffer", {})
+            x_buffer = float(boundary_cfg.get("x", 1.0))
+            y_buffer = float(boundary_cfg.get("y", 1.0))
+            z_buffer = float(boundary_cfg.get("z", 0.5))
+            half_x = float(self.room_size[0]) / 2.0
+            half_y = float(self.room_size[1]) / 2.0
+            below_bound = self.drone.pos[..., 2] < 0.2
+            above_bound = self.drone.pos[..., 2] > float(self.room_size[2]) + z_buffer
+            x_lower_oob = self.drone.pos[..., 0] < -half_x - x_buffer
+            y_oob = self.drone.pos[..., 1].abs() > half_y + y_buffer
+            out_of_bounds = below_bound | above_bound | x_lower_oob | y_oob
+            success = self.drone.pos[..., 0] >= float(self.cfg.env.get("success_x", half_x))
+        else:
+            below_bound = self.drone.pos[..., 2] < 0.2
+            above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0
+            out_of_bounds = below_bound | above_bound
+            # success if drone traverses the tunnel length (pos[0] is the tunnel length axis)
+            # Drone starts at pos[0] ≈ -7.0, tunnel ends at pos[0] ≈ +10.0
+            success = self.drone.pos[..., 0] > 10.0
+
+        collision_dist = float(reward_params.get("collision_distance", 0.3))
+        if self.enable_lidar:
+            static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (1.0 - collision_dist / self.lidar_range)
+        else:
+            static_collision = torch.zeros(self.num_envs, 1, dtype=torch.bool, device=self.device)
         collision = static_collision
-        # success if drone traverses the tunnel length (pos[0] is the tunnel length axis)
-        # Drone starts at pos[0] ≈ -7.0, tunnel ends at pos[0] ≈ +10.0
-        success = self.drone.pos[..., 0] > 10.0
+        success_bonus = float(reward_params.get("success_bonus", 0.0))
+        if success_bonus:
+            self.reward[success] += success_bonus
         
-        self.terminated = below_bound | above_bound | collision
+        self.terminated = out_of_bounds | collision
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
         self.truncated = timeout_truncate | success
 
@@ -721,7 +855,7 @@ class EnvTunnelResidual(IsaacEnv):
         # This ensures the Value Function learns to fear these states.
         crash_penalty = -10.0  # Reduced from -50 to lower return variance
         # Only apply to envs that just terminated due to crash (collision or out-of-bounds)
-        crashed_mask = ((collision | above_bound | below_bound) & ~self.truncated)
+        crashed_mask = ((collision | out_of_bounds) & ~self.truncated)
         self.reward[crashed_mask] += crash_penalty
 
         # update previous velocity for smoothness calculation in the next ieteration
@@ -739,8 +873,9 @@ class EnvTunnelResidual(IsaacEnv):
             # set the camera to focus on the lidar position (which is the drone)
             camera_mode = getattr(self, '_camera_view_mode', 'follow')
             if camera_mode == 'global':
+                eye_height = 10.0 if self.is_real_room else 32.0
                 set_camera_view(
-                    eye=torch.tensor([-3.0, 0.0, 32.0]),  # global top-down view
+                    eye=torch.tensor([-3.0, 0.0, eye_height]),  # global top-down view
                     target=torch.tensor([0.0, 0.0, 0.0])                        
                 )
             else:
@@ -816,6 +951,7 @@ class EnvTunnelResidual(IsaacEnv):
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
         self.stats["above_bound"] = above_bound.float()
         self.stats["below_bound"] = below_bound.float()
+        self.stats["out_of_bounds"] = out_of_bounds.float()
     
         # === DIAGNOSTIC: Log internal reward components to stats ===
         self.stats["diag_reward"] = self.reward
