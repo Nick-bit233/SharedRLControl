@@ -28,6 +28,9 @@ forward_reverse: false
 lateral_reverse: false
 vertical_reverse: false
 assist_high_is_enable: true
+# Treat CH9 as a momentary assist toggle: each rising edge switches
+# DIRECT <-> model-assisted control.
+assist_toggle_mode: true
 estop_high_is_stop: true
 reset_high_is_reset: true
 

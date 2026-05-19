@@ -24,8 +24,8 @@
     <arg name="estop_hold_mode" default="AUTO.LOITER"/>
     <arg name="max_xy_speed_real" default="1.0"/>
     <arg name="max_z_speed_real" default="0.3"/>
-    <arg name="safety_min_dist" default="0.5"/>
-    <arg name="collision_dist" default="0.2"/>
+    <arg name="safety_min_dist" default="0.25"/>
+    <arg name="collision_dist" default="0.15"/>
     <arg name="assist_input_deadzone_norm" default="0.05"/>
     <arg name="lock_z_control" default="true"/>
     <arg name="require_offboard" default="true"/>
@@ -36,7 +36,7 @@
     <arg name="geofence_y_min" default="-3.0"/>
     <arg name="geofence_y_max" default="3.0"/>
     <arg name="min_altitude" default="0.5"/>
-    <arg name="max_altitude" default="5.0"/>
+    <arg name="max_altitude" default="3.0"/>
 
     <arg name="odom_topic" default="/nokov/local_position/odom"/>
     <arg name="rc_topic" default="/mavros/rc/in"/>

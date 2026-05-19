@@ -174,12 +174,12 @@ class TunnelPolicyNet(nn.Module):
             left_mean = L[[8,9,10], :].mean()
             right_mean = L[[26,27,28], :].mean()
             back_mean = L[[17,18,19], :].mean()
-            print(f"[PolicyDbg] #{self._fwd_count} "
-                  f"md=[{md[0]:.3f},{md[1]:.3f},{md[2]:.3f}] "
-                  f"mean=[{m[0]:.3f},{m[1]:.3f},{m[2]:.3f}] "
-                  f"body=[{ab[0]:.2f},{ab[1]:.2f},{ab[2]:.2f}] "
-                  f"world=[{aw[0]:.2f},{aw[1]:.2f},{aw[2]:.2f}] "
-                  f"lidar F={fwd_mean:.2f} L={left_mean:.2f} R={right_mean:.2f} B={back_mean:.2f}")
+            # print(f"[PolicyDbg] #{self._fwd_count} "
+            #       f"md=[{md[0]:.3f},{md[1]:.3f},{md[2]:.3f}] "
+            #       f"mean=[{m[0]:.3f},{m[1]:.3f},{m[2]:.3f}] "
+            #       f"body=[{ab[0]:.2f},{ab[1]:.2f},{ab[2]:.2f}] "
+            #       f"world=[{aw[0]:.2f},{aw[1]:.2f},{aw[2]:.2f}] "
+            #       f"lidar F={fwd_mean:.2f} L={left_mean:.2f} R={right_mean:.2f} B={back_mean:.2f}")
             # Dump exact tensors for offline replay
             if self._fwd_count <= 5:
                 try:

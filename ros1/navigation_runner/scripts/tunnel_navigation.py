@@ -792,7 +792,7 @@ class TunnelNavigator:
     # ==================================================================
     # Main Control Loop
     # ==================================================================
-    def _real_policy_gate_ok(self):
+    def _real_common_gate_ok(self):
         if not self.cfg.use_px4:
             return True, "OK"
         now = rospy.Time.now()
@@ -806,20 +806,11 @@ class TunnelNavigator:
             return False, "NO_ODOM"
         if (now - self.last_odom_time).to_sec() > self.cfg.odom_timeout:
             return False, "ODOM_TIMEOUT"
-        if self.cfg.lidar_source == "topic":
-            if self.last_lidar_time is None:
-                return False, "NO_LIDAR"
-            if (now - self.last_lidar_time).to_sec() > self.cfg.lidar_timeout:
-                return False, "LIDAR_TIMEOUT"
         if self.cfg.human_action_source == "rc_topic":
             if self.last_human_action_time is None:
                 return False, "NO_RC_ACTION"
             if (now - self.last_human_action_time).to_sec() > self.cfg.human_action_timeout:
                 return False, "RC_ACTION_TIMEOUT"
-            if not self.assist_enabled:
-                return False, "ASSIST_DISABLED"
-        if not self.ready:
-            return False, "NOT_READY"
         if self.odom is not None:
             pos = self.odom.pose.pose.position
             if pos.z < self.cfg.min_altitude:
@@ -834,12 +825,38 @@ class TunnelNavigator:
                     return False, "GEOFENCE_Y"
         return True, "OK"
 
+    def _real_lidar_gate_ok(self):
+        if not self.cfg.use_px4:
+            return True, "OK"
+        now = rospy.Time.now()
+        if self.cfg.lidar_source == "topic":
+            if self.last_lidar_time is None:
+                return False, "NO_LIDAR"
+            if (now - self.last_lidar_time).to_sec() > self.cfg.lidar_timeout:
+                return False, "LIDAR_TIMEOUT"
+        if not self.ready:
+            return False, "NOT_READY"
+        return True, "OK"
+
+    def _real_policy_gate_ok(self):
+        gate_ok, gate_reason = self._real_common_gate_ok()
+        if not gate_ok:
+            return gate_ok, gate_reason
+        if self.cfg.human_action_source == "rc_topic" and not self.assist_enabled:
+            return False, "ASSIST_DISABLED"
+        return self._real_lidar_gate_ok()
+
     def _control_callback(self, event):
         if not self.odom_received:
             return
 
         if self.cfg.use_px4:
-            gate_ok, gate_reason = self._real_policy_gate_ok()
+            if self.cfg.human_action_source == "rc_topic":
+                gate_ok, gate_reason = self._real_common_gate_ok()
+                if gate_ok:
+                    gate_ok, gate_reason = self._real_lidar_gate_ok()
+            else:
+                gate_ok, gate_reason = self._real_policy_gate_ok()
             if not gate_ok:
                 request_hold = gate_reason not in {"ASSIST_DISABLED", "NO_RC_ACTION"}
                 self._publish_hover_cmd(request_hold=request_hold, reason=gate_reason)
@@ -942,6 +959,25 @@ class TunnelNavigator:
             self.status_pub.publish(String(data=status_msg))
             return
 
+        if self.cfg.use_px4 and self.cfg.human_action_source == "rc_topic":
+            human_action_np = self._current_topic_human_cmd()
+            self._publish_human_cmd(human_action_np)
+            if (
+                self.cfg.assist_input_deadzone_norm > 0.0
+                and float(np.linalg.norm(human_action_np[:2])) < self.cfg.assist_input_deadzone_norm
+            ):
+                self._publish_hover_cmd(request_hold=False, reason="INPUT_DEADZONE")
+                pos = self.odom.pose.pose.position
+                status_msg = (
+                    f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                    f"cmd=[0,0,0] | min_d={self.min_dist:.2f} | INPUT_DEADZONE"
+                )
+                self.status_pub.publish(String(data=status_msg))
+                return
+            if not self.assist_enabled:
+                self._publish_direct_cmd(human_action_np)
+                return
+
         if (
             (not self.cfg.keyboard_mode)
             and self.cfg.policy_takeoff_gate
@@ -1016,10 +1052,10 @@ class TunnelNavigator:
             rospy.loginfo(
                 f"[TunnelNav] iter={self._ctrl_iter}: "
                 f"ha=[{ha[0]:.2f},{ha[1]:.2f},{ha[2]:.2f}] "
-                f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] "
-                f"vel_b=[{s[0]:.2f},{s[1]:.2f},{s[2]:.2f}] "
-                f"lidar F={fwd_m:.3f} L={left_m:.3f} R={right_m:.3f} B={back_m:.3f} "
-                f"[min={L.min():.3f} max={L.max():.3f}]"
+                # f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] "
+                # f"vel_b=[{s[0]:.2f},{s[1]:.2f},{s[2]:.2f}] "
+                # f"lidar F={fwd_m:.3f} L={left_m:.3f} R={right_m:.3f} B={back_m:.3f} "
+                # f"[min={L.min():.3f} max={L.max():.3f}]"
             )
 
         # 3. Publish
@@ -1045,6 +1081,47 @@ class TunnelNavigator:
     # ==================================================================
     # Command publishers
     # ==================================================================
+    def _current_topic_human_cmd(self) -> np.ndarray:
+        with self._topic_human_lock:
+            cmd = self._topic_human_cmd.copy()
+        if self.cfg.lock_z_control:
+            cmd[2] = 0.0
+        return cmd
+
+    def _body_cmd_to_world(self, cmd_body: np.ndarray) -> np.ndarray:
+        yaw = self._current_yaw()
+        cy = math.cos(yaw)
+        sy = math.sin(yaw)
+        return np.array(
+            [
+                cy * cmd_body[0] - sy * cmd_body[1],
+                sy * cmd_body[0] + cy * cmd_body[1],
+                cmd_body[2],
+            ],
+            dtype=np.float32,
+        )
+
+    def _publish_direct_cmd(self, human_cmd_body: np.ndarray):
+        self.policy_active = False
+        self.policy_active_pub.publish(Bool(data=False))
+        self.z_policy_active = False
+        self.z_policy_active_pub.publish(Bool(data=False))
+
+        cmd = self._body_cmd_to_world(human_cmd_body)
+        if self.cfg.lock_z_control:
+            cmd[2] = 0.0
+        self._publish_policy_cmd(np.zeros(3, dtype=np.float32))
+        self._publish_cmd(cmd)
+        self._publish_vis(cmd, human_cmd_body)
+
+        pos = self.odom.pose.pose.position
+        status_msg = (
+            f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+            f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] | "
+            f"min_d={self.min_dist:.2f} | DIRECT"
+        )
+        self.status_pub.publish(String(data=status_msg))
+
     def _clamp_px4_cmd(self, cmd_vel_world: np.ndarray) -> np.ndarray:
         cmd = np.asarray(cmd_vel_world, dtype=np.float32).copy()
         hspeed = math.hypot(float(cmd[0]), float(cmd[1]))
