@@ -105,6 +105,16 @@ class TunnelConfig:
         self.auto_arm = _param_bool(rospy.get_param("~auto_arm", False))
         self.auto_offboard = _param_bool(rospy.get_param("~auto_offboard", False))
         self.require_offboard = _param_bool(rospy.get_param("~require_offboard", False))
+        self.real_auto_takeoff_on_offboard = _param_bool(
+            rospy.get_param("~real_auto_takeoff_on_offboard", False)
+        )
+        self.auto_arm_on_offboard = _param_bool(
+            rospy.get_param("~auto_arm_on_offboard", False)
+        )
+        self.post_takeoff_mode = str(rospy.get_param("~post_takeoff_mode", "direct")).lower()
+        self.post_takeoff_mode_delay = float(rospy.get_param("~post_takeoff_mode_delay", 2.0))
+        self.takeoff_reached_tolerance = float(rospy.get_param("~takeoff_reached_tolerance", 0.1))
+        self.on_offboard_loss = str(rospy.get_param("~on_offboard_loss", "stream_hold")).lower()
         self.estop_hold_mode = str(rospy.get_param("~estop_hold_mode", "AUTO.LOITER"))
         self.estop_fallback_mode = str(rospy.get_param("~estop_fallback_mode", "POSCTL"))
         self.hold_verify_timeout = float(rospy.get_param("~hold_verify_timeout", 1.0))
@@ -121,7 +131,6 @@ class TunnelConfig:
         # User model / keyboard mode
         self.human_action_source = str(rospy.get_param("~human_action_source", "user_model")).lower()
         self.human_action_topic = rospy.get_param("~human_action_topic", "/srlc/human_action")
-        self.assist_enable_topic = rospy.get_param("~assist_enable_topic", "/srlc/assist_enable")
         self.human_action_timeout = float(rospy.get_param("~human_action_timeout", 0.3))
         self.assist_input_deadzone_norm = float(
             rospy.get_param("~assist_input_deadzone_norm", 0.0)
@@ -159,6 +168,10 @@ class TunnelConfig:
         self.use_safety_shield = rospy.get_param("~use_safety_shield", False)
         self.safety_min_dist = rospy.get_param("~safety_min_dist", 0.35)
         self.collision_dist = rospy.get_param("~collision_dist", 0.20)
+        self.enable_safety_stop = _param_bool(rospy.get_param("~enable_safety_stop", True))
+        self.enable_collision_detection = _param_bool(
+            rospy.get_param("~enable_collision_detection", True)
+        )
         self.safety_mode = str(rospy.get_param("~safety_mode", "recover")).lower()
         self.safety_recover_speed = float(rospy.get_param("~safety_recover_speed", 0.35))
         self.safety_recover_forward_speed = float(
@@ -268,6 +281,24 @@ class TunnelNavigator:
             raise ValueError(f"Invalid human_action_source: {self.cfg.human_action_source}")
         if self.cfg.human_action_source == "keyboard":
             self.cfg.keyboard_mode = True
+        valid_post_takeoff_modes = {"direct", "assist"}
+        if self.cfg.post_takeoff_mode not in valid_post_takeoff_modes:
+            rospy.logfatal(
+                "[TunnelNav] Invalid post_takeoff_mode=%s; expected one of %s",
+                self.cfg.post_takeoff_mode,
+                sorted(valid_post_takeoff_modes),
+            )
+            rospy.signal_shutdown("Invalid post_takeoff_mode")
+            raise ValueError(f"Invalid post_takeoff_mode: {self.cfg.post_takeoff_mode}")
+        valid_offboard_loss_modes = {"stream_hold"}
+        if self.cfg.on_offboard_loss not in valid_offboard_loss_modes:
+            rospy.logfatal(
+                "[TunnelNav] Invalid on_offboard_loss=%s; expected one of %s",
+                self.cfg.on_offboard_loss,
+                sorted(valid_offboard_loss_modes),
+            )
+            rospy.signal_shutdown("Invalid on_offboard_loss")
+            raise ValueError(f"Invalid on_offboard_loss: {self.cfg.on_offboard_loss}")
         valid_safety_modes = {"hold", "recover"}
         if self.cfg.safety_mode not in valid_safety_modes:
             rospy.logfatal(
@@ -333,6 +364,10 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   safety_min_dist: {self.cfg.safety_min_dist} m")
         rospy.loginfo(f"[TunnelNav]   safety_mode    : {self.cfg.safety_mode}")
         rospy.loginfo(f"[TunnelNav]   collision_dist : {self.cfg.collision_dist} m")
+        rospy.loginfo(
+            f"[TunnelNav]   safety flags  : stop={self.cfg.enable_safety_stop}, "
+            f"collision={self.cfg.enable_collision_detection}"
+        )
         if not self.cfg.keyboard_mode:
             rospy.loginfo(
                 f"[TunnelNav]   user_model     : "
@@ -367,6 +402,12 @@ class TunnelNavigator:
                 f"require_offboard={self.cfg.require_offboard}, "
                 f"hold_on_stop={self.cfg.hold_on_stop}"
             )
+            rospy.loginfo(
+                f"[TunnelNav]   PX4 lifecycle : auto_takeoff={self.cfg.real_auto_takeoff_on_offboard}, "
+                f"auto_arm_on_offboard={self.cfg.auto_arm_on_offboard}, "
+                f"post_takeoff_mode={self.cfg.post_takeoff_mode}, "
+                f"delay={self.cfg.post_takeoff_mode_delay:.1f}s"
+            )
         rospy.loginfo(f"[TunnelNav] ===================")
 
         # ---- User model OR keyboard input ----
@@ -385,9 +426,9 @@ class TunnelNavigator:
             self.user_model = None
             self.rl_assist = False
             rospy.loginfo(
-                "[TunnelNav] RC TOPIC MODE: waiting for %s and %s",
+                "[TunnelNav] RC TOPIC MODE: waiting for %s; post_takeoff_mode=%s",
                 self.cfg.human_action_topic,
-                self.cfg.assist_enable_topic,
+                self.cfg.post_takeoff_mode,
             )
         else:
             self.user_model = UserModelTunnel(
@@ -428,7 +469,17 @@ class TunnelNavigator:
         self._topic_human_cmd = np.zeros(3, dtype=np.float32)
         self._topic_human_lock = threading.Lock()
         self.last_human_action_time = None
-        self.assist_enabled = self.cfg.human_action_source != "rc_topic"
+        self.control_mode = self.cfg.post_takeoff_mode.upper()
+        self.assist_enabled = (
+            self.cfg.human_action_source != "rc_topic"
+            or self.cfg.post_takeoff_mode == "assist"
+        )
+        self.real_lifecycle_state = "WAIT_OFFBOARD"
+        self._takeoff_hold_z = None
+        self._takeoff_xy = None
+        self._takeoff_settle_start = None
+        self._last_arm_request = rospy.Time(0)
+        self._arm_request_failed = False
         self._last_hold_mode_request = rospy.Time(0)
         self._hold_mode_request_time = None
         self._hold_mode_requested = None
@@ -532,6 +583,12 @@ class TunnelNavigator:
         self.status_pub = rospy.Publisher(
             "/tunnel_nav/status", String, queue_size=2
         )
+        self.lifecycle_state_pub = rospy.Publisher(
+            "/tunnel_nav/lifecycle_state", String, queue_size=2
+        )
+        self.control_mode_pub = rospy.Publisher(
+            "/tunnel_nav/control_mode", String, queue_size=2
+        )
         self.collision_pub = rospy.Publisher(
             "/tunnel_nav/collision", Bool, queue_size=2, latch=True
         )
@@ -571,12 +628,6 @@ class TunnelNavigator:
                 self.cfg.human_action_topic,
                 TwistStamped,
                 self._human_action_cb,
-                queue_size=1,
-            )
-            self.assist_enable_sub = rospy.Subscriber(
-                self.cfg.assist_enable_topic,
-                Bool,
-                self._assist_enable_cb,
                 queue_size=1,
             )
 
@@ -651,9 +702,6 @@ class TunnelNavigator:
             self._topic_human_cmd[1] = msg.twist.linear.y
             self._topic_human_cmd[2] = msg.twist.linear.z
         self.last_human_action_time = rospy.Time.now()
-
-    def _assist_enable_cb(self, msg):
-        self.assist_enabled = bool(msg.data)
 
     # ==================================================================
     # Raycast (LiDAR simulation — Python PCD raycaster or C++ service)
@@ -846,8 +894,203 @@ class TunnelNavigator:
             return False, "ASSIST_DISABLED"
         return self._real_lidar_gate_ok()
 
+    def _publish_mode_state(self):
+        if hasattr(self, "lifecycle_state_pub"):
+            self.lifecycle_state_pub.publish(String(data=str(self.real_lifecycle_state)))
+        if hasattr(self, "control_mode_pub"):
+            self.control_mode_pub.publish(String(data=str(self.control_mode)))
+
+    def _set_control_mode(self, mode):
+        mode = str(mode).upper()
+        self.control_mode = mode
+        self.assist_enabled = mode == "ASSIST"
+        self._publish_mode_state()
+
+    def _publish_px4_hold_setpoint(self, target_z=None, reason="HOLD"):
+        self.policy_active = False
+        if hasattr(self, "policy_active_pub"):
+            self.policy_active_pub.publish(Bool(data=False))
+        self.z_policy_active = False
+        if hasattr(self, "z_policy_active_pub"):
+            self.z_policy_active_pub.publish(Bool(data=False))
+        self._publish_policy_cmd(np.zeros(3, dtype=np.float32))
+
+        if not self.cfg.use_px4:
+            self._publish_hover_cmd(request_hold=False, reason=reason)
+            return
+
+        if target_z is None:
+            if self.odom is not None:
+                target_z = float(self.odom.pose.pose.position.z)
+            else:
+                target_z = float(self.cfg.takeoff_height)
+
+        msg = PositionTarget()
+        msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = "map"
+        msg.velocity.x = 0.0
+        msg.velocity.y = 0.0
+        msg.position.z = float(target_z)
+        msg.yaw = self._current_yaw() if self.odom is not None else 0.0
+        msg.type_mask = (
+            PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_VZ
+            | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ | PositionTarget.IGNORE_YAW_RATE
+        )
+        self.action_pub.publish(msg)
+
+    def _publish_real_lifecycle_hold(self, reason, target_z=None):
+        self._publish_px4_hold_setpoint(target_z=target_z, reason=reason)
+        self._publish_mode_state()
+        pos = self.odom.pose.pose.position if self.odom is not None else None
+        if pos is None:
+            status_msg = f"cmd=[0,0,0] | {self.real_lifecycle_state} | {reason}"
+        else:
+            z_cmd = float(target_z) if target_z is not None else float(pos.z)
+            status_msg = (
+                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                f"cmd=[0,0,0] z_sp={z_cmd:.2f} | min_d={self.min_dist:.2f} | "
+                f"{self.real_lifecycle_state} | {reason}"
+            )
+        self.status_pub.publish(String(data=status_msg))
+
+    def _request_arm_on_offboard(self):
+        if not self.cfg.auto_arm_on_offboard:
+            return
+        if self.mavros_state is not None and self.mavros_state.armed:
+            return
+        now = rospy.Time.now()
+        if (now - self._last_arm_request).to_sec() < 1.0:
+            return
+        self._last_arm_request = now
+        try:
+            resp = self.arming_client(CommandBoolRequest(value=True))
+            self._arm_request_failed = not bool(resp.success)
+            if not resp.success:
+                rospy.logwarn_throttle(2.0, "[TunnelNav] PX4 arming request rejected")
+        except rospy.ServiceException as exc:
+            self._arm_request_failed = True
+            rospy.logwarn_throttle(2.0, "[TunnelNav] PX4 arming request failed: %s", exc)
+
+    def _real_lifecycle_preconditions_ok(self):
+        now = rospy.Time.now()
+        if self.external_stop:
+            return False, "EXTERNAL_STOP"
+        if self.mavros_state is None or not self.mavros_state.connected:
+            return False, "MAVROS_NOT_CONNECTED"
+        if self.mavros_state.mode != "OFFBOARD":
+            return False, "PX4_NOT_OFFBOARD"
+        if self.last_odom_time is None:
+            return False, "NO_ODOM"
+        if (now - self.last_odom_time).to_sec() > self.cfg.odom_timeout:
+            return False, "ODOM_TIMEOUT"
+        if self.cfg.human_action_source == "rc_topic":
+            if self.last_human_action_time is None:
+                return False, "NO_RC_ACTION"
+            if (now - self.last_human_action_time).to_sec() > self.cfg.human_action_timeout:
+                return False, "RC_ACTION_TIMEOUT"
+        if self.odom is not None:
+            pos = self.odom.pose.pose.position
+            if len(self.cfg.geofence_x) == 2:
+                if pos.x < self.cfg.geofence_x[0] or pos.x > self.cfg.geofence_x[1]:
+                    return False, "GEOFENCE_X"
+            if len(self.cfg.geofence_y) == 2:
+                if pos.y < self.cfg.geofence_y[0] or pos.y > self.cfg.geofence_y[1]:
+                    return False, "GEOFENCE_Y"
+        return True, "OK"
+
+    def _start_real_takeoff(self):
+        pos = self.odom.pose.pose.position
+        self._takeoff_xy = (float(pos.x), float(pos.y))
+        self._takeoff_hold_z = float(self.cfg.takeoff_height)
+        self._takeoff_settle_start = None
+        self.initial_z = float(pos.z)
+        self.safety_airborne = False
+        self.real_lifecycle_state = "TAKEOFF_CLIMB"
+        self._publish_mode_state()
+        rospy.loginfo(
+            "[TunnelNav] Real PX4 takeoff started at x=%.2f y=%.2f z=%.2f target_z=%.2f",
+            pos.x,
+            pos.y,
+            pos.z,
+            self._takeoff_hold_z,
+        )
+
+    def _update_real_px4_lifecycle(self):
+        if not (
+            self.cfg.use_px4
+            and self.cfg.real_auto_takeoff_on_offboard
+            and self.cfg.human_action_source == "rc_topic"
+        ):
+            return True
+
+        self._publish_mode_state()
+        hold_z = (
+            self._takeoff_hold_z
+            if self._takeoff_hold_z is not None
+            else (float(self.odom.pose.pose.position.z) if self.odom is not None else None)
+        )
+
+        pre_ok, pre_reason = self._real_lifecycle_preconditions_ok()
+        if not pre_ok:
+            if pre_reason == "PX4_NOT_OFFBOARD":
+                if self.real_lifecycle_state == "ACTIVE":
+                    rospy.logwarn("[TunnelNav] OFFBOARD lost; suppressing DIRECT/RL output")
+                    self.real_lifecycle_state = "OFFBOARD_LOST_HOLD"
+                elif self.real_lifecycle_state != "OFFBOARD_LOST_HOLD":
+                    self.real_lifecycle_state = "WAIT_OFFBOARD"
+                self._set_control_mode(self.cfg.post_takeoff_mode)
+            self._publish_real_lifecycle_hold(pre_reason, target_z=hold_z)
+            return False
+
+        if self.mavros_state is not None and not self.mavros_state.armed:
+            self.real_lifecycle_state = "WAIT_ARMED"
+            self._request_arm_on_offboard()
+            reason = "ARMING_FAILED" if self._arm_request_failed else "WAIT_ARMED"
+            self._publish_real_lifecycle_hold(reason, target_z=hold_z)
+            return False
+        self._arm_request_failed = False
+
+        if self.real_lifecycle_state in {"WAIT_OFFBOARD", "OFFBOARD_LOST_HOLD", "WAIT_ARMED"}:
+            self._start_real_takeoff()
+
+        if self.real_lifecycle_state == "TAKEOFF_CLIMB":
+            target_z = float(self._takeoff_hold_z or self.cfg.takeoff_height)
+            self._publish_real_lifecycle_hold("TAKEOFF_CLIMB", target_z=target_z)
+            cur_z = float(self.odom.pose.pose.position.z)
+            if cur_z >= target_z - self.cfg.takeoff_reached_tolerance:
+                self.real_lifecycle_state = "TAKEOFF_SETTLE"
+                self._takeoff_settle_start = rospy.Time.now()
+                rospy.loginfo("[TunnelNav] Takeoff height reached: z=%.2f target=%.2f", cur_z, target_z)
+            return False
+
+        if self.real_lifecycle_state == "TAKEOFF_SETTLE":
+            target_z = float(self._takeoff_hold_z or self.cfg.takeoff_height)
+            self._publish_real_lifecycle_hold("TAKEOFF_SETTLE", target_z=target_z)
+            elapsed = (rospy.Time.now() - self._takeoff_settle_start).to_sec()
+            if elapsed < self.cfg.post_takeoff_mode_delay:
+                return False
+            lidar_ok, lidar_reason = self._real_lidar_gate_ok()
+            if not lidar_ok:
+                self._publish_real_lifecycle_hold(lidar_reason, target_z=target_z)
+                return False
+            self.real_lifecycle_state = "ACTIVE"
+            self._set_control_mode(self.cfg.post_takeoff_mode)
+            rospy.loginfo(
+                "[TunnelNav] Real PX4 lifecycle active: mode=%s delay=%.1fs",
+                self.control_mode,
+                self.cfg.post_takeoff_mode_delay,
+            )
+
+        return self.real_lifecycle_state == "ACTIVE"
+
     def _control_callback(self, event):
         if not self.odom_received:
+            return
+
+        if not self._update_real_px4_lifecycle():
             return
 
         if self.cfg.use_px4:
@@ -944,7 +1187,7 @@ class TunnelNavigator:
             self.in_tumble_recovery = False
             self.tumble_recovery_start = None
             pos = self.odom.pose.pose.position
-            if self.cfg.safety_mode == "recover":
+            if (not self.cfg.use_px4) and self.cfg.safety_mode == "recover":
                 cmd = self._publish_safety_recovery()
                 mode_label = "SAFETY_RECOVER"
                 cmd_label = f"[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}]"
@@ -1500,6 +1743,12 @@ class TunnelNavigator:
     # Takeoff
     # ==================================================================
     def _takeoff(self):
+        if self.cfg.use_px4 and self.cfg.real_auto_takeoff_on_offboard:
+            rospy.loginfo(
+                "[TunnelNav] Real PX4 lifecycle will arm/take off after OFFBOARD is detected."
+            )
+            return
+
         rospy.loginfo("[TunnelNav] Waiting for odometry...")
         rate = rospy.Rate(10)
         while not rospy.is_shutdown() and not self.odom_received:
@@ -1557,15 +1806,22 @@ class TunnelNavigator:
     # Safety
     # ==================================================================
     def _apply_proximity_safety(self, min_dist):
-        if min_dist < self.cfg.collision_dist:
+        if not self.cfg.enable_safety_stop and not self.cfg.enable_collision_detection:
+            if self.safety_stop:
+                rospy.loginfo("[TunnelNav] Safety stop disabled; clearing active safety stop")
+            self.safety_stop = False
+            return
+
+        if self.cfg.enable_collision_detection and min_dist < self.cfg.collision_dist:
             self.collision = True
-            self.safety_stop = True
             self.collision_pub.publish(Bool(data=True))
             rospy.logerr(
                 f"[TunnelNav] COLLISION! min_dist={min_dist:.3f} m "
                 f"(threshold={self.cfg.collision_dist} m) — task failed"
             )
-        elif min_dist < self.cfg.safety_min_dist:
+            return
+
+        if self.cfg.enable_safety_stop and min_dist < self.cfg.safety_min_dist:
             if not self.safety_stop:
                 rospy.logwarn(f"[TunnelNav] SAFETY STOP! min_dist={min_dist:.2f} m")
             self.safety_stop = True
@@ -1628,9 +1884,10 @@ class TunnelNavigator:
                 and self.last_min_dist_time is not None
             ):
                 if (rospy.Time.now() - self.last_min_dist_time).to_sec() > self.cfg.lidar_timeout:
-                    if not self.safety_stop:
-                        rospy.logwarn("[TunnelNav] SAFETY STOP! min_distance topic timeout")
-                    self.safety_stop = True
+                    if self.cfg.enable_safety_stop or self.cfg.enable_collision_detection:
+                        if not self.safety_stop:
+                            rospy.logwarn("[TunnelNav] SAFETY STOP! min_distance topic timeout")
+                        self.safety_stop = True
                     rate.sleep()
                     continue
                 pos_z = float(self.odom.pose.pose.position.z)

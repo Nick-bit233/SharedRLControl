@@ -29,8 +29,16 @@
     <arg name="assist_input_deadzone_norm" default="0.05"/>
     <arg name="lock_z_control" default="true"/>
     <arg name="require_offboard" default="true"/>
+    <arg name="real_auto_takeoff_on_offboard" default="true"/>
+    <arg name="auto_arm_on_offboard" default="true"/>
+    <arg name="post_takeoff_mode" default="direct"/>
+    <arg name="post_takeoff_mode_delay" default="2.0"/>
+    <arg name="takeoff_reached_tolerance" default="0.1"/>
+    <arg name="on_offboard_loss" default="stream_hold"/>
     <arg name="hold_on_stop" default="false"/>
     <arg name="enable_external_stop" default="false"/>
+    <arg name="enable_safety_stop" default="true"/>
+    <arg name="enable_collision_detection" default="true"/>
     <arg name="geofence_x_min" default="-3.0"/>
     <arg name="geofence_x_max" default="3.0"/>
     <arg name="geofence_y_min" default="-3.0"/>
@@ -102,12 +110,20 @@
         <param name="takeoff_height" value="$(arg takeoff_height)"/>
         <param name="lock_z_control" value="$(arg lock_z_control)"/>
         <param name="require_offboard" value="$(arg require_offboard)"/>
+        <param name="real_auto_takeoff_on_offboard" value="$(arg real_auto_takeoff_on_offboard)"/>
+        <param name="auto_arm_on_offboard" value="$(arg auto_arm_on_offboard)"/>
+        <param name="post_takeoff_mode" value="$(arg post_takeoff_mode)"/>
+        <param name="post_takeoff_mode_delay" value="$(arg post_takeoff_mode_delay)"/>
+        <param name="takeoff_reached_tolerance" value="$(arg takeoff_reached_tolerance)"/>
+        <param name="on_offboard_loss" value="$(arg on_offboard_loss)"/>
         <param name="hold_on_stop" value="$(arg hold_on_stop)"/>
         <param name="enable_external_stop" value="$(arg enable_external_stop)"/>
         <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
         <param name="estop_hold_mode" value="$(arg estop_hold_mode)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
+        <param name="enable_safety_stop" value="$(arg enable_safety_stop)"/>
+        <param name="enable_collision_detection" value="$(arg enable_collision_detection)"/>
         <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
         <param name="collision_dist" value="$(arg collision_dist)"/>
         <param name="min_altitude" value="$(arg min_altitude)"/>

@@ -11,7 +11,7 @@ import rospy
 from geometry_msgs.msg import TwistStamped
 from mavros_msgs.msg import PositionTarget, RCIn
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool, Float32, Float32MultiArray, String
+from std_msgs.msg import Float32, Float32MultiArray, String
 
 
 class SrlcDryRunRecorder:
@@ -27,7 +27,7 @@ class SrlcDryRunRecorder:
         self.odom_topic = rospy.get_param("~odom_topic", "/mavros/local_position/odom")
         self.rc_topic = rospy.get_param("~rc_topic", "/mavros/rc/in")
         self.human_action_topic = rospy.get_param("~human_action_topic", "/srlc/human_action")
-        self.assist_enable_topic = rospy.get_param("~assist_enable_topic", "/srlc/assist_enable")
+        self.control_mode_topic = rospy.get_param("~control_mode_topic", "/tunnel_nav/control_mode")
         self.policy_cmd_topic = rospy.get_param("~policy_cmd_topic", "/tunnel_nav/policy_cmd")
         self.setpoint_raw_topic = rospy.get_param("~setpoint_raw_topic", "/mavros/setpoint_raw/local")
         self.lidar_min_distance_topic = rospy.get_param("~lidar_min_distance_topic", "/srlc/lidar/min_distance")
@@ -39,7 +39,7 @@ class SrlcDryRunRecorder:
         self.human_cmd = None
         self.policy_cmd = None
         self.setpoint = None
-        self.assist_enabled = False
+        self.control_mode = ""
         self.min_distance = float("inf")
         self.front_distance = float("inf")
         self.status = ""
@@ -53,7 +53,7 @@ class SrlcDryRunRecorder:
         rospy.Subscriber(self.odom_topic, Odometry, self._odom_cb, queue_size=1)
         rospy.Subscriber(self.rc_topic, RCIn, self._rc_cb, queue_size=1)
         rospy.Subscriber(self.human_action_topic, TwistStamped, self._human_cb, queue_size=1)
-        rospy.Subscriber(self.assist_enable_topic, Bool, self._assist_cb, queue_size=1)
+        rospy.Subscriber(self.control_mode_topic, String, self._control_mode_cb, queue_size=1)
         rospy.Subscriber(self.policy_cmd_topic, TwistStamped, self._policy_cb, queue_size=1)
         rospy.Subscriber(self.setpoint_raw_topic, PositionTarget, self._setpoint_cb, queue_size=1)
         rospy.Subscriber(self.lidar_min_distance_topic, Float32, self._min_distance_cb, queue_size=1)
@@ -76,8 +76,8 @@ class SrlcDryRunRecorder:
     def _human_cb(self, msg):
         self.human_cmd = msg
 
-    def _assist_cb(self, msg):
-        self.assist_enabled = bool(msg.data)
+    def _control_mode_cb(self, msg):
+        self.control_mode = str(msg.data)
 
     def _policy_cb(self, msg):
         self.policy_cmd = msg
@@ -138,7 +138,8 @@ class SrlcDryRunRecorder:
                 "velocity": [float(v.x), float(v.y), float(v.z)],
                 "yaw": float(self._yaw_from_odom(self.odom)),
                 "rc": list(self.rc.channels) if self.rc is not None else [],
-                "assist_enabled": bool(self.assist_enabled),
+                "control_mode": self.control_mode,
+                "assist_enabled": self.control_mode.upper() == "ASSIST",
                 "human_action": self._twist_vec(self.human_cmd),
                 "policy_cmd": self._twist_vec(self.policy_cmd),
                 "setpoint_velocity": setpoint_v,

@@ -29,15 +29,15 @@ MAVROS over LAN
   -> /mavros/rc/in
        └─ rc_input_node.py
             -> /srlc/human_action
-            -> /srlc/assist_enable
             -> /srlc/rc_status
 
 tunnel_navigation.py
   <- /srlc/lidar/range_image
   <- /srlc/human_action
-  <- /srlc/assist_enable
   -> /mavros/setpoint_raw/local
   -> /tunnel_nav/status
+  -> /tunnel_nav/lifecycle_state
+  -> /tunnel_nav/control_mode
   -> /tunnel_nav/policy_active
 ```
 
@@ -45,8 +45,9 @@ tunnel_navigation.py
 
 1. `/nokov/local_position/odom` 是 SRLC、map LiDAR 和 RViz 对齐显示的唯一真实状态源。
 2. `/mavros/local_position/odom` 即使存在也只作为 PX4/MAVROS 回报，不参与 SRLC 状态估计。
-3. `tunnel_real_px4.launch` 不解锁、不起飞、不切 OFFBOARD；这些都由飞手、地面站或既有 PX4 流程完成。
-4. 输入死区、未进入 OFFBOARD、越界、定位/LiDAR/RC 超时都会使 SRLC 发布零速度/锁高 setpoint，并让 `/tunnel_nav/policy_active=False`；assist 关闭且摇杆超过死区时进入 DIRECT，直接按 RC 摇杆发布速度 setpoint。
+3. `tunnel_real_px4.launch` 不主动切 OFFBOARD；OFFBOARD 由遥控器/PX4 模式开关触发。
+4. 进入 OFFBOARD 后，SRLC 会自动请求解锁、爬升到 `takeoff_height` 并悬停，随后按 `post_takeoff_mode` 进入 DIRECT 或 ASSIST。
+5. 输入死区、未进入 OFFBOARD、越界、定位/LiDAR/RC 超时都会使 SRLC 发布零速度/锁高 setpoint，并让 `/tunnel_nav/policy_active=False`。
 
 ## 2. 代码侧默认配置
 
@@ -62,17 +63,17 @@ roslaunch navigation_runner tunnel_real_px4.launch ...
 | --- | --- |
 | odom | `/nokov/local_position/odom` |
 | RC | `/mavros/rc/in` |
-| assist 通道 | CH9 |
+| 模式选择 | `post_takeoff_mode`，默认 `direct` |
 | setpoint | `/mavros/setpoint_raw/local` |
-| 自动 arm | `false` |
+| 自动 arm | OFFBOARD 后自动请求 |
 | 自动 OFFBOARD | `false` |
 | 要求 OFFBOARD 后才允许策略介入 | `true` |
 | SRLC 外部 stop topic | 关闭 |
 | SRLC 请求 PX4 hold/land | 关闭 |
-| 起飞/平飞高度 | `2.0m` |
+| 起飞/平飞高度 | `1.2m` |
 | z 轴共享控制 | `lock_z_control=true` |
 | 默认水平边界 | `x,y ∈ [-3, 3]m` |
-| 默认高度边界 | `z ∈ [0.5, 5.0]m` |
+| 默认高度边界 | `z ∈ [0.5, 3.0]m` |
 
 相关文件：
 
@@ -216,32 +217,39 @@ rostopic hz /nokov/imu/data
 
 ### 5.4 终端 D：SRLC 真机链路
 
-无 RViz 的飞行版：
 
 ```bash
 source /opt/ros/noetic/setup.bash
 source ~/nokov_ws/devel/setup.bash
 source ~/catkin_ws/devel/setup.bash
 
-roslaunch navigation_runner tunnel_real_px4.launch \
-  start_mavros:=false \
-  rviz:=false \
-  record:=true \
-  takeoff_height:=1.2 \
-  lock_z_control:=true \
-  odom_topic:=/nokov/local_position/odom \
-  rc_topic:=/mavros/rc/in \
-  setpoint_raw_topic:=/mavros/setpoint_raw/local
-```
-
-需要在推理电脑上看 RViz：
-
-```bash
+# direct
 roslaunch navigation_runner tunnel_real_px4.launch \
   start_mavros:=false \
   rviz:=true \
   record:=true \
-  odom_topic:=/nokov/local_position/odom
+  takeoff_height:=0.8 \
+  lock_z_control:=true \
+  odom_topic:=/nokov/local_position/odom \
+  rc_topic:=/mavros/rc/in \
+  setpoint_raw_topic:=/mavros/setpoint_raw/local \
+  post_takeoff_mode:=direct \
+  enable_safety_stop:=true
+```
+
+```bash
+# assist RL
+roslaunch navigation_runner tunnel_real_px4.launch \
+  start_mavros:=false \
+  rviz:=true \
+  record:=true \
+  takeoff_height:=0.8 \
+  lock_z_control:=true \
+  odom_topic:=/nokov/local_position/odom \
+  rc_topic:=/mavros/rc/in \
+  setpoint_raw_topic:=/mavros/setpoint_raw/local \
+  post_takeoff_mode:=assist \
+  enable_safety_stop:=true
 ```
 
 如需让该 launch 同时启动 MAVROS，可显式打开：
@@ -256,36 +264,36 @@ roslaunch navigation_runner tunnel_real_px4.launch \
 
 不要同时在其他终端重复启动 MAVROS。
 
-## 6. 起飞、OFFBOARD 与 assist 流程
+## 6. 起飞、OFFBOARD 与自动模式流程
 
 `tunnel_real_px4.launch` 启动后：
 
-- **不会自动起飞**
-- **不会自动解锁**
 - **不会自动切 OFFBOARD**
+- **会持续发送被动 hold setpoint，保证 PX4 可以接受 OFFBOARD**
+- **检测到 OFFBOARD 后会自动请求解锁并爬升到 `takeoff_height`**
 - **不需要命令行向 SRLC 发送起飞指令**
 
 推荐流程：
 
-1. 保持 `/srlc/assist_enable=False`。
-2. 启动 MAVROS、nokov、SRLC。
+1. 启动 MAVROS、nokov、SRLC。
+2. 检查 `/tunnel_nav/lifecycle_state`，应处于 `WAIT_OFFBOARD`。
 3. 检查 `/tunnel_nav/status`，确认不是 `NO_ODOM`、`NO_LIDAR`、`MAVROS_NOT_CONNECTED`、`NO_RC_ACTION`。
-4. 由飞手/地面站按现场流程解锁并起飞到约 `2m`。
-5. 飞手或地面站按现场流程切入 OFFBOARD/外部速度控制。
-6. 确认 `/mavros/state.mode` 为 `OFFBOARD`。
-7. 按下遥控器 CH9 assist，将 `/srlc/assist_enable` 切到 `True`。
-8. 摇杆输入超过 `assist_input_deadzone_norm` 后，SRLC 策略才会介入并发布非零速度 setpoint。
-9. 再次按下 CH9 assist 后回到 DIRECT；若摇杆仍超过死区，则 setpoint 跟随 RC，`/tunnel_nav/policy_active=False`。
+4. 飞手或地面站按现场流程切入 OFFBOARD/外部速度控制。
+5. SRLC 自动请求 arm；PX4 报告 armed 后爬升到 `takeoff_height` 并悬停。
+6. 起飞后等待 `post_takeoff_mode_delay`，默认 `2s`。
+7. SRLC 自动进入 `post_takeoff_mode` 指定模式：默认 `DIRECT`，也可启动时设为 `assist`。
+8. 摇杆输入超过 `assist_input_deadzone_norm` 后才发布非零速度 setpoint；低于死区保持悬停。
 
 ## 7. 无输入/idle 状态确认
 
-启动 SRLC 后、未进入 OFFBOARD 或摇杆处于死区时，无人机不应受到模型前进指令影响。OFFBOARD 下 assist 关闭且摇杆超过死区时会进入 DIRECT，按 RC 摇杆发布速度 setpoint。
+启动 SRLC 后、未进入 OFFBOARD 或摇杆处于死区时，无人机不应受到模型前进指令影响。OFFBOARD 起飞完成后，控制模式由 `post_takeoff_mode` 决定。
 
 检查命令：
 
 ```bash
-rostopic echo /srlc/assist_enable
 rostopic echo /srlc/rc_status
+rostopic echo /tunnel_nav/lifecycle_state
+rostopic echo /tunnel_nav/control_mode
 rostopic echo /tunnel_nav/policy_active
 rostopic echo /tunnel_nav/status
 rostopic echo /mavros/setpoint_raw/local
@@ -293,33 +301,29 @@ rostopic echo /mavros/setpoint_raw/local
 
 期望：
 
-- `/srlc/assist_enable=False`
 - `/tunnel_nav/policy_active=False`
-- `/tunnel_nav/status` 显示 `DIRECT`、`INPUT_DEADZONE` 或 `PX4_NOT_OFFBOARD`
-- DIRECT 且摇杆超过死区时，`/mavros/setpoint_raw/local` 的 `velocity.x/y` 跟随 RC；死区/未 OFFBOARD 时为 0
+- `/tunnel_nav/status` 显示 `WAIT_OFFBOARD`、`TAKEOFF_CLIMB`、`TAKEOFF_SETTLE`、`INPUT_DEADZONE` 或 `PX4_NOT_OFFBOARD`
+- DIRECT 且摇杆超过死区时，`/mavros/setpoint_raw/local` 的 `velocity.x/y` 跟随 RC；ASSIST 且摇杆超过死区时由策略输出；死区/未 OFFBOARD 时为 0
 - 没有默认前进速度；真实部署不启动 fake RC，也不启用 user_model 输入
 
-## 8. assist 是否生效的确认方法
+## 8. 自动模式是否生效的确认方法
 
 ### 8.1 RC bridge 层
 
 ```bash
-rostopic echo /srlc/assist_enable
 rostopic echo /srlc/rc_status
 ```
 
-CH9 按键切换到 assist 且 RC 新鲜时：
+RC 新鲜时：
 
 ```text
-/srlc/assist_enable: True
-/srlc/rc_status: "ASSIST vx=... vy=... vz=... assist_ch=9 ..."
+/srlc/rc_status: "RC vx=... vy=... vz=..."
 ```
 
-CH9 按键切回 DIRECT 或 RC 超时时：
+RC 超时时：
 
 ```text
-/srlc/assist_enable: False
-/srlc/rc_status: "DIRECT ..." 或 "RC_TIMEOUT"
+/srlc/rc_status: "RC_TIMEOUT"
 ```
 
 ### 8.2 策略层
@@ -328,6 +332,7 @@ CH9 按键切回 DIRECT 或 RC 超时时：
 rostopic echo /tunnel_nav/policy_active
 rostopic echo /tunnel_nav/status
 rostopic echo /tunnel_nav/policy_cmd
+rostopic echo /tunnel_nav/control_mode
 ```
 
 只有同时满足以下条件，`policy_active` 才应为 `True`：
@@ -336,13 +341,13 @@ rostopic echo /tunnel_nav/policy_cmd
 2. PX4 mode 为 `OFFBOARD`。
 3. nokov odom 新鲜。
 4. PCD LiDAR range image 新鲜。
-5. CH9 assist 开启。
+5. `post_takeoff_mode=assist` 且 `/tunnel_nav/control_mode=ASSIST`。
 6. 摇杆输入超过死区。
 7. 没有越界、低/高高度、碰撞/近障碍停止。
 
-CH9 assist 关闭时，如果上述基础安全 gate 通过且摇杆超过死区，`/tunnel_nav/status` 应显示 `DIRECT`，`policy_active=False`，`/mavros/setpoint_raw/local` 直接跟随 RC 速度输入。
+`post_takeoff_mode=direct` 时，如果上述基础安全 gate 通过且摇杆超过死区，`/tunnel_nav/status` 应显示 `DIRECT`，`policy_active=False`，`/mavros/setpoint_raw/local` 直接跟随 RC 速度输入。
 
-如果触及地图边界，`/tunnel_nav/status` 会显示 `GEOFENCE_X` 或 `GEOFENCE_Y`，`/tunnel_nav/policy_active=False`，最终 setpoint 为零速度/锁高；这就是 SRLC 的“自动退出 assist 输出”。CH9 的物理开关状态不会被软件改写，飞手应关闭 CH9 或切回手动/POSCTL。
+如果触及地图边界，`/tunnel_nav/status` 会显示 `GEOFENCE_X` 或 `GEOFENCE_Y`，`/tunnel_nav/policy_active=False`，最终 setpoint 为零速度/锁高；这就是 SRLC 的“自动退出速度输出”。飞手应切回手动/POSCTL 或重新进入安全区域后再继续。
 
 ## 9. 外部切断信号如何确认
 
@@ -354,14 +359,14 @@ CH9 assist 关闭时，如果上述基础安全 gate 通过且摇杆超过死区
 rostopic echo /mavros/state
 rostopic echo /mavros/rc/in
 rostopic echo /srlc/rc_status
-rostopic echo /srlc/assist_enable
 rostopic echo /tunnel_nav/status
+rostopic echo /tunnel_nav/lifecycle_state
 rostopic echo /tunnel_nav/policy_active
 ```
 
 常见确认信号：
 
-- RC 断开：`/srlc/rc_status=RC_TIMEOUT`，`/srlc/assist_enable=False`，`/tunnel_nav/status` 通常回到 `RC_ACTION_TIMEOUT`。
+- RC 断开：`/srlc/rc_status=RC_TIMEOUT`，`/tunnel_nav/status` 通常回到 `RC_ACTION_TIMEOUT`。
 - MAVROS 断开：`/tunnel_nav/status` 出现 `MAVROS_NOT_CONNECTED`。
 - PX4 退出 OFFBOARD：`/mavros/state.mode` 不再是 `OFFBOARD`，`/tunnel_nav/status=PX4_NOT_OFFBOARD`。
 - SRLC 策略退出：`/tunnel_nav/policy_active=False`，`/mavros/setpoint_raw/local` 速度为 0。
@@ -444,32 +449,33 @@ rostopic echo -n 1 /nokov/local_position/odom
 /mavros/local_position/odom
 ```
 
-### 11.4 RC CH9
+### 11.4 RC 输入
 
 ```bash
 rostopic echo /mavros/rc/in
-rostopic echo /srlc/assist_enable
 rostopic echo /srlc/rc_status
 ```
 
-按下 CH9 assist，确认 `/srlc/assist_enable` 在 `False`/`True` 间切换。
+拨动摇杆，确认 `/srlc/rc_status` 中的 `vx/vy/vz` 跟随变化。
 
 ### 11.5 SRLC gate
 
 ```bash
 rostopic echo /tunnel_nav/status
+rostopic echo /tunnel_nav/lifecycle_state
+rostopic echo /tunnel_nav/control_mode
 rostopic echo /tunnel_nav/policy_active
 rostopic echo /mavros/setpoint_raw/local
 ```
 
-起飞前或未 OFFBOARD 时应看到 `PX4_NOT_OFFBOARD`，且速度为 0。OFFBOARD 后 CH9 未开启且摇杆超过死区时应看到 `DIRECT`。
+未 OFFBOARD 时应看到 `PX4_NOT_OFFBOARD` 或 `WAIT_OFFBOARD`，且速度为 0。OFFBOARD 后应依次看到 `WAIT_ARMED`、`TAKEOFF_CLIMB`、`TAKEOFF_SETTLE`、`ACTIVE`。
 
 ### 11.6 速度方向
 
 首次上桨前建议无桨或架高测试：
 
 1. 切 OFFBOARD。
-2. 打开 CH9 assist。
+2. 等待 `/tunnel_nav/lifecycle_state=ACTIVE`。
 3. 轻推前进摇杆。
 4. 确认 `/mavros/setpoint_raw/local.velocity.x/y` 与 RViz 中期望前进方向一致。
 
@@ -485,7 +491,7 @@ rostopic echo /mavros/setpoint_raw/local
 
 - nokov odom 位置/速度/yaw
 - 原始 `/mavros/rc/in` PWM
-- `/srlc/assist_enable`
+- `/tunnel_nav/control_mode`
 - `/srlc/human_action`
 - `/tunnel_nav/policy_cmd`
 - `/mavros/setpoint_raw/local`
@@ -519,7 +525,7 @@ rc_topic:=/mavros/rc/in
 setpoint_raw_topic:=/mavros/setpoint_raw/local
 ```
 
-其中 `/mavros/local_position/odom` 由 `mavros_fake_node.py` 发布，并根据 `/mavros/setpoint_raw/local` 积分移动；`/mavros/rc/in` 由 `srlc_fake_rc_node.py` 发布，默认按 CH9 打开 assist。不要在 dry-run 中使用 `/nokov/local_position/odom`，否则没有真实 nokov 节点时 `tunnel_navigation.py` 会一直等待 odom。
+其中 `/mavros/local_position/odom` 由 `mavros_fake_node.py` 发布，并根据 `/mavros/setpoint_raw/local` 积分移动；`/mavros/rc/in` 由 `srlc_fake_rc_node.py` 发布模拟摇杆输入。不要在 dry-run 中使用 `/nokov/local_position/odom`，否则没有真实 nokov 节点时 `tunnel_navigation.py` 会一直等待 odom。
 
 按当前真机地图/权重配置做软件验证的示例：
 
@@ -534,7 +540,7 @@ roslaunch navigation_runner tunnel_dry_run_px4.launch \
 该模式仅用于验证：
 
 - 模型 checkpoint 可加载
-- fake RC CH9 assist 可触发
+- fake RC 摇杆输入可触发
 - PCD raycast LiDAR 正常
 - geofence/输入死区/锁高逻辑正常
 - `/mavros/setpoint_raw/local` 输出符合预期
@@ -572,19 +578,19 @@ rosparam get /map_lidar_node/odom_topic
 
 ### `/tunnel_nav/status=PX4_NOT_OFFBOARD`
 
-MAVROS 已连接，但 PX4 当前不是 OFFBOARD。SRLC 会保持零速度，不执行模型。由飞手/地面站按现场流程切 OFFBOARD。
+MAVROS 已连接，但 PX4 当前不是 OFFBOARD。SRLC 会保持零速度/锁高 setpoint 流，不执行 DIRECT/RL 速度输出。由飞手/地面站按现场流程切 OFFBOARD。
 
-### `/srlc/assist_enable` 不随遥控器变化
+### `/tunnel_nav/control_mode` 与期望不符
 
-检查 CH9 PWM：
+检查启动参数：
 
 ```bash
-rostopic echo /mavros/rc/in
-rosparam get /rc_input_node/assist_channel
-rosparam get /rc_input_node/switch_threshold
+rosparam get /tunnel_navigator/post_takeoff_mode
+rostopic echo /tunnel_nav/lifecycle_state
+rostopic echo /tunnel_nav/control_mode
 ```
 
-默认 CH9 PWM 高于 `1700` 视为 assist 开。
+`post_takeoff_mode` 只在起飞完成并等待 `post_takeoff_mode_delay` 后生效；未到 `ACTIVE` 前不会输出 DIRECT/RL 速度。
 
 ### 边界内却显示 `GEOFENCE_X/Y`
 
@@ -619,9 +625,19 @@ map_yaw_deg:=...
 
 1. `rostopic hz /nokov/local_position/odom` 稳定。
 2. `rostopic echo /mavros/state` 显示 connected。
-3. CH9 能切换 `/srlc/assist_enable`。
-4. 未 OFFBOARD 或摇杆处于死区时，`/tunnel_nav/policy_active=False` 且 setpoint 速度为 0。
-5. OFFBOARD + CH9 关 + 摇杆超过死区后，`/tunnel_nav/status=DIRECT`，`policy_active=False`，`/mavros/setpoint_raw/local` 跟随 RC 速度。
-6. OFFBOARD + CH9 开 + 摇杆超过死区后，`/tunnel_nav/policy_active=True`，`/tunnel_nav/policy_cmd` 和 `/mavros/setpoint_raw/local` 更新。
-7. 触发 geofence 后，`/tunnel_nav/status=GEOFENCE_X/Y`，`policy_active=False`，setpoint 速度为 0。
-8. 关闭遥控器或退出 OFFBOARD 后，`/srlc/rc_status=RC_TIMEOUT` 或 `/tunnel_nav/status` 反映 `PX4_NOT_OFFBOARD`/`MAVROS_NOT_CONNECTED`/`RC_ACTION_TIMEOUT`，SRLC 不继续输出速度。
+3. 未 OFFBOARD 时 `/tunnel_nav/lifecycle_state=WAIT_OFFBOARD`，setpoint 速度为 0。
+4. 切入 OFFBOARD 后，SRLC 自动请求 arm，并进入 `TAKEOFF_CLIMB`/`TAKEOFF_SETTLE`。
+5. 起飞延迟结束后，`/tunnel_nav/control_mode` 等于 `post_takeoff_mode`。
+6. 未 OFFBOARD 或摇杆处于死区时，`/tunnel_nav/policy_active=False` 且 setpoint 速度为 0。
+7. `post_takeoff_mode=direct` + 摇杆超过死区后，`/tunnel_nav/status=DIRECT`，`policy_active=False`，`/mavros/setpoint_raw/local` 跟随 RC 速度。
+8. `post_takeoff_mode=assist` + 摇杆超过死区后，`/tunnel_nav/policy_active=True`，`/tunnel_nav/policy_cmd` 和 `/mavros/setpoint_raw/local` 更新。
+9. 触发 geofence 后，`/tunnel_nav/status=GEOFENCE_X/Y`，`policy_active=False`，setpoint 速度为 0。
+10. 关闭遥控器或退出 OFFBOARD 后，`/srlc/rc_status=RC_TIMEOUT` 或 `/tunnel_nav/status` 反映 `PX4_NOT_OFFBOARD`/`MAVROS_NOT_CONNECTED`/`RC_ACTION_TIMEOUT`，SRLC 不继续输出速度。
+
+
+battery charge
+
+11.3v - 12.3v 
+<11.2 need charge
+charge time: 10min
+full charge can fly 10min (on air)

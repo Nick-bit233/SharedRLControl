@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """MAVROS RC bridge for real PX4 SRLC deployment."""
-import math
 
 import rospy
 from geometry_msgs.msg import TwistStamped
@@ -30,7 +29,6 @@ class RcInputNode:
         self.rc_topic = rospy.get_param("~rc_topic", "/mavros/rc/in")
         self.human_action_topic = rospy.get_param("~human_action_topic", "/srlc/human_action")
         self.stop_topic = rospy.get_param("~stop_topic", "/experiment_control/stop")
-        self.assist_topic = rospy.get_param("~assist_enable_topic", "/srlc/assist_enable")
         self.status_topic = rospy.get_param("~status_topic", "/srlc/rc_status")
 
         self.channel_base = int(rospy.get_param("~channel_base", 1))
@@ -38,7 +36,6 @@ class RcInputNode:
         self.lateral_channel = int(rospy.get_param("~lateral_channel", 1))
         self.vertical_channel = int(rospy.get_param("~vertical_channel", 3))
         self.estop_channel = int(rospy.get_param("~estop_channel", 7))
-        self.assist_channel = int(rospy.get_param("~assist_channel", 9))
         self.reset_channel = int(rospy.get_param("~reset_channel", 0))
 
         self.pwm_min = float(rospy.get_param("~pwm_min", 1000.0))
@@ -55,8 +52,6 @@ class RcInputNode:
 
         self.switch_threshold = float(rospy.get_param("~switch_threshold", 1700.0))
         self.estop_high_is_stop = _param_bool(rospy.get_param("~estop_high_is_stop", True))
-        self.assist_high_is_enable = _param_bool(rospy.get_param("~assist_high_is_enable", True))
-        self.assist_toggle_mode = _param_bool(rospy.get_param("~assist_toggle_mode", False))
         self.reset_high_is_reset = _param_bool(rospy.get_param("~reset_high_is_reset", True))
         self.latch_stop = _param_bool(rospy.get_param("~latch_stop", True))
         self.enable_stop_output = _param_bool(rospy.get_param("~enable_stop_output", True))
@@ -67,27 +62,21 @@ class RcInputNode:
         self.last_rc = None
         self.last_rc_time = None
         self.stop_latched = bool(self.enable_stop_output and self.latch_stop)
-        self.assist_enable = False
-        self._last_assist_switch_active = None
 
         self.rc_sub = rospy.Subscriber(self.rc_topic, RCIn, self._rc_cb, queue_size=1)
         self.human_pub = rospy.Publisher(self.human_action_topic, TwistStamped, queue_size=2)
         self.stop_pub = None
         if self.enable_stop_output:
             self.stop_pub = rospy.Publisher(self.stop_topic, Bool, queue_size=2, latch=True)
-        self.assist_pub = rospy.Publisher(self.assist_topic, Bool, queue_size=2, latch=True)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=2)
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self._timer_cb)
 
         if self.stop_pub is not None:
             self.stop_pub.publish(Bool(data=bool(self.stop_latched)))
-        self.assist_pub.publish(Bool(data=False))
         rospy.loginfo(
-            "[RCInput] Ready: rc=%s human_action=%s assist_ch=%d assist_toggle=%s stop_output=%s",
+            "[RCInput] Ready: rc=%s human_action=%s stop_output=%s",
             self.rc_topic,
             self.human_action_topic,
-            self.assist_channel,
-            self.assist_toggle_mode,
             self.enable_stop_output,
         )
 
@@ -137,8 +126,6 @@ class RcInputNode:
         if not rc_fresh:
             if self.enable_stop_output and self.stop_on_timeout:
                 self.stop_latched = True
-            self.assist_enable = False
-            self._last_assist_switch_active = None
             self._publish_zero("RC_TIMEOUT")
             return
 
@@ -157,21 +144,6 @@ class RcInputNode:
         else:
             self.stop_latched = False
 
-        assist_switch_active = self._switch_active(
-            self.assist_channel,
-            self.assist_high_is_enable,
-        )
-        if self.stop_latched:
-            self.assist_enable = False
-        elif self.assist_toggle_mode:
-            if self._last_assist_switch_active is None:
-                self._last_assist_switch_active = assist_switch_active
-            elif assist_switch_active and not self._last_assist_switch_active:
-                self.assist_enable = not self.assist_enable
-            self._last_assist_switch_active = assist_switch_active
-        else:
-            self.assist_enable = assist_switch_active
-
         vx = self._axis(self.forward_channel, self.forward_reverse) * self.max_forward_speed
         vy = self._axis(self.lateral_channel, self.lateral_reverse) * self.max_lateral_speed
         vz = self._axis(self.vertical_channel, self.vertical_reverse) * self.max_vertical_speed
@@ -187,14 +159,13 @@ class RcInputNode:
         self.human_pub.publish(msg)
         if self.stop_pub is not None:
             self.stop_pub.publish(Bool(data=bool(self.stop_latched)))
-        self.assist_pub.publish(Bool(data=bool(self.assist_enable)))
 
-        status = "STOP" if self.stop_latched else ("ASSIST" if self.assist_enable else "DIRECT")
+        status = "STOP" if self.stop_latched else "RC"
         self.status_pub.publish(
             String(
                 data=(
                     f"{status} vx={vx:.2f} vy={vy:.2f} vz={vz:.2f} "
-                    f"assist_ch={self.assist_channel} estop={estop_active} reset={reset_active}"
+                    f"estop={estop_active} reset={reset_active}"
                 )
             )
         )
@@ -206,7 +177,6 @@ class RcInputNode:
         self.human_pub.publish(msg)
         if self.stop_pub is not None:
             self.stop_pub.publish(Bool(data=bool(self.stop_latched)))
-        self.assist_pub.publish(Bool(data=False))
         self.status_pub.publish(String(data=reason))
 
 

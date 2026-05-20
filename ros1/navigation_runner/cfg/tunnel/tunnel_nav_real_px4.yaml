@@ -21,7 +21,6 @@ pcd_file: ""
 # RC human_action input produced by rc_input_node.py.
 human_action_source: "rc_topic"
 human_action_topic: "/srlc/human_action"
-assist_enable_topic: "/srlc/assist_enable"
 human_action_timeout: 0.3
 assist_input_deadzone_norm: 0.05
 keyboard_mode: false
@@ -35,6 +34,12 @@ takeoff_height: 2.0
 auto_arm: false
 auto_offboard: false
 require_offboard: true
+real_auto_takeoff_on_offboard: true
+auto_arm_on_offboard: true
+post_takeoff_mode: "direct"
+post_takeoff_mode_delay: 2.0
+takeoff_reached_tolerance: 0.1
+on_offboard_loss: "stream_hold"
 hold_on_stop: false
 enable_external_stop: false
 external_stop_topic: "/experiment_control/stop"
@@ -58,6 +63,8 @@ geofence_y: [-3.0, 3.0]
 
 # Safety.
 use_safety_shield: false
+enable_safety_stop: true
+enable_collision_detection: true
 safety_min_dist: 0.5
 collision_dist: 0.2
 safety_start_takeoff_delta: 0.3
