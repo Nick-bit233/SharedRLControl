@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """Merge registered real-environment PCD scans into a ROS-compatible map."""
 
+"""
+Usage
+
+python3 ros1/navigation_runner/scripts/tunnel_deployment/merge_real_pcd_maps.py \
+   --inputs ros1/real_maps/file.pcd \
+   --output ros1/real_maps/file_ascii.pcd \
+   --crop-min -3.5 -3.0 0.0 \
+   --crop-max 3.5 3.0 3.0 \
+   --voxel-size 0.05 \
+   --inflate-radius 0.10 \
+   --inflate-resolution 0.0
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -14,6 +27,7 @@ try:
         apply_transform,
         bounds,
         crop_points,
+        inflate_voxel_points,
         iter_pcd_files,
         load_transforms,
         read_pcd_xyz,
@@ -25,6 +39,7 @@ except ImportError:
         apply_transform,
         bounds,
         crop_points,
+        inflate_voxel_points,
         iter_pcd_files,
         load_transforms,
         read_pcd_xyz,
@@ -72,6 +87,18 @@ def main() -> int:
         type=float,
         default=0.1,
         help="Voxel downsample size in metres. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--inflate-radius",
+        type=float,
+        default=0.0,
+        help="Inflate occupied voxels by this radius in metres after downsampling.",
+    )
+    parser.add_argument(
+        "--inflate-resolution",
+        type=float,
+        default=None,
+        help="Voxel resolution used for inflation. Defaults to --voxel-size.",
     )
     parser.add_argument(
         "--z-offset",
@@ -146,6 +173,21 @@ def main() -> int:
     all_points = np.vstack(merged).astype(np.float32, copy=False)
     before_downsample = int(len(all_points))
     all_points = voxel_downsample(all_points, args.voxel_size)
+    after_downsample = int(len(all_points))
+
+    inflate_resolution = (
+        float(args.inflate_resolution)
+        if args.inflate_resolution is not None
+        else float(args.voxel_size)
+    )
+    if args.inflate_radius > 0:
+        all_points = inflate_voxel_points(
+            all_points,
+            radius=float(args.inflate_radius),
+            resolution=inflate_resolution,
+            crop_min=crop_min,
+            crop_max=crop_max,
+        )
 
     output = Path(args.output)
     write_pcd_ascii_xyz(output, all_points)
@@ -154,10 +196,13 @@ def main() -> int:
         "output": str(output),
         "output_format": "ascii_xyz",
         "voxel_size": float(args.voxel_size),
+        "inflate_radius": float(args.inflate_radius),
+        "inflate_resolution": inflate_resolution,
         "z_offset": float(args.z_offset),
         "crop_min": crop_min,
         "crop_max": crop_max,
         "points_before_downsample": before_downsample,
+        "points_after_downsample_before_inflation": after_downsample,
         "points_after_downsample": int(len(all_points)),
         "bounds": bounds(all_points),
     }

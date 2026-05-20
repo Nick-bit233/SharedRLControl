@@ -177,6 +177,40 @@ def voxel_downsample(points: np.ndarray, voxel_size: float) -> np.ndarray:
     return points[keep]
 
 
+def inflate_voxel_points(
+    points: np.ndarray,
+    radius: float,
+    resolution: float,
+    crop_min: Sequence[float] | None = None,
+    crop_max: Sequence[float] | None = None,
+) -> np.ndarray:
+    """Inflate occupied point voxels by a metric radius and return voxel centers."""
+    if radius <= 0:
+        return points
+    if resolution <= 0:
+        raise ValueError("Inflation resolution must be positive")
+    if len(points) == 0:
+        return points
+
+    base_voxels = np.floor(points / float(resolution)).astype(np.int64)
+    base_voxels = np.unique(base_voxels, axis=0)
+
+    cell_radius = int(np.ceil(radius / resolution))
+    offsets = []
+    for ix in range(-cell_radius, cell_radius + 1):
+        for iy in range(-cell_radius, cell_radius + 1):
+            for iz in range(-cell_radius, cell_radius + 1):
+                offset = np.array([ix, iy, iz], dtype=np.float32) * float(resolution)
+                if float(np.linalg.norm(offset)) <= radius + 1e-6:
+                    offsets.append((ix, iy, iz))
+    offset_arr = np.asarray(offsets, dtype=np.int64)
+
+    inflated = (base_voxels[:, None, :] + offset_arr[None, :, :]).reshape(-1, 3)
+    inflated = np.unique(inflated, axis=0)
+    centers = (inflated.astype(np.float32) + 0.5) * float(resolution)
+    return crop_points(centers, crop_min=crop_min, crop_max=crop_max)
+
+
 def crop_points(
     points: np.ndarray,
     crop_min: Sequence[float] | None = None,
