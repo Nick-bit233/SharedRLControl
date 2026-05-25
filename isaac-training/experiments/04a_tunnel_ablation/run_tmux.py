@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
-"""Launch tunnel ablation jobs inside tmux sessions."""
 from __future__ import annotations
+"""Launch tunnel ablation jobs inside tmux sessions."""
+
+"""
+Usage:
+    # Resume a NoCurriculum run that was interrupted after 50k steps, using the latest checkpoint available:
+    python run_tmux.py no-curriculum-resume --seed 42 --tag paper_ablation_v1 --checkpoint-kind latest
+    
+    # Rerun curriculum stages 2-3 with the "ours_retrain" variant, warm-starting from the final checkpoint of stage 1:
+    python run_tmux.py curriculum-rerun --variant ours_retrain --seed 42 --source-tag paper_ablation_v1 --tag paper_ablation_v1_fixed --start-stage 2 --end-stage 3 --checkpoint-kind final
+    
+    # Run a custom run_matrix.py command in tmux:
+    python run_tmux.py matrix -- --variants no_residual --seeds 42
+    python run_tmux.py matrix -- --variants ours_retrain --seeds 42
+    
+    # Run an arbitrary command in tmux:
+    python run_tmux.py custom --name my-session -- echo "Hello, tmux!"
+"""
 
 import argparse
 import datetime
