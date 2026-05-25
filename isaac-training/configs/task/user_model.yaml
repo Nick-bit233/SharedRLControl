@@ -1,4 +1,5 @@
 user_model:
+  kind: baseline
 
   style:
     frequency_base: 0.1  # base frequency for user command changes
@@ -24,3 +25,49 @@ user_model:
   # Online trajectory generation settings
   online_sample_filter: false  # If true, filter sampled trajectories based on velocity constraints
 
+  intent:
+    alpha_range: [0.1, 0.95]
+    beta_range: [0.25, 1.0]
+    psi_range: [0.2, 1.0]
+    phi_range: [0.35, 1.0]
+    eta_range: [0.0, 1.0]
+
+    tau_perc_range: [0.05, 0.35]
+    sigma_perc_range: [0.0, 0.4]
+    d_react_range: [0.7, 2.2]
+    wrong_direction_prob_range: [0.0, 0.45]
+
+    max_speed_z_scale: 0.4
+    horizon_sec: 2.0
+    waypoint_mix: 0.10
+    react_feedback_gain: 0.12
+    p_gain_scale: 0.55
+    i_gain: 0.15
+    i_decay: 0.92
+
+    heading_ou_tau: 1.5
+    heading_ou_sigma: 0.35
+    maneuver_lateral_scale: 0.8
+    maneuver_vertical_scale: 0.35
+    station_keep_speed_scale: 0.45
+    idle_speed_scale: 0.15
+
+    conservative_mode_prior: [0.30, 0.10, 0.35, 0.25]
+    aggressive_mode_prior: [0.62, 0.25, 0.08, 0.05]
+    tunnel_mode_prior: [0.74, 0.18, 0.04, 0.04]
+
+    dwell_lognormal:
+      cruise: [1.6, 0.6]
+      maneuver: [0.4, 0.5]
+      station_keep: [1.1, 0.7]
+      idle: [0.0, 0.5]
+
+    react_trigger_threshold: 0.22
+    late_react_threshold_scale: 1.35
+    spontaneous_react_rate_hz: 0.03
+    react_min_dwell_sec: 0.45
+    react_max_dwell_sec: 1.10
+    overcorrect_osc_hz: 1.8
+    surge_scale: 1.5
+    evade_scale: 1.1
+    max_delay_sec: 0.5

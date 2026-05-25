@@ -1,0 +1,41 @@
+# @package _global_
+# Stage 1: Tame pilot — high conformance, low perception noise, only mild reactive mistakes.
+# Usage: experiment=tunnel_intent_stage1
+
+defaults:
+  - tunnel_intent
+
+env:
+  num_obstacles: 30
+  obstacle_width_range: [0.4, 0.8]
+  obstacle_height_range: [8.0, 16.0]
+
+max_iterations: 12010
+save_interval: 500
+
+curriculum:
+  enable: False
+
+# Beta distribution: low concentration for broad exploration in early stage
+algo:
+  min_concentration: 2.0
+
+user_model:
+  intent:
+    alpha_range: [0.70, 1.0]
+    wrong_direction_prob_range: [0.0, 0.10]
+    tau_perc_range: [0.05, 0.12]
+    sigma_perc_range: [0.0, 0.12]
+    d_react_range: [1.4, 2.2]
+
+early_stopping:
+  enable: True
+  patience: 5
+  min_delta: 0.10
+
+wandb:
+  name: srlc_tunnel_intent_stage1
+
+hydra:
+  run:
+    dir: ./outputs/tunnel_intent_stage1/${now:%Y-%m-%d_%H-%M-%S}
