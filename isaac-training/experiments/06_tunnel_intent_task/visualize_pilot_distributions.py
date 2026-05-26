@@ -36,11 +36,11 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from src.core.pilot_modes import IntentMode, ReactMode
-from src.core.user_model import UserModel
-from src.core.user_model_diverse import UserModelDiverse
-from src.core.user_model_intent import UserModelIntent
-from src.core.user_model_tunnely import UserModelTunnel
+from src.simulated_users.pilot_modes import IntentMode, ReactMode
+from src.simulated_users.user_model import UserModel
+from src.simulated_users.user_model_diverse import UserModelDiverse
+from src.simulated_users.user_model_intent import UserModelIntent
+from src.simulated_users.user_model_tunnely import UserModelTunnel
 
 
 TUNNEL_START_X = -7.0

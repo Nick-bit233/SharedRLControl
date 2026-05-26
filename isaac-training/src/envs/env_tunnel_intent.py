@@ -19,7 +19,7 @@ from isaaclab.terrains.height_field import hf_terrains
 from isaaclab.terrains.height_field.utils import height_field_to_mesh
 
 from src.core.trainning_utils import vec_to_body, vec_to_world
-from src.core.user_model_intent import UserModelIntent
+from src.simulated_users.user_model_intent import UserModelIntent
 from src.core.profiler import get_profiler
 from src.datasets.trajectory_dataset import TrajectoryDataset
 

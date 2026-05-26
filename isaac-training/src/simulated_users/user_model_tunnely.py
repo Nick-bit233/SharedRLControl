@@ -7,7 +7,7 @@ from typing import Optional, Literal, TYPE_CHECKING
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
 
 from src.core.profiler import get_profiler
-from src.core.user_model import BatchedPerlinNoise, InterpType
+from src.simulated_users.user_model import BatchedPerlinNoise, InterpType
 if TYPE_CHECKING:
     from src.datasets.trajectory_dataset import TrajectoryDataset
 

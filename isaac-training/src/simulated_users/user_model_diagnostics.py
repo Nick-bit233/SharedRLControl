@@ -5,7 +5,7 @@ This module contains verification and diagnostic functions for analyzing
 the UserModel's Perlin noise generation and trajectory drift behavior.
 
 Usage:
-    from user_model_diagnostics import run_full_diagnosis, diagnose_z_drift_issue
+    from src.simulated_users.user_model_diagnostics import run_full_diagnosis, diagnose_z_drift_issue
     
     # Quick diagnosis
     diagnose_z_drift_issue()
@@ -16,7 +16,7 @@ Usage:
 
 import torch
 import math
-from user_model import BatchedPerlinNoise, InterpType, batched_perlin_noise
+from src.simulated_users.user_model import BatchedPerlinNoise, InterpType, batched_perlin_noise
 
 
 def verify_noise_distribution(
@@ -895,7 +895,7 @@ def run_full_diagnosis(device: str = "cuda"):
     Run complete diagnosis including all verification tests.
     
     Usage:
-        from user_model_diagnostics import run_full_diagnosis
+        from src.simulated_users.user_model_diagnostics import run_full_diagnosis
         run_full_diagnosis()
     """
     print("\n" + "="*70)

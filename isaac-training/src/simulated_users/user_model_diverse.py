@@ -17,7 +17,7 @@ import logging
 from typing import Optional, Literal, TYPE_CHECKING
 
 from src.core.profiler import get_profiler
-from src.core.user_model import BatchedPerlinNoise, InterpType
+from src.simulated_users.user_model import BatchedPerlinNoise, InterpType
 
 if TYPE_CHECKING:
     from src.datasets.trajectory_dataset import TrajectoryDataset

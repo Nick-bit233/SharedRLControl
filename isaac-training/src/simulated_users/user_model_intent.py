@@ -7,8 +7,8 @@ import torch
 import torch.nn.functional as F
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
 
-from src.core.pilot_modes import IntentMode, ReactMode
-from src.core.pilot_perception import PilotPerceptionModel, PerceptionConfig
+from src.simulated_users.pilot_modes import IntentMode, ReactMode
+from src.simulated_users.pilot_perception import PilotPerceptionModel, PerceptionConfig
 
 
 @dataclass

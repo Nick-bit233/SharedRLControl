@@ -24,7 +24,7 @@ from isaaclab.assets import RigidObject, RigidObjectCfg
 import time
 
 from src.core.trainning_utils import vec_to_body, vec_to_world
-from src.core.user_model import UserModel
+from src.simulated_users.user_model import UserModel
 from src.core.profiler import get_profiler
 from src.datasets.trajectory_dataset import TrajectoryDataset
 
