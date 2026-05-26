@@ -1,5 +1,5 @@
 """
-Curriculum scheduler for Phase 2: reg_coeff ramp.
+Curriculum scheduler: only for reg_coeff ramp.
 
 Tracks an EMA of success_rate and increases reg_coeff when the metric
 stays above a promotion threshold for `patience` consecutive checks.

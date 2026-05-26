@@ -1,3 +1,11 @@
+"""
+training_utils.py
+
+Utility functions and classes for training algorithms.
+
+"""
+
+
 import torch
 import torch.nn as nn
 import wandb
