@@ -114,11 +114,18 @@ class RuntimeHook(Protocol):
     experiment name.  Implement only the methods a hook needs.
 
     Recognized hook names:
+    - ``on_after_setup``
     - ``on_before_training``
+    - ``on_before_train_step``
     - ``on_after_train_step``
+    - ``on_before_eval``
     - ``on_after_eval``
     - ``on_before_checkpoint``
     - ``on_after_checkpoint``
+    - ``on_after_training``
+
+    Hooks that need checkpoint persistence can write serializable values into
+    ``context["checkpoint_extra_state"]`` before checkpoint hooks return.
     """
 
 
@@ -129,6 +136,10 @@ class ExperimentSpec:
     A train.py wrapper should select env/policy classes, create an
     ExperimentSpec, then call ``run_training(cfg, spec)``.  The shared runner
     owns the loop; this spec owns the experiment-specific choices.
+
+    ``sanity_check_fn`` is accepted for compatibility with older wrappers, but
+    the shared runner no longer invokes it directly. New experiment-specific
+    checks should be implemented as lifecycle hooks.
     """
 
     name: str

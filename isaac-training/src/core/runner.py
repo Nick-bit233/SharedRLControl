@@ -185,53 +185,30 @@ def _restore_best_state_from_resume(
     return best_state
 
 
-def _make_early_stopping(cfg: Any) -> EarlyStoppingState:
+def _make_early_stopping(cfg: Any) -> EarlyStoppingState | None:
     es_cfg = cfg.get("early_stopping", {})
+    if not es_cfg.get("enable", False):
+        return None
+
     state = EarlyStoppingState(
-        enabled=es_cfg.get("enable", False),
+        enabled=True,
         patience=es_cfg.get("patience", 5),
         min_delta=es_cfg.get("min_delta", 0.10),
     )
-    if state.enabled:
-        print(
-            f"[Train] Early stopping ENABLED: "
-            f"patience={state.patience}, min_delta={state.min_delta}"
-        )
+    print(
+        f"[Train] Early stopping ENABLED: "
+        f"patience={state.patience}, min_delta={state.min_delta}"
+    )
     return state
 
 
-def _make_curriculum_scheduler(cfg: Any, policy: Any, checkpoint_state: CheckpointState) -> Any | None:
-    curriculum_enabled = cfg.get("curriculum", {}).get("enable", False)
-    if not curriculum_enabled:
-        return None
-
-    from src.core.curriculum import RegCoeffScheduler
-
-    reg_scheduler = RegCoeffScheduler(cfg.curriculum)
-    print(
-        f"[Train] Curriculum ENABLED: reg_coeff will ramp from "
-        f"{cfg.curriculum.initial_reg_coeff} to {cfg.curriculum.max_reg_coeff}"
-    )
-
-    resume_state = checkpoint_state.resume_state
-    if resume_state is not None and "reg_scheduler" in resume_state:
-        try:
-            reg_scheduler.load_state_dict(resume_state["reg_scheduler"])
-            print(
-                f"[Train] RegCoeffScheduler state restored: "
-                f"reg_coeff={reg_scheduler.current_reg_coeff:.4f}, "
-                f"ema_success={reg_scheduler.ema_success:.3f}"
-            )
-            policy.set_reg_coeff(reg_scheduler.current_reg_coeff)
-        except Exception as exc:
-            print(f"[Train] WARNING: curriculum restore failed: {exc}")
-    return reg_scheduler
-
-
-def _checkpoint_extra_state(reg_scheduler: Any | None) -> dict[str, Any]:
-    if reg_scheduler is None:
+def _checkpoint_extra_state(context: dict[str, Any]) -> dict[str, Any]:
+    extra_state = context.get("checkpoint_extra_state", {})
+    if extra_state is None:
         return {}
-    return {"reg_scheduler": reg_scheduler.state_dict()}
+    if callable(extra_state):
+        extra_state = extra_state(context)
+    return dict(extra_state)
 
 
 def _update_best_state(
@@ -254,12 +231,12 @@ def _update_best_state(
 
 
 def _should_stop_for_early_stopping(
-    early_stopping: EarlyStoppingState,
+    early_stopping: EarlyStoppingState | None,
     best_state: BestCheckpointState,
     current_success: float,
     policy: Any,
 ) -> bool:
-    if not early_stopping.enabled or best_state.eval_success <= 0:
+    if early_stopping is None or not early_stopping.enabled or best_state.eval_success <= 0:
         return False
 
     if current_success < best_state.eval_success - early_stopping.min_delta:
@@ -281,12 +258,6 @@ def _should_stop_for_early_stopping(
     else:
         early_stopping.degradation_count = 0
     return False
-
-
-def _run_sanity_check(cfg: Any, spec: ExperimentSpec, env: Any, policy: Any) -> None:
-    if spec.sanity_check_fn is None:
-        return
-    spec.sanity_check_fn(cfg, env, policy)
 
 
 def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
@@ -351,13 +322,8 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
 
     # [Extra states initialization]
     best_state = _restore_best_state_from_resume(checkpoint_state, eval_summary_fn)
-    reg_scheduler = _make_curriculum_scheduler(cfg, policy, checkpoint_state)
     early_stopping = _make_early_stopping(cfg)
     latest_eval_success: float | None = None
-
-    # [Extra checks -> Hooks] TODO: move the sanity check into "on_before_training" hooks so
-    # it can be decided by whether execute or not.
-    _run_sanity_check(cfg, spec, env, policy)
 
     # [Lifecycle Hooks] Called before the whole training process.
     context: dict[str, Any] = {
@@ -373,8 +339,11 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
         "best_state": best_state,
         "settings": settings,
         "resources": resources,
-        "reg_scheduler": reg_scheduler,
+        "early_stopping": early_stopping,
+        "latest_eval_success": latest_eval_success,
+        "checkpoint_extra_state": {},
     }
+    call_hooks(hooks, "on_after_setup", context)
     call_hooks(hooks, "on_before_training", context)
 
     batch_start_time = time.perf_counter()
@@ -407,7 +376,18 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 "rollout_fps": collector_fps(collector),
             }
 
-            # [Lifecycle Hooks] TODO: add a hook point here for "on_before_train_step".
+            # [Lifecycle Hooks] Called before each policy update.
+            context.update(
+                {
+                    "data": data,
+                    "info": info,
+                    "loop_iter": last_i,
+                    "global_iter": global_iter,
+                    "env_frames": current_env_frames,
+                    "latest_eval_success": latest_eval_success,
+                }
+            )
+            call_hooks(hooks, "on_before_train_step", context)
 
             # [Train Step]
             # Policy classes expose train_op(data) as the common optimization
@@ -426,6 +406,8 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 {
                     "data": data,
                     "info": info,
+                    "training_infos": training_infos,
+                    "loop_iter": last_i,
                     "global_iter": global_iter,
                     "env_frames": current_env_frames,
                     "latest_eval_success": latest_eval_success,
@@ -438,7 +420,8 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 # function decides how to rank them for best-checkpoint tracking.
                 logging.info(f"Eval at iter {global_iter} ({collector._frames} steps).")
                 
-                # [Lifecycle Hooks] TODO: add a hook point here for "on_before_evaluation_step".
+                # [Lifecycle Hooks] Called before each evaluation rollout.
+                call_hooks(hooks, "on_before_eval", context)
 
                 eval_info = evaluate_policy_no_grad(cfg, env, policy)
                 info.update(eval_info)
@@ -454,6 +437,7 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                     {
                         "eval_info": eval_info,
                         "eval_summary": summary,
+                        "loop_iter": last_i,
                         "latest_eval_success": latest_eval_success,
                     }
                 )
@@ -480,7 +464,6 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                         f"at iter {global_iter}"
                     )
 
-                # TODO: add a trigger for whether enable early stopping.
                 if _should_stop_for_early_stopping(
                     early_stopping,
                     best_state,
@@ -488,21 +471,12 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                     policy,
                 ):
                     break
-            
-            # [Algorithm scheduler -> Hooks] TODO: move policy schedulers into lifecycle hooks instead of here.
-            if reg_scheduler is not None and last_i % reg_scheduler.check_interval == 0:
-                # Curriculum uses the latest evaluation success; if no eval has
-                # run yet this iteration, keep the current coefficient.
-                if latest_eval_success is not None:
-                    new_reg = reg_scheduler.update(latest_eval_success)
-                    policy.set_reg_coeff(new_reg)
-                    info["curriculum/reg_coeff"] = new_reg
-                    info["curriculum/ema_success"] = reg_scheduler.ema_success
 
             # [Lifecycle Hooks] Called after train step, can be customized.
             context.update(
                 {
                     "info": info,
+                    "loop_iter": last_i,
                     "global_iter": global_iter,
                     "env_frames": current_env_frames,
                     "latest_eval_success": latest_eval_success,
@@ -532,7 +506,7 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                     env_frames=current_env_frames,
                     adapter=checkpoint_adapter,
                     best_state=best_state,
-                    extra_state=_checkpoint_extra_state(reg_scheduler),
+                    extra_state=_checkpoint_extra_state(context),
                 )
                 latest_checkpoint_path = latest_paths.checkpoint_path
                 context["latest_checkpoint_path"] = latest_checkpoint_path
@@ -547,15 +521,17 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
             start_env_frames=checkpoint_state.start_env_frames,
         )
 
+        context.update(
+            {
+                "global_iter": final_iter,
+                "env_frames": final_env_frames,
+                "info": {},
+            }
+        )
+        call_hooks(hooks, "on_after_training", context)
+
         if not settings.profiling_mode:
             # Normal runs summarize with final checkpoint and best checkpoint paths. 
-            context.update(
-                {
-                    "global_iter": final_iter,
-                    "env_frames": final_env_frames,
-                    "info": {},
-                }
-            )
             call_hooks(hooks, "on_before_checkpoint", context)
             final_paths = save_final_checkpoint(
                 run,
@@ -565,7 +541,7 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 env_frames=final_env_frames,
                 adapter=checkpoint_adapter,
                 best_state=best_state,
-                extra_state=_checkpoint_extra_state(reg_scheduler),
+                extra_state=_checkpoint_extra_state(context),
             )
             final_checkpoint_path = final_paths.checkpoint_path
             best_paths = save_best_checkpoint(
