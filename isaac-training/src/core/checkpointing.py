@@ -20,6 +20,8 @@ RICH_CHECKPOINT_KEYS = (
     "env_frames",
 )
 
+RICH_PROGRESS_KEYS = ("iter", "last_completed_iter")
+
 CHECKPOINT_FORMAT_RICH = "rich"
 CHECKPOINT_FORMAT_POLICY_WRAPPED = "policy_wrapped"
 CHECKPOINT_FORMAT_WEIGHTS_ONLY = "weights_only"
@@ -80,7 +82,8 @@ def is_rich_checkpoint(loaded: Any) -> bool:
     return (
         isinstance(loaded, Mapping)
         and "policy" in loaded
-        and any(key in loaded for key in RICH_CHECKPOINT_KEYS)
+        and "env_frames" in loaded
+        and any(key in loaded for key in RICH_PROGRESS_KEYS)
     )
 
 
@@ -455,6 +458,7 @@ __all__ = [
     "CheckpointPayload",
     "CheckpointPaths",
     "RICH_CHECKPOINT_KEYS",
+    "RICH_PROGRESS_KEYS",
     "apply_resume_frame_budget",
     "build_rich_checkpoint",
     "clone_policy_state",

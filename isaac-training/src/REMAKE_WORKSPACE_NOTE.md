@@ -232,7 +232,6 @@ ExperimentSpec(
     dataset_loader=None,
     eval_summary_fn=None,
     checkpoint_adapter=None,
-    sanity_check_fn=None,
     hooks=(),
 )
 ```
@@ -247,13 +246,22 @@ ExperimentSpec(
   - restore optimizer state
   - snapshot optimizer state
   - snapshot / restore experiment-specific state
-- `sanity_check_fn(cfg, env, policy) -> None`
 - `hooks` 可提供：
+  - `on_after_setup`
   - `on_before_training`
+  - `on_before_train_step`
   - `on_after_train_step`
+  - `on_before_eval`
   - `on_after_eval`
   - `on_before_checkpoint`
   - `on_after_checkpoint`
+  - `on_after_training`
+
+**当前 hook 使用建议**
+- `sanity_check_fn` 只作为旧 wrapper 兼容字段保留，新入口不要继续使用。
+- 残差模式检查、dataset/policy 一致性检查等实验特定 sanity check 放入 `on_after_setup` 或 `on_before_training` hook。
+- `RegCoeffScheduler` 这类只对特定 policy/config 生效的调度器放入实验 hook，例如 `RegCoeffSchedulerHook`，不要在通用 runner 中硬编码。
+- hook 需要随 checkpoint 保存的状态写入 `context["checkpoint_extra_state"]`。
 
 **目的**
 - 避免 `runner.py` 写死 tunnel / lagrangian / intent / shield 的分支。
@@ -353,7 +361,7 @@ rg "wandb.init\(|def evaluate\(|SyncDataCollector\(" experiments/05_safety_shiel
 
 **特别注意**
 - intent 有 dataset loader 和额外 observation，不要把这些塞回 runtime 里写死。
-- 通过 `ExperimentSpec`、`dataset_loader`、`sanity_check_fn` 或 hook 注入。
+- 通过 `ExperimentSpec`、`dataset_loader` 或 hook 注入。
 
 **验收标准**
 - `06_tunnel_intent_task/train.py` 和 `04_tunnel_task/train.py` 在结构上统一。

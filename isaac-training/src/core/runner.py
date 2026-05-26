@@ -483,6 +483,7 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 }
             )
             call_hooks(hooks, "on_after_train_step", context)
+            info = context.get("info", info)
 
             # [WandB]
             # Log profiler logs if in profiling mode every 5 iterations .
