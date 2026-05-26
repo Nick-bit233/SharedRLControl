@@ -191,6 +191,30 @@ rg "src.core.user_model|src.core.pilot_" src experiments
 - `init_checkpoint` 表示开启新 stage / 新 run，只加载 policy weights。
 - checkpoint 中建议明确保存 `last_completed_iter`，runner 从 `last_completed_iter + 1` 开始，避免不同入口出现 off-by-one 语义差异。
 
+**checkpoint 格式边界**
+- 长期维护格式是 rich checkpoint：
+  ```python
+  {
+      "policy": policy.state_dict(),
+      "iter": global_iter,
+      "last_completed_iter": global_iter,
+      "env_frames": env_frames,
+      "actor_optim": ...,
+      "critic_optim": ...,
+      "feature_extractor_optim": ...,
+      "best_eval_score": ...,
+      "best_eval_success": ...,
+      "best_eval_collision": ...,
+      "best_eval_info": ...,
+      # optional: reg_scheduler / lambda_optimizer / experiment extras
+  }
+  ```
+- legacy weights-only checkpoint 是裸 `policy.state_dict()`。
+- legacy policy-wrapped checkpoint 是 `{"policy": policy.state_dict()}`，但没有 optimizer / iter / env_frames。
+- `init_checkpoint` 可以接受 rich 和 legacy 格式，但只加载 policy weights，忽略 optimizer 和训练进度。
+- `resume_checkpoint` 只接受 rich checkpoint。legacy 格式不具备断点续训所需的 optimizer、iter、env_frames、curriculum/best tracking 信息，必须改用 `init_checkpoint`。
+- 新 runtime 保存的 periodic/latest/final checkpoint 必须全部使用 rich 格式。
+
 **验收标准**
 - 明确写下：`04_tunnel_task/train.py` 是 runtime 行为基准。
 - Lagrangian 的特殊 checkpoint state 通过 adapter/hook 扩展，不反过来污染主路径。
