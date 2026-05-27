@@ -1,0 +1,30 @@
+# @package _global_
+
+campaign:
+  name: tunnel_curriculum
+  mode: train_stages
+  checkpoint_policy: best
+  checkpoint_override: init_checkpoint
+  output_root: ./outputs/campaign/tunnel_curriculum
+  stages:
+    - name: stage1
+      overrides:
+        - experiment=tunnel
+        - runtime.spec=tunnel
+        - env.num_obstacles=20
+        - curriculum.enable=false
+    - name: stage2
+      init_from_previous: true
+      overrides:
+        - experiment=tunnel
+        - runtime.spec=tunnel
+        - env.num_obstacles=40
+        - curriculum.enable=false
+    - name: stage3
+      init_from_previous: true
+      overrides:
+        - experiment=tunnel
+        - runtime.spec=tunnel
+        - env.num_obstacles=50
+        - curriculum.enable=true
+

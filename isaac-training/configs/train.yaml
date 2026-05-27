@@ -6,6 +6,7 @@ defaults:
   - /task/sim@_global_
   - /task/user_model@_global_
   - optional experiment: null
+  - optional campaign: null
 
 # Global Configurations
 headless: True
