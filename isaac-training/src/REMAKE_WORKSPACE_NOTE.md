@@ -443,16 +443,15 @@ run_training(cfg, spec)
 
 ```bash
 python experiments/train.py experiment=tunnel
-python experiments/train.py experiment=tunnel_m2_diverse_pilot
 python experiments/train.py experiment=tunnel_lagrangian
 python experiments/train.py experiment=safety_shield
 python experiments/train.py experiment=tunnel_intent
+python experiments/campaign.py campaign=tunnel_m2_diverse_pilot
 ```
 
-旧入口兼容策略：
-- `experiments/04_tunnel_task/train.py` 可以短期保留为 shim，内部转到统一入口或复用同一个 spec。
-- 其他旧 `experiments/*/train.py` 不继续扩展，迁移后标记 deprecated。
-- 项目脚本优先切到 `experiments/train.py`。
+旧入口策略：
+- 历史 `experiments/*/train.py`、`eval_video.py`、`run_curriculum.py`、`run_matrix.py` 已移除。
+- 项目脚本统一切到 `experiments/train.py` / `experiments/eval.py` / `experiments/campaign.py`。
 
 **验收标准**
 ```bash
@@ -501,17 +500,16 @@ campaign:
     - name: stage1
       overrides:
         - experiment=tunnel
-        - runtime.spec=tunnel
-        - env.num_obstacles=20
+        - env.num_obstacles=30
         - curriculum.enable=false
     - name: stage2
       init_from_previous: true
       overrides:
-        - env.num_obstacles=40
+        - env.num_obstacles=50
     - name: stage3
       init_from_previous: true
       overrides:
-        - env.num_obstacles=50
+        - env.num_obstacles=80
         - curriculum.enable=true
 ```
 
@@ -520,7 +518,7 @@ campaign:
 ```bash
 python experiments/campaign.py campaign=tunnel_curriculum
 python experiments/campaign.py campaign=tunnel_ablation_ours seed=42
-python experiments/campaign.py campaign=lagrangian_heldout eval.checkpoint=/path/to/checkpoint_best.pt
+python experiments/campaign.py campaign=tunnel_lagrangian_curriculum
 ```
 
 **验收标准**
@@ -543,7 +541,7 @@ src/core/launching.py
 `launch.py` 提供统一命令包装：
 
 ```bash
-python experiments/launch.py train --tmux --session tunnel-m2 -- experiment=tunnel_m2_diverse_pilot
+python experiments/launch.py campaign --tmux --session tunnel-m2 -- campaign=tunnel_m2_diverse_pilot
 python experiments/launch.py eval --tmux --session eval-m2 -- experiment=tunnel eval.checkpoint=/path/to/ckpt
 python experiments/launch.py campaign --tmux --session ablation -- campaign=tunnel_ablation_ours
 python experiments/launch.py train --dry-run -- experiment=tunnel env_test_mode=true
@@ -610,7 +608,7 @@ eval:
 ```bash
 python experiments/eval.py experiment=tunnel eval.checkpoint=/path/to/checkpoint_best.pt
 python experiments/eval.py experiment=tunnel_lagrangian eval.checkpoint=/path/to/checkpoint_best.pt eval.grid=heldout_tunnel
-python experiments/eval.py experiment=tunnel_m2_diverse_pilot eval.checkpoint=/path/to/checkpoint_best.pt eval.global_view=true
+python experiments/eval.py experiment=tunnel eval.checkpoint=/path/to/checkpoint_best.pt eval.global_view=true
 ```
 
 **需要补的 core 能力**

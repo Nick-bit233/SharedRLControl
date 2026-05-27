@@ -1,0 +1,36 @@
+# @package _global_
+
+campaign:
+  name: tunnel_m2_diverse_pilot
+  mode: train_stages
+  checkpoint_policy: best
+  checkpoint_override: init_checkpoint
+  output_root: ./outputs/campaign/tunnel_m2_diverse_pilot
+  stages:
+    - name: train
+      overrides:
+        - experiment=tunnel
+        - env.num_obstacles=50
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,16.0]
+        - algo.feature_extractor.learning_rate=5e-5
+        - algo.actor.learning_rate=5e-5
+        - algo.critic.learning_rate=5e-5
+        - algo.min_concentration=2.0
+        - algo.reg_coeff=0.0
+        - max_iterations=20010
+        - eval_interval=500
+        - save_interval=1000
+        - resume_checkpoint=null
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - user_model.offline_mode=true
+        - user_model.dataset_path=${hydra:runtime.cwd}/data/trajectories_tunnel.h5
+        - user_model.sampling_mode=scaled
+        - user_model.gpu_cache_reserve_gb=2.0
+        - user_model.min_scale_factor=0.5
+        - user_model.preload_data=true
+        - record_video=false
+        - wandb.name=tunnel_m2_diverse_pilot
+        - wandb.group=tunnel_m2_diverse_pilot
+        - job_name=tunnel_m2_diverse_pilot

@@ -1,7 +1,8 @@
 # Experiments
 
 Unified experiment entrypoints live at the top of this directory. Historical
-per-experiment scripts are compatibility shims only.
+per-experiment scripts have been removed; new training should use
+`launch.py -> train.py/campaign.py -> experiment_specs -> src.core.runner`.
 
 ## 入口职责
 
@@ -101,8 +102,8 @@ python experiments/launch.py train --foreground -- \
 后台 tmux 启动并自动 attach：
 
 ```bash
-python experiments/launch.py train --tmux --attach --session tunnel-m2 -- \
-  experiment=tunnel_m2_diverse_pilot \
+python experiments/launch.py train --tmux --attach --session tunnel -- \
+  experiment=tunnel \
   wandb.mode=offline \
   record_video=false
 ```
@@ -173,7 +174,7 @@ python experiments/launch.py eval --foreground -- \
 
 ## 使用 launch.py 启动 campaign 课程训练
 
-`campaign.py` 负责多阶段训练编排。当前示例配置在 `configs/campaign/tunnel_curriculum.yaml`，会依次运行 stage1、stage2、stage3，并用上一阶段的 checkpoint 初始化下一阶段。
+`campaign.py` 负责多阶段训练、串联 fine-tune 和 sweep 编排。旧的 stage / ablation / sweep experiment YAML 已迁移到 `configs/campaign/*.yaml`，每个 stage 都显式覆写单文件 experiment 配置。
 
 campaign dry-run：
 
@@ -211,6 +212,22 @@ campaign 配置中常见字段：
 - `campaign.output_root`：campaign 输出根目录。
 - `campaign.stages[].overrides`：每个 stage 传给 `experiments/train.py` 的 Hydra 覆写。
 - `campaign.stages[].init_from_previous`：是否使用上一阶段 checkpoint 初始化。
+
+当前主线 campaign：
+
+- `tunnel_curriculum`
+- `tunnel_lagrangian_curriculum`
+- `tunnel_intent_curriculum`
+- `safety_shield_curriculum`
+- `tunnel_m1_noreg_sweep`
+- `tunnel_m2_diverse_pilot`
+- `tunnel_m3_finetune`
+- `safety_shield_pareto_sweep`
+- `tunnel_ablation_ours`
+- `tunnel_ablation_no_residual`
+- `tunnel_ablation_follow_only`
+- `tunnel_ablation_safety_reg`
+- `tunnel_ablation_no_curriculum`
 
 ## launch.py 参数速查
 

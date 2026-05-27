@@ -1,15 +1,15 @@
 # @package _global_
 
 campaign:
-  name: tunnel_curriculum
+  name: tunnel_intent_curriculum
   mode: train_stages
   checkpoint_policy: best
   checkpoint_override: init_checkpoint
-  output_root: ./outputs/campaign/tunnel_curriculum
+  output_root: ./outputs/campaign/tunnel_intent_curriculum
   stages:
     - name: stage1
       overrides:
-        - experiment=tunnel
+        - experiment=tunnel_intent
         - env.num_obstacles=30
         - env.obstacle_width_range=[0.4,0.8]
         - env.obstacle_height_range=[8.0,16.0]
@@ -17,15 +17,20 @@ campaign:
         - save_interval=500
         - curriculum.enable=false
         - algo.min_concentration=2.0
+        - user_model.intent.alpha_range=[0.70,1.0]
+        - user_model.intent.wrong_direction_prob_range=[0.0,0.10]
+        - user_model.intent.tau_perc_range=[0.05,0.12]
+        - user_model.intent.sigma_perc_range=[0.0,0.12]
+        - user_model.intent.d_react_range=[1.4,2.2]
         - early_stopping.enable=true
         - early_stopping.patience=5
         - early_stopping.min_delta=0.10
-        - wandb.name=srlc_tunnel_stage1
-        - job_name=tunnel_stage1
+        - wandb.name=srlc_tunnel_intent_stage1
+        - job_name=tunnel_intent_stage1
     - name: stage2
       init_from_previous: true
       overrides:
-        - experiment=tunnel
+        - experiment=tunnel_intent
         - env.num_obstacles=50
         - env.obstacle_width_range=[0.4,0.8]
         - env.obstacle_height_range=[8.0,16.0]
@@ -33,18 +38,23 @@ campaign:
         - algo.actor.learning_rate=7e-5
         - algo.critic.learning_rate=7e-5
         - algo.min_concentration=2.0
+        - user_model.intent.alpha_range=[0.35,0.95]
+        - user_model.intent.wrong_direction_prob_range=[0.0,0.30]
+        - user_model.intent.tau_perc_range=[0.05,0.25]
+        - user_model.intent.sigma_perc_range=[0.0,0.30]
+        - user_model.intent.d_react_range=[0.9,2.2]
         - max_iterations=12010
         - save_interval=500
         - curriculum.enable=false
         - early_stopping.enable=true
         - early_stopping.patience=5
         - early_stopping.min_delta=0.10
-        - wandb.name=srlc_tunnel_stage2
-        - job_name=tunnel_stage2
+        - wandb.name=srlc_tunnel_intent_stage2
+        - job_name=tunnel_intent_stage2
     - name: stage3
       init_from_previous: true
       overrides:
-        - experiment=tunnel
+        - experiment=tunnel_intent
         - env.num_obstacles=80
         - env.obstacle_width_range=[0.4,0.9]
         - env.obstacle_height_range=[8.0,18.0]
@@ -52,6 +62,11 @@ campaign:
         - algo.actor.learning_rate=5e-5
         - algo.critic.learning_rate=5e-5
         - algo.min_concentration=2.0
+        - user_model.intent.alpha_range=[0.10,0.80]
+        - user_model.intent.wrong_direction_prob_range=[0.15,0.45]
+        - user_model.intent.tau_perc_range=[0.10,0.35]
+        - user_model.intent.sigma_perc_range=[0.10,0.40]
+        - user_model.intent.d_react_range=[0.7,1.8]
         - max_iterations=20010
         - save_interval=1000
         - curriculum.enable=true
@@ -66,5 +81,5 @@ campaign:
         - early_stopping.enable=true
         - early_stopping.patience=8
         - early_stopping.min_delta=0.10
-        - wandb.name=srlc_tunnel_stage3
-        - job_name=tunnel_stage3
+        - wandb.name=srlc_tunnel_intent_stage3
+        - job_name=tunnel_intent_stage3
