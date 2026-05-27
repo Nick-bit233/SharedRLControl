@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
 from typing import Any
 
@@ -175,6 +176,105 @@ def attach_recorded_videos(
         )
 
 
+def save_video_frames(frames: list[Any], path: str, fps: int) -> None:
+    """Save a list of rendered frames to an mp4 file."""
+
+    import imageio
+    import numpy as np
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    arr = np.stack(frames)
+    if arr.ndim == 4 and arr.shape[1] in (1, 3) and arr.shape[3] not in (1, 3):
+        arr = np.transpose(arr, (0, 2, 3, 1))
+    if arr.dtype != np.uint8:
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    imageio.mimsave(path, arr, fps=fps, macro_block_size=1)
+    print(f"[Eval] Saved {arr.shape[0]} frames @ {fps} fps -> {path}")
+
+
+def save_recorded_videos(
+    cfg: Any,
+    info: dict[str, Any],
+    callbacks: Mapping[str, Any | None],
+    output_dir: str,
+) -> None:
+    """Save recorded rollout videos to disk and add their paths to eval info."""
+
+    fps = max(1, int(round(video_fps_from_cfg(cfg))))
+    for label, callback in callbacks.items():
+        if callback is None or not getattr(callback, "frames", None):
+            print(f"[Eval] WARNING: no {label} frames captured.")
+            continue
+        path = os.path.join(output_dir, f"eval_video_{label}.mp4")
+        save_video_frames(callback.frames, path, fps)
+        info[f"video/{label}"] = path
+
+
+def evaluate_policy_to_disk(
+    cfg: Any,
+    env: Any,
+    policy: Any,
+    *,
+    output_dir: str,
+    seed: int = 42,
+    render_interval: int = 2,
+) -> dict[str, Any]:
+    """Evaluate a policy and optionally save recorded videos to disk."""
+
+    record_video = cfg.get("record_video", False)
+    print(f"[Eval] Starting evaluation... Video recording: {record_video}")
+
+    env.eval()
+    try:
+        prepare_eval_rendering(cfg, env, record_video=record_video)
+        env.set_seed(seed)
+        eval_max_steps = int(env.max_episode_length)
+
+        logging.info("[Eval] Running rollout...")
+        render_callback_follow, trajs = run_eval_rollout(
+            cfg,
+            env,
+            policy,
+            camera_mode="follow",
+            record_video=record_video,
+            eval_max_steps=eval_max_steps,
+            render_interval=render_interval,
+        )
+
+        render_callback_global = None
+        if record_video and cfg.get("global_view", False):
+            logging.info("[Eval] Running rollout with global camera view...")
+            render_callback_global, _ = run_eval_rollout(
+                cfg,
+                env,
+                policy,
+                camera_mode="global",
+                record_video=True,
+                eval_max_steps=eval_max_steps,
+                render_interval=render_interval,
+            )
+
+        logging.info(f"[Eval] trajs keys: {trajs.keys()}")
+        info = flatten_first_episode_stats(trajs)
+        logging.info(f"[Eval] eval info: {info}")
+
+        if record_video:
+            save_recorded_videos(
+                cfg,
+                info,
+                {
+                    "follow": render_callback_follow,
+                    "global": render_callback_global,
+                },
+                output_dir,
+            )
+
+        return info
+    finally:
+        restore_eval_rendering(env, record_video=record_video)
+        env.train()
+
+
 def evaluate_policy(
     cfg: Any,
     env: Any,
@@ -268,8 +368,11 @@ __all__ = [
     "attach_recorded_videos",
     "evaluate_policy",
     "evaluate_policy_no_grad",
+    "evaluate_policy_to_disk",
     "flatten_first_episode_stats",
     "prepare_eval_rendering",
     "restore_eval_rendering",
     "run_eval_rollout",
+    "save_recorded_videos",
+    "save_video_frames",
 ]

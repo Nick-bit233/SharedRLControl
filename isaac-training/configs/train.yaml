@@ -22,6 +22,15 @@ save_interval: 1000
 # Evaluation Settings
 eval_visualization: true  
 record_video: false
+eval:
+  checkpoint: null
+  output_dir: ./eval_outputs
+  seed: 42
+  num_envs: 4
+  record_video: true
+  global_view: false
+  keep_num_envs: false
+  grid: null
 
 # Hydra Configuration associated with this
 hydra:

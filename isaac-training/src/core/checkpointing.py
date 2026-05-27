@@ -226,6 +226,31 @@ def load_init_or_resume_checkpoint(
     return checkpoint_state
 
 
+def load_policy_for_eval(
+    path: str,
+    policy: Any,
+    cfg: Any,
+    *,
+    adapter: CheckpointAdapter | None = None,
+    hydra_cfg: Any | None = None,
+) -> CheckpointPayload:
+    """Load policy weights for evaluation without restoring training state."""
+
+    resolved_path = resolve_runtime_path(path, hydra_cfg)
+    if resolved_path is None:
+        raise ValueError("Evaluation checkpoint path must be set.")
+    if not os.path.exists(resolved_path):
+        raise FileNotFoundError(f"Evaluation checkpoint not found: {resolved_path}")
+
+    adapter = adapter or DefaultCheckpointAdapter()
+    print(f"[Eval] Loading checkpoint: {resolved_path}")
+    payload = load_checkpoint(resolved_path, map_location=cfg.device)
+    print(f"[Eval] Detected {describe_checkpoint_format(payload.format)}.")
+    adapter.load_policy_state(policy, payload.policy_state, cfg)
+    print("[Eval] Policy checkpoint loaded.")
+    return payload
+
+
 def remaining_iterations_after_resume(
     *,
     max_iterations: int,
@@ -468,6 +493,7 @@ __all__ = [
     "is_rich_checkpoint",
     "load_checkpoint",
     "load_init_or_resume_checkpoint",
+    "load_policy_for_eval",
     "remaining_iterations_after_resume",
     "resolve_runtime_path",
     "save_best_checkpoint",
