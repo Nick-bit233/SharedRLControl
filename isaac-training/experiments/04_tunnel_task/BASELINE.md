@@ -8,7 +8,8 @@ re-recording the source.
 
 - Checkpoint (deployed):
   `SharedRLControl/ros1/navigation_runner/cfg/tunnel/checkpoint_best.pt`
-- Trained with: `experiments/04_tunnel_task/run_curriculum.py`
+- Trained with the historical staged tunnel curriculum; new staged runs should use
+  `experiments/campaign.py campaign=tunnel_curriculum`
   (tunnel_stage1 → stage2 → stage3, last stage activates `reg_coeff`
   curriculum from 0.01 → 0.05).
 - Distribution: Beta (`algo.distribution=beta`).

@@ -298,7 +298,5 @@ python experiments/04a_tunnel_ablation/run_matrix.py \
   --tag paper_ablation_v1 \
   --resume-checkpoint outputs/tunnel_ablation/no_curriculum/paper_ablation_v1_seed42/2026-05-14_03-05-40/wandb/run-20260514_030557-x8wta239/files/checkpoint_6250.pt
 
-python experiments/04a_tunnel_ablation/run_curriculum.py \
-   --variant no_residual --seed 42 --tag paper_ablation_v1_fixed \
-   --start-stage 2 \
-   --checkpoint "$(cat outputs/tunnel_ablation/no_residual/stage1/paper_ablation_v1_seed42/2026-05-13_17-57-01/final_checkpoint_path.txt)"
+python experiments/campaign.py campaign=tunnel_curriculum \
+   init_checkpoint="$(cat outputs/tunnel_ablation/no_residual/stage1/paper_ablation_v1_seed42/2026-05-13_17-57-01/final_checkpoint_path.txt)"

@@ -7,7 +7,7 @@ Steps:
      (`data/trajectories_tunnel.h5`) via the modified
      `src/datasets/trajectory_generator.py` with directional bias.
      Skipped automatically if the dataset file already exists.
-  2. Launch `experiments/04_tunnel_task/train.py` with
+  2. Launch `experiments/train.py` with
      `experiment=tunnel_m2_diverse_pilot`.
 
 Usage:
@@ -93,7 +93,7 @@ def run_training(
     output_dir = f"./outputs/tunnel_m2_diverse_pilot/{tag}"
     cmd = [
         sys.executable,
-        "experiments/04_tunnel_task/train.py",
+        "experiments/train.py",
         f"experiment={TRAIN_EXPERIMENT}",
         f"algo.reg_coeff={reg_coeff}",
         f"wandb.name={tag}",

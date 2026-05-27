@@ -20,7 +20,7 @@
 #   python experiments/04_tunnel_task/run_m3_finetune.py
 #
 # Manual:
-#   python experiments/04_tunnel_task/train.py \
+#   python experiments/train.py \
 #       experiment=tunnel_m3_finetune \
 #       resume_checkpoint=<absolute-path-to>/checkpoint_14000.pt
 

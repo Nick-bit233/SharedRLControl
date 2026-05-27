@@ -76,7 +76,7 @@ def main() -> None:
 
     cmd = [
         sys.executable,
-        "experiments/04_tunnel_task/train.py",
+        "experiments/train.py",
         f"experiment={TRAIN_EXPERIMENT}",
         f"resume_checkpoint={resume_abs}",
         f"wandb.name={tag}",

@@ -40,7 +40,7 @@ The implementation created a separate experiment path instead of modifying the o
 |---|---|
 | New environment | `src/envs/env_tunnel_lagrangian.py` |
 | New algorithm | `src/algos/ppo_constrained_beta_lagrangian.py` |
-| New experiment entrypoints | `experiments/04s_tunnel_lagrangian/train.py`, `eval_video.py`, `run_curriculum.py` |
+| New experiment entrypoints | `experiments/train.py`, `experiments/eval.py`, `experiments/campaign.py` |
 | New configs | `configs/experiment/tunnel_lagrangian*.yaml` |
 
 The directory name uses `04s_tunnel_lagrangian` rather than a new numeric prefix such as `06_*`, to avoid future branch conflicts.
@@ -110,11 +110,11 @@ mean directly replacing the environment's input model with
 `src/core/user_model_diverse.py`, which is a separate online multi-modal input
 model and should be treated as a distinct experiment if used later.
 
-Use the 04s curriculum runner to create/reuse the dataset automatically:
+Use the unified campaign runner to create/reuse the dataset automatically:
 
 ```bash
 cd isaac-training
-python experiments/04s_tunnel_lagrangian/run_curriculum.py --end-stage 1
+python experiments/campaign.py campaign=tunnel_curriculum --dry-run
 ```
 
 ## 3. Current run analysis
@@ -303,24 +303,28 @@ Suggested command template:
 
 ```bash
 cd isaac-training
-python experiments/04s_tunnel_lagrangian/eval_video.py \
+python experiments/eval.py \
     experiment=tunnel_lagrangian_stage1 \
-    +resume_checkpoint=/path/to/checkpoint.pt \
+    eval.checkpoint=/path/to/checkpoint.pt \
     env.num_envs=256 \
-    +keep_num_envs=true \
+    eval.keep_num_envs=true \
     env.num_obstacles=50 \
-    +eval_seed=43 \
-    +video_dir=./eval_videos/lagrangian_stage1_obst50_seed43
+    eval.seed=43 \
+    eval.output_dir=./eval_outputs/lagrangian_stage1_obst50_seed43
 ```
 
-`eval_video.py` defaults to reducing `env.num_envs` to 4 when rendering if `keep_num_envs` is not set. For metric validation, set `+keep_num_envs=true`; otherwise the result is useful for qualitative video inspection but too small for stable rate estimates. Use `+eval_seed=...` for rollout/user-command seeding; plain `seed=...` is not the parameter consumed by `eval_video.py`.
+`experiments/eval.py` defaults to reducing `env.num_envs` to the configured
+`eval.num_envs` unless `eval.keep_num_envs=true` is set. For metric validation,
+keep the requested parallel environment count; otherwise the result is useful
+for qualitative inspection but too small for stable rate estimates. Use
+`eval.seed=...` for rollout/user-command seeding.
 
-Or run the default validation grid:
+For validation grids, use a campaign config or launch repeated unified eval runs:
 
 ```bash
 cd isaac-training
-python experiments/04s_tunnel_lagrangian/run_heldout_eval.py \
-    --checkpoint /path/to/checkpoint_best.pt
+python experiments/launch.py eval --dry-run -- \
+    experiment=tunnel_lagrangian eval.checkpoint=/path/to/checkpoint_best.pt
 ```
 
 Terrain/obstacle-layout caveat: `EnvTunnelLagrangian` currently constructs the terrain generator with a hardcoded `seed=0`. Therefore the validation grid above varies obstacle count and rollout/user-command seed, but not true terrain-layout seed. To claim layout generalization, first expose the terrain generator seed as a config parameter and then run a real terrain-seed sweep.

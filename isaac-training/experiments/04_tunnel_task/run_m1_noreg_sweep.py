@@ -51,7 +51,7 @@ def run_single(
 
     cmd = [
         sys.executable,
-        "experiments/04_tunnel_task/train.py",
+        "experiments/train.py",
         "experiment=tunnel_m1_noreg",
         f"algo.reg_coeff={reg_coeff}",
         f"wandb.name={run_name}",

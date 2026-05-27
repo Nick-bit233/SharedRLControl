@@ -11,7 +11,7 @@
 # the generation step automatically when the file is missing).
 #
 # Usage:
-#   python experiments/04_tunnel_task/train.py experiment=tunnel_m2_diverse_pilot \\
+#   python experiments/train.py experiment=tunnel_m2_diverse_pilot \\
 #       algo.reg_coeff=0.0     # set to whatever M1 selected as the new mainline
 
 defaults:

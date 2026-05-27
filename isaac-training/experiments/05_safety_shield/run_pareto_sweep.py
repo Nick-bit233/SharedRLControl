@@ -43,7 +43,7 @@ def run_single(
 
     cmd = [
         sys.executable,
-        "experiments/05_safety_shield/train.py",
+        "experiments/train.py",
         "experiment=pareto_ablation",
         f"algo.reg_coeff={reg_coeff}",
         f"wandb.name={run_name}",
