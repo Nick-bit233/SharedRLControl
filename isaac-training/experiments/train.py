@@ -1,4 +1,4 @@
-"""Compatibility shim for the historical tunnel training entrypoint."""
+"""Unified training entrypoint for Isaac shared-control experiments."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import hydra
+from omegaconf import OmegaConf
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -28,21 +29,25 @@ def _configure_cuda_env() -> None:
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
-def _validate_entrypoint_config(cfg: Any) -> None:
-    required_keys = ("runtime", "env", "algo", "user_model")
-    missing = [key for key in required_keys if key not in cfg]
+def _require_config(cfg: Any) -> None:
+    required = {
+        "runtime.spec": "experiment spec selection",
+        "env": "environment config",
+        "algo": "algorithm config",
+    }
+    missing = [
+        f"{key} ({description})"
+        for key, description in required.items()
+        if OmegaConf.select(cfg, key) is None
+    ]
     if missing:
-        raise ValueError(
-            "04_tunnel_task/train.py now delegates to the unified training stack. "
-            f"Missing config keys: {', '.join(missing)}. "
-            "Run with experiment=tunnel or set runtime.spec=tunnel."
-        )
+        raise ValueError("Missing required training config fields: " + ", ".join(missing))
 
 
-@hydra.main(config_path="../../configs", config_name="train", version_base=None)
+@hydra.main(config_path="../configs", config_name="train", version_base=None)
 def main(cfg: Any) -> None:
     _configure_cuda_env()
-    _validate_entrypoint_config(cfg)
+    _require_config(cfg)
 
     from experiment_specs.registry import build_spec_from_cfg
     from omni_drones import init_simulation_app
@@ -50,11 +55,11 @@ def main(cfg: Any) -> None:
 
     sim_app = init_simulation_app(cfg)
     try:
-        run_training(cfg, build_spec_from_cfg(cfg))
+        spec = build_spec_from_cfg(cfg)
+        run_training(cfg, spec)
     finally:
         sim_app.close()
 
 
 if __name__ == "__main__":
     main()
-

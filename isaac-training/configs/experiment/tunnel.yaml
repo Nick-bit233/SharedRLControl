@@ -3,6 +3,9 @@
 env_test_mode: False
 
 # === Environment Configuration ===
+runtime:
+  spec: tunnel
+
 env:
   num_envs: 256
   max_episode_length: 1500
