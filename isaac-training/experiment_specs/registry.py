@@ -10,6 +10,8 @@ from omegaconf import DictConfig, OmegaConf
 from src.core.spec import ExperimentSpec
 
 
+# if new experiment spec is added, add it to this registry 
+# and implement a build_spec() function in its module script.
 SPEC_BUILDERS: dict[str, str] = {
     "tunnel": "experiment_specs.tunnel:build_spec",
     "tunnel_lagrangian": "experiment_specs.tunnel_lagrangian:build_spec",
