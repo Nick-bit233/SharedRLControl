@@ -4,6 +4,7 @@ env_test_mode: False
 
 # === Environment Configuration ===
 runtime:
+  # runtime.spec: tunnel_lagrangian
   spec: tunnel_lagrangian
 
 env:

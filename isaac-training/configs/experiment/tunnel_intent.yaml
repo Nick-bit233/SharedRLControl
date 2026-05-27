@@ -2,6 +2,10 @@
 
 env_test_mode: False
 
+runtime:
+  # runtime.spec: tunnel_intent
+  spec: tunnel_intent
+
 # === Environment Configuration ===
 env:
   num_envs: 256

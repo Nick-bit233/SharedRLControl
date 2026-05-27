@@ -4,6 +4,10 @@
 
 env_test_mode: False
 
+runtime:
+  # runtime.spec: safety_shield
+  spec: safety_shield
+
 # === Environment Configuration ===
 env:
   num_envs: 256

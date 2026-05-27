@@ -13,6 +13,8 @@ from src.core.spec import ExperimentSpec
 SPEC_BUILDERS: dict[str, str] = {
     "tunnel": "experiment_specs.tunnel:build_spec",
     "tunnel_lagrangian": "experiment_specs.tunnel_lagrangian:build_spec",
+    "safety_shield": "experiment_specs.safety_shield:build_spec",
+    "tunnel_intent": "experiment_specs.tunnel_intent:build_spec",
 }
 
 

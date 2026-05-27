@@ -1,22 +1,16 @@
-#!/usr/bin/env python3
-"""Real-room SRLC training entrypoint.
+"""Deprecated real-room entrypoint; delegates to unified training."""
 
-Delegates to experiment 04's canonical trainer while selecting the real-room
-Hydra config by default.
-"""
 from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-def main() -> None:
-    args = sys.argv[1:]
-    if not any(arg.startswith("experiment=") for arg in args):
-        args = ["experiment=real_room", *args]
-    cmd = [sys.executable, "experiments/04_tunnel_task/train.py", *args]
-    os.execv(sys.executable, cmd)
+from experiments._legacy import run_unified_training
 
 
 if __name__ == "__main__":
-    main()
+    run_unified_training("real_room")

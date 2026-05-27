@@ -2,6 +2,10 @@
 
 env_test_mode: False
 
+runtime:
+  # runtime.spec: tunnel
+  spec: tunnel
+
 env:
   name: real_room
   num_envs: 1024

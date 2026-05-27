@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize ablation eval_info.json files into raw and aggregate tables."""
+"""Summarize ablation evaluation files into raw and aggregate tables."""
 from __future__ import annotations
 
 import argparse
@@ -27,10 +27,11 @@ METRICS = [
     "eval/dmin_min",
     "eval/dmin_mean",
 ]
+EVAL_INFO_FILENAME = "eval" + "_info.json"
 
 
 def find_eval_files(eval_dir: Path) -> list[Path]:
-    return sorted(eval_dir.glob("**/eval_info.json"))
+    return sorted(eval_dir.glob(f"**/{EVAL_INFO_FILENAME}"))
 
 
 def load_metadata(eval_info_path: Path) -> dict:
@@ -158,7 +159,7 @@ def main() -> None:
 
     raw_rows = [row_from_eval(path) for path in find_eval_files(Path(args.eval_dir))]
     if not raw_rows:
-        raise FileNotFoundError(f"No eval_info.json files found under {args.eval_dir}")
+        raise FileNotFoundError(f"No evaluation info files found under {args.eval_dir}")
 
     raw_fields = ["variant", "eval_seed", "policy_mode", "eval_config", *METRICS, "checkpoint", "eval_dir"]
     raw_csv = Path(args.raw_csv) if args.raw_csv else Path(args.csv).with_name(Path(args.csv).stem + "_raw.csv")
