@@ -54,13 +54,19 @@ early_stopping:
 
 # === User Model ===
 user_model:
+  offline_mode: true
+  dataset_path: ${hydra:runtime.cwd}/data/trajectories_tunnel.h5
+  sampling_mode: scaled        # boundary-aware, keeps tunnel feasibility
+  gpu_cache_reserve_gb: 2.0
+  min_scale_factor: 0.5
+  preload_data: true
 
-  style:
-    frequency_base: 0.1  # base frequency for user command changes
-    frequency_scale: 0.3  # scale for randomizing frequency
+  # style:
+  #   frequency_base: 0.1  # base frequency for user command changes
+  #   frequency_scale: 0.3  # scale for randomizing frequency
 
-  simple_mode: False
-  z_tilt_compensation: 0.0
+  # simple_mode: False
+  # z_tilt_compensation: 0.0
 
 # === Visualization ===
 record_video: True
