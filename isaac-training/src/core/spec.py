@@ -151,6 +151,7 @@ class ExperimentSpec:
     sanity_check_fn: SanityCheckFn | None = None
     hooks: Sequence[RuntimeHook] = field(default_factory=tuple)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    best_checkpoint_policy_only: bool = True
 
     def __post_init__(self) -> None:
         if not self.name:

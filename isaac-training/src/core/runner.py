@@ -455,7 +455,12 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                         cfg,
                         best_state=best_state,
                         fallback_checkpoint_path=cfg.log_output_dir,
-                        policy_only=True,
+                        policy=policy,
+                        iter_value=global_iter,
+                        env_frames=current_env_frames,
+                        adapter=checkpoint_adapter,
+                        extra_state=_checkpoint_extra_state(context),
+                        policy_only=spec.best_checkpoint_policy_only,
                     )
                     best_checkpoint_path = best_paths.checkpoint_path
                     print(
@@ -550,7 +555,12 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 cfg,
                 best_state=best_state,
                 fallback_checkpoint_path=final_checkpoint_path,
-                policy_only=True,
+                policy=policy,
+                iter_value=final_iter,
+                env_frames=final_env_frames,
+                adapter=checkpoint_adapter,
+                extra_state=_checkpoint_extra_state(context),
+                policy_only=spec.best_checkpoint_policy_only,
             )
             best_checkpoint_path = best_paths.checkpoint_path
             context.update(

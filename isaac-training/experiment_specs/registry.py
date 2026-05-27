@@ -12,6 +12,7 @@ from src.core.spec import ExperimentSpec
 
 SPEC_BUILDERS: dict[str, str] = {
     "tunnel": "experiment_specs.tunnel:build_spec",
+    "tunnel_lagrangian": "experiment_specs.tunnel_lagrangian:build_spec",
 }
 
 
@@ -62,4 +63,3 @@ def build_spec_from_cfg(cfg: Any) -> ExperimentSpec:
     spec_name = get_spec_name_from_cfg(cfg)
     builder = get_spec_builder(spec_name)
     return builder(cfg)
-
