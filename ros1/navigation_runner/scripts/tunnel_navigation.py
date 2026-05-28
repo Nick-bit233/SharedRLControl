@@ -906,7 +906,7 @@ class TunnelNavigator:
         self.assist_enabled = mode == "ASSIST"
         self._publish_mode_state()
 
-    def _publish_px4_hold_setpoint(self, target_z=None, reason="HOLD"):
+    def _publish_px4_hold_setpoint(self, target_xy=None, target_z=None, reason="HOLD"):
         self.policy_active = False
         if hasattr(self, "policy_active_pub"):
             self.policy_active_pub.publish(Bool(data=False))
@@ -924,34 +924,42 @@ class TunnelNavigator:
                 target_z = float(self.odom.pose.pose.position.z)
             else:
                 target_z = float(self.cfg.takeoff_height)
+        if target_xy is None and self.odom is not None:
+            target_xy = (
+                float(self.odom.pose.pose.position.x),
+                float(self.odom.pose.pose.position.y),
+            )
 
         msg = PositionTarget()
         msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
         msg.header.stamp = rospy.Time.now()
         msg.header.frame_id = "map"
-        msg.velocity.x = 0.0
-        msg.velocity.y = 0.0
+        if target_xy is not None:
+            msg.position.x = float(target_xy[0])
+            msg.position.y = float(target_xy[1])
         msg.position.z = float(target_z)
         msg.yaw = self._current_yaw() if self.odom is not None else 0.0
         msg.type_mask = (
-            PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
-            | PositionTarget.IGNORE_VZ
+            PositionTarget.IGNORE_VX | PositionTarget.IGNORE_VY | PositionTarget.IGNORE_VZ
             | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY
             | PositionTarget.IGNORE_AFZ | PositionTarget.IGNORE_YAW_RATE
         )
         self.action_pub.publish(msg)
 
-    def _publish_real_lifecycle_hold(self, reason, target_z=None):
-        self._publish_px4_hold_setpoint(target_z=target_z, reason=reason)
+    def _publish_real_lifecycle_hold(self, reason, target_xy=None, target_z=None):
+        self._publish_px4_hold_setpoint(target_xy=target_xy, target_z=target_z, reason=reason)
         self._publish_mode_state()
         pos = self.odom.pose.pose.position if self.odom is not None else None
         if pos is None:
             status_msg = f"cmd=[0,0,0] | {self.real_lifecycle_state} | {reason}"
         else:
             z_cmd = float(target_z) if target_z is not None else float(pos.z)
+            if target_xy is None:
+                target_xy = (float(pos.x), float(pos.y))
             status_msg = (
                 f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
-                f"cmd=[0,0,0] z_sp={z_cmd:.2f} | min_d={self.min_dist:.2f} | "
+                f"hold=[{target_xy[0]:.2f},{target_xy[1]:.2f},{z_cmd:.2f}] | "
+                f"min_d={self.min_dist:.2f} | "
                 f"{self.real_lifecycle_state} | {reason}"
             )
         self.status_pub.publish(String(data=status_msg))
@@ -1032,6 +1040,12 @@ class TunnelNavigator:
             if self._takeoff_hold_z is not None
             else (float(self.odom.pose.pose.position.z) if self.odom is not None else None)
         )
+        hold_xy = self._takeoff_xy
+        if hold_xy is None and self.odom is not None:
+            hold_xy = (
+                float(self.odom.pose.pose.position.x),
+                float(self.odom.pose.pose.position.y),
+            )
 
         pre_ok, pre_reason = self._real_lifecycle_preconditions_ok()
         if not pre_ok:
@@ -1042,14 +1056,14 @@ class TunnelNavigator:
                 elif self.real_lifecycle_state != "OFFBOARD_LOST_HOLD":
                     self.real_lifecycle_state = "WAIT_OFFBOARD"
                 self._set_control_mode(self.cfg.post_takeoff_mode)
-            self._publish_real_lifecycle_hold(pre_reason, target_z=hold_z)
+            self._publish_real_lifecycle_hold(pre_reason, target_xy=hold_xy, target_z=hold_z)
             return False
 
         if self.mavros_state is not None and not self.mavros_state.armed:
             self.real_lifecycle_state = "WAIT_ARMED"
             self._request_arm_on_offboard()
             reason = "ARMING_FAILED" if self._arm_request_failed else "WAIT_ARMED"
-            self._publish_real_lifecycle_hold(reason, target_z=hold_z)
+            self._publish_real_lifecycle_hold(reason, target_xy=hold_xy, target_z=hold_z)
             return False
         self._arm_request_failed = False
 
@@ -1058,7 +1072,7 @@ class TunnelNavigator:
 
         if self.real_lifecycle_state == "TAKEOFF_CLIMB":
             target_z = float(self._takeoff_hold_z or self.cfg.takeoff_height)
-            self._publish_real_lifecycle_hold("TAKEOFF_CLIMB", target_z=target_z)
+            self._publish_real_lifecycle_hold("TAKEOFF_CLIMB", target_xy=hold_xy, target_z=target_z)
             cur_z = float(self.odom.pose.pose.position.z)
             if cur_z >= target_z - self.cfg.takeoff_reached_tolerance:
                 self.real_lifecycle_state = "TAKEOFF_SETTLE"
@@ -1068,13 +1082,13 @@ class TunnelNavigator:
 
         if self.real_lifecycle_state == "TAKEOFF_SETTLE":
             target_z = float(self._takeoff_hold_z or self.cfg.takeoff_height)
-            self._publish_real_lifecycle_hold("TAKEOFF_SETTLE", target_z=target_z)
+            self._publish_real_lifecycle_hold("TAKEOFF_SETTLE", target_xy=hold_xy, target_z=target_z)
             elapsed = (rospy.Time.now() - self._takeoff_settle_start).to_sec()
             if elapsed < self.cfg.post_takeoff_mode_delay:
                 return False
             lidar_ok, lidar_reason = self._real_lidar_gate_ok()
             if not lidar_ok:
-                self._publish_real_lifecycle_hold(lidar_reason, target_z=target_z)
+                self._publish_real_lifecycle_hold(lidar_reason, target_xy=hold_xy, target_z=target_z)
                 return False
             self.real_lifecycle_state = "ACTIVE"
             self._set_control_mode(self.cfg.post_takeoff_mode)

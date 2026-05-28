@@ -4,7 +4,7 @@
          aircraft over LAN; nokov publishes the state used by SRLC. -->
 
     <arg name="checkpoint" default="$(find navigation_runner)/cfg/ckpts/checkpoint_9400.pt"/>
-    <arg name="pcd_file" default="$(find navigation_runner)/cfg/real_maps/merged/0517_crop_xyz_0p05_ascii.pcd"/>
+    <arg name="pcd_file" default="$(find navigation_runner)/cfg/real_maps/merged/0517_crop_xyz_0p05_inflated_r0p05_ascii.pcd"/>
     <arg name="device" default="cpu"/>
     <arg name="rviz" default="true"/>
     <arg name="record" default="true"/>
@@ -22,7 +22,9 @@
 
     <arg name="takeoff_height" default="1.2"/>
     <arg name="estop_hold_mode" default="AUTO.LOITER"/>
-    <arg name="max_xy_speed_real" default="1.0"/>
+    <arg name="forward_reverse" default="false"/>
+    <arg name="lateral_reverse" default="true"/>
+    <arg name="max_xy_speed_real" default="0.5"/>
     <arg name="max_z_speed_real" default="0.3"/>
     <arg name="safety_min_dist" default="0.25"/>
     <arg name="collision_dist" default="0.15"/>
@@ -97,6 +99,8 @@
           name="rc_input_node" output="screen" required="true">
         <rosparam file="$(find navigation_runner)/cfg/tunnel/rc_input_real_px4.yaml"/>
         <param name="rc_topic" value="$(arg rc_topic)"/>
+        <param name="forward_reverse" value="$(arg forward_reverse)"/>
+        <param name="lateral_reverse" value="$(arg lateral_reverse)"/>
     </node>
 
     <node pkg="navigation_runner" type="tunnel_navigation.py"
