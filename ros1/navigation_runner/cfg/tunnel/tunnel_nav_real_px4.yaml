@@ -31,8 +31,6 @@ use_px4: true
 height_control: false
 lock_z_control: true
 takeoff_height: 0.8
-auto_arm: false
-auto_offboard: false
 require_offboard: true
 real_auto_takeoff_on_offboard: true
 auto_arm_on_offboard: true
@@ -51,7 +49,6 @@ odom_timeout: 0.3
 # Do not use /mavros/local_position/odom for SRLC state in real deployment.
 odom_topic: "/nokov/local_position/odom"
 setpoint_raw_topic: "/mavros/setpoint_raw/local"
-setpoint_pose_topic: "/mavros/setpoint_position/local"
 
 # Conservative real-flight command limits.
 max_xy_speed_real: 1.0

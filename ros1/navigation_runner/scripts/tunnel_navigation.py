@@ -99,11 +99,6 @@ class TunnelConfig:
         self.setpoint_raw_topic = rospy.get_param(
             "~setpoint_raw_topic", "/mavros/setpoint_raw/local"
         )
-        self.setpoint_pose_topic = rospy.get_param(
-            "~setpoint_pose_topic", "/mavros/setpoint_position/local"
-        )
-        self.auto_arm = _param_bool(rospy.get_param("~auto_arm", False))
-        self.auto_offboard = _param_bool(rospy.get_param("~auto_offboard", False))
         self.require_offboard = _param_bool(rospy.get_param("~require_offboard", False))
         self.real_auto_takeoff_on_offboard = _param_bool(
             rospy.get_param("~real_auto_takeoff_on_offboard", False)
@@ -397,9 +392,7 @@ class TunnelNavigator:
         rospy.loginfo(f"[TunnelNav]   human_source  : {self.cfg.human_action_source}")
         if self.cfg.use_px4:
             rospy.loginfo(
-                f"[TunnelNav]   PX4 safety    : auto_arm={self.cfg.auto_arm}, "
-                f"auto_offboard={self.cfg.auto_offboard}, "
-                f"require_offboard={self.cfg.require_offboard}, "
+                f"[TunnelNav]   PX4 safety    : require_offboard={self.cfg.require_offboard}, "
                 f"hold_on_stop={self.cfg.hold_on_stop}"
             )
             rospy.loginfo(
@@ -546,9 +539,6 @@ class TunnelNavigator:
             )
             self.action_pub = rospy.Publisher(
                 self.cfg.setpoint_raw_topic, PositionTarget, queue_size=10
-            )
-            self.pose_pub = rospy.Publisher(
-                self.cfg.setpoint_pose_topic, PoseStamped, queue_size=10
             )
             self.state_sub = rospy.Subscriber(
                 "/mavros/state", State, self._mavros_state_cb
@@ -1012,19 +1002,51 @@ class TunnelNavigator:
     def _start_real_takeoff(self):
         pos = self.odom.pose.pose.position
         self._takeoff_xy = (float(pos.x), float(pos.y))
-        self._takeoff_hold_z = float(self.cfg.takeoff_height)
+        self._takeoff_hold_z = float(pos.z) + float(self.cfg.takeoff_height)
         self._takeoff_settle_start = None
         self.initial_z = float(pos.z)
         self.safety_airborne = False
         self.real_lifecycle_state = "TAKEOFF_CLIMB"
         self._publish_mode_state()
         rospy.loginfo(
-            "[TunnelNav] Real PX4 takeoff started at x=%.2f y=%.2f z=%.2f target_z=%.2f",
+            "[TunnelNav] Real PX4 takeoff started at x=%.2f y=%.2f z=%.2f "
+            "relative_height=%.2f target=[%.2f, %.2f, %.2f]",
             pos.x,
             pos.y,
             pos.z,
+            self.cfg.takeoff_height,
+            self._takeoff_xy[0],
+            self._takeoff_xy[1],
             self._takeoff_hold_z,
         )
+
+    def _resume_real_takeoff_target(self):
+        if self._takeoff_xy is None or self._takeoff_hold_z is None:
+            self._start_real_takeoff()
+            return
+        self._takeoff_settle_start = None
+        self.real_lifecycle_state = "TAKEOFF_CLIMB"
+        self._publish_mode_state()
+        rospy.loginfo(
+            "[TunnelNav] Resuming Real PX4 takeoff target=[%.2f, %.2f, %.2f]",
+            self._takeoff_xy[0],
+            self._takeoff_xy[1],
+            self._takeoff_hold_z,
+        )
+
+    def _px4_altitude_hold_target(self):
+        if self.cfg.use_px4 and self._takeoff_hold_z is not None:
+            return float(self._takeoff_hold_z)
+        return float(self.cfg.takeoff_height)
+
+    def _takeoff_target_error(self, target_xy, target_z):
+        if self.odom is None or target_xy is None or target_z is None:
+            return float("inf"), float("inf"), float("inf")
+        pos = self.odom.pose.pose.position
+        dx = float(pos.x) - float(target_xy[0])
+        dy = float(pos.y) - float(target_xy[1])
+        dz = float(pos.z) - float(target_z)
+        return math.hypot(math.hypot(dx, dy), dz), math.hypot(dx, dy), dz
 
     def _update_real_px4_lifecycle(self):
         if not (
@@ -1067,21 +1089,40 @@ class TunnelNavigator:
             return False
         self._arm_request_failed = False
 
-        if self.real_lifecycle_state in {"WAIT_OFFBOARD", "OFFBOARD_LOST_HOLD", "WAIT_ARMED"}:
+        if self.real_lifecycle_state in {"WAIT_OFFBOARD", "WAIT_ARMED"}:
             self._start_real_takeoff()
+        elif self.real_lifecycle_state == "OFFBOARD_LOST_HOLD":
+            self._resume_real_takeoff_target()
 
         if self.real_lifecycle_state == "TAKEOFF_CLIMB":
-            target_z = float(self._takeoff_hold_z or self.cfg.takeoff_height)
+            target_z = (
+                float(self._takeoff_hold_z)
+                if self._takeoff_hold_z is not None
+                else float(self.cfg.takeoff_height)
+            )
             self._publish_real_lifecycle_hold("TAKEOFF_CLIMB", target_xy=hold_xy, target_z=target_z)
-            cur_z = float(self.odom.pose.pose.position.z)
-            if cur_z >= target_z - self.cfg.takeoff_reached_tolerance:
+            pos_err, xy_err, z_err = self._takeoff_target_error(hold_xy, target_z)
+            if pos_err <= self.cfg.takeoff_reached_tolerance:
                 self.real_lifecycle_state = "TAKEOFF_SETTLE"
                 self._takeoff_settle_start = rospy.Time.now()
-                rospy.loginfo("[TunnelNav] Takeoff height reached: z=%.2f target=%.2f", cur_z, target_z)
+                rospy.loginfo(
+                    "[TunnelNav] Takeoff target reached: err_3d=%.3f xy_err=%.3f z_err=%.3f "
+                    "target=[%.2f, %.2f, %.2f]",
+                    pos_err,
+                    xy_err,
+                    z_err,
+                    hold_xy[0],
+                    hold_xy[1],
+                    target_z,
+                )
             return False
 
         if self.real_lifecycle_state == "TAKEOFF_SETTLE":
-            target_z = float(self._takeoff_hold_z or self.cfg.takeoff_height)
+            target_z = (
+                float(self._takeoff_hold_z)
+                if self._takeoff_hold_z is not None
+                else float(self.cfg.takeoff_height)
+            )
             self._publish_real_lifecycle_hold("TAKEOFF_SETTLE", target_xy=hold_xy, target_z=target_z)
             elapsed = (rospy.Time.now() - self._takeoff_settle_start).to_sec()
             if elapsed < self.cfg.post_takeoff_mode_delay:
@@ -1147,8 +1188,8 @@ class TunnelNavigator:
 
         # --- RL mode (auto or keyboard+RL assist) ---
         if not self.ready:
-            # Keep publishing takeoff pose while waiting for first raycast
-            self.pose_pub.publish(self._make_takeoff_pose())
+            # Keep publishing a hold setpoint while waiting for first raycast
+            self._publish_hover_cmd(request_hold=False, reason="NOT_READY")
             self.policy_active = False
             self.policy_active_pub.publish(Bool(data=False))
             self.z_policy_active = False
@@ -1243,7 +1284,7 @@ class TunnelNavigator:
             cur_z = float(self.odom.pose.pose.position.z)
             gate_height = self.cfg.takeoff_height - self.cfg.policy_takeoff_gate_tolerance
             if cur_z < gate_height:
-                self.pose_pub.publish(self._make_takeoff_pose())
+                self._publish_hover_cmd(request_hold=False, reason="POLICY_GATE")
                 self.policy_active_pub.publish(Bool(data=False))
                 self.z_policy_active = False
                 self.z_policy_active_pub.publish(Bool(data=False))
@@ -1408,7 +1449,7 @@ class TunnelNavigator:
                     | PositionTarget.IGNORE_AFZ | PositionTarget.IGNORE_YAW_RATE
                 )
             else:
-                msg.position.z = self.cfg.takeoff_height
+                msg.position.z = self._px4_altitude_hold_target()
                 msg.yaw = self._current_yaw()
                 msg.type_mask = (
                     PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
@@ -1675,7 +1716,7 @@ class TunnelNavigator:
                     | PositionTarget.IGNORE_AFZ | PositionTarget.IGNORE_YAW_RATE
                 )
             else:
-                msg.position.z = self.cfg.takeoff_height
+                msg.position.z = self._px4_altitude_hold_target()
                 msg.type_mask = (
                     PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
                     | PositionTarget.IGNORE_VZ
@@ -1757,10 +1798,13 @@ class TunnelNavigator:
     # Takeoff
     # ==================================================================
     def _takeoff(self):
-        if self.cfg.use_px4 and self.cfg.real_auto_takeoff_on_offboard:
-            rospy.loginfo(
-                "[TunnelNav] Real PX4 lifecycle will arm/take off after OFFBOARD is detected."
-            )
+        if self.cfg.use_px4:
+            if self.cfg.real_auto_takeoff_on_offboard:
+                rospy.loginfo(
+                    "[TunnelNav] PX4 takeoff is handled by the raw setpoint lifecycle."
+                )
+            else:
+                rospy.loginfo("[TunnelNav] PX4 auto takeoff disabled; no legacy takeoff is sent.")
             return
 
         rospy.loginfo("[TunnelNav] Waiting for odometry...")
@@ -1769,52 +1813,14 @@ class TunnelNavigator:
             rate.sleep()
 
         rospy.loginfo(f"[TunnelNav] Taking off to height {self.cfg.takeoff_height} m")
-        if self.cfg.use_px4:
-            # Wait for MAVROS connection
-            while not rospy.is_shutdown() and self.mavros_state is None:
-                rate.sleep()
-            if not self.cfg.auto_arm and not self.cfg.auto_offboard:
-                rospy.loginfo(
-                    "[TunnelNav] PX4 real mode: auto_arm=false and auto_offboard=false; "
-                    "waiting for pilot/GCS to manage arming and mode."
-                )
-                return
-            # PX4 requires setpoints before OFFBOARD can be accepted.
-            if self.cfg.auto_offboard:
-                for _ in range(100):
-                    self.pose_pub.publish(self._make_takeoff_pose())
-                    rate.sleep()
-            try:
-                if self.cfg.auto_offboard:
-                    resp = self.set_mode_client(SetModeRequest(custom_mode="OFFBOARD"))
-                    if not resp.mode_sent:
-                        rospy.logwarn("[TunnelNav] PX4 rejected OFFBOARD mode request")
-                if self.cfg.auto_arm:
-                    resp = self.arming_client(CommandBoolRequest(value=True))
-                    if not resp.success:
-                        rospy.logwarn("[TunnelNav] PX4 rejected arming request")
-            except rospy.ServiceException as exc:
-                rospy.logwarn("[TunnelNav] PX4 takeoff service call failed: %s", exc)
-        else:
-            # Gazebo: send takeoff command (std_msgs/Empty), then hover
-            takeoff_pub = rospy.Publisher(
-                "/CERLAB/quadcopter/takeoff", Empty, queue_size=1
-            )
-            rospy.sleep(0.5)
-            takeoff_pub.publish(Empty())
-            rospy.loginfo("[TunnelNav] Takeoff command sent, waiting 3s...")
-            rospy.sleep(3.0)
-
-    def _make_takeoff_pose(self) -> PoseStamped:
-        msg = PoseStamped()
-        msg.header.stamp = rospy.Time.now()
-        msg.header.frame_id = "map"
-        if self.odom:
-            msg.pose.position.x = self.odom.pose.pose.position.x
-            msg.pose.position.y = self.odom.pose.pose.position.y
-        msg.pose.position.z = self.cfg.takeoff_height
-        msg.pose.orientation.w = 1.0
-        return msg
+        # Gazebo: send takeoff command (std_msgs/Empty), then hover
+        takeoff_pub = rospy.Publisher(
+            "/CERLAB/quadcopter/takeoff", Empty, queue_size=1
+        )
+        rospy.sleep(0.5)
+        takeoff_pub.publish(Empty())
+        rospy.loginfo("[TunnelNav] Takeoff command sent, waiting 3s...")
+        rospy.sleep(3.0)
 
     # ==================================================================
     # Safety

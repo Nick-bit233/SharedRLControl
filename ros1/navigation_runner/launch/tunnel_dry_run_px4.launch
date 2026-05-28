@@ -13,12 +13,11 @@
     <arg name="takeoff_height" default="1.2"/>
     <arg name="fake_initial_x" default="-2.5"/>
     <arg name="fake_initial_y" default="0.0"/>
-    <arg name="fake_initial_z" default="$(arg takeoff_height)"/>
+    <arg name="fake_initial_z" default="0.0"/>
     <arg name="fake_initial_yaw_deg" default="0.0"/>
     <arg name="odom_topic" default="/mavros/local_position/odom"/>
     <arg name="rc_topic" default="/mavros/rc/in"/>
     <arg name="setpoint_raw_topic" default="/mavros/setpoint_raw/local"/>
-    <arg name="setpoint_pose_topic" default="/mavros/setpoint_position/local"/>
 
     <arg name="map_origin_x" default="0.0"/>
     <arg name="map_origin_y" default="0.0"/>
@@ -119,7 +118,6 @@
         <param name="device" value="$(arg device)"/>
         <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
-        <param name="setpoint_pose_topic" value="$(arg setpoint_pose_topic)"/>
         <param name="takeoff_height" value="$(arg takeoff_height)"/>
         <param name="height_control" value="false"/>
         <param name="lock_z_control" value="$(arg lock_z_control)"/>
@@ -132,8 +130,6 @@
         <param name="max_altitude" value="$(arg max_altitude)"/>
         <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>
         <rosparam param="geofence_y" subst_value="true">[$(arg geofence_y_min), $(arg geofence_y_max)]</rosparam>
-        <param name="auto_arm" value="false"/>
-        <param name="auto_offboard" value="false"/>
         <param name="hold_on_stop" value="false"/>
         <param name="policy_takeoff_gate" value="false"/>
     </node>

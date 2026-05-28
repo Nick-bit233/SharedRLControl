@@ -51,7 +51,6 @@
     <arg name="odom_topic" default="/nokov/local_position/odom"/>
     <arg name="rc_topic" default="/mavros/rc/in"/>
     <arg name="setpoint_raw_topic" default="/mavros/setpoint_raw/local"/>
-    <arg name="setpoint_pose_topic" default="/mavros/setpoint_position/local"/>
 
     <arg name="map_cloud_topic" default="/real_map/cloud"/>
     <arg name="map_cloud_voxel_size" default="0.1"/>
@@ -110,7 +109,6 @@
         <param name="device" value="$(arg device)"/>
         <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
-        <param name="setpoint_pose_topic" value="$(arg setpoint_pose_topic)"/>
         <param name="takeoff_height" value="$(arg takeoff_height)"/>
         <param name="lock_z_control" value="$(arg lock_z_control)"/>
         <param name="require_offboard" value="$(arg require_offboard)"/>

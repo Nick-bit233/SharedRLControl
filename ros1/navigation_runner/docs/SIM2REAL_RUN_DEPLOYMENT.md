@@ -46,7 +46,7 @@ tunnel_navigation.py
 1. `/nokov/local_position/odom` 是 SRLC、map LiDAR 和 RViz 对齐显示的唯一真实状态源。
 2. `/mavros/local_position/odom` 即使存在也只作为 PX4/MAVROS 回报，不参与 SRLC 状态估计。
 3. `tunnel_real_px4.launch` 不主动切 OFFBOARD；OFFBOARD 由遥控器/PX4 模式开关触发。
-4. 进入 OFFBOARD 后，SRLC 会自动请求解锁，并以起飞前地面 Nokov 位置作为固定 `x/y` 目标、`takeoff_height` 作为 `z` 目标完成爬升与悬停，随后按 `post_takeoff_mode` 进入 DIRECT 或 ASSIST。
+4. 进入 OFFBOARD 后，SRLC 会自动请求解锁，并以起飞前地面 Nokov 位置作为固定 `x/y` 目标、`当前 z + takeoff_height` 作为相对高度目标完成爬升与悬停，随后按 `post_takeoff_mode` 进入 DIRECT 或 ASSIST。
 5. 输入死区、未进入 OFFBOARD、越界、定位/LiDAR/RC 超时都会使 SRLC 发布零速度/锁高 setpoint，并让 `/tunnel_nav/policy_active=False`。
 
 ## 2. 代码侧默认配置
@@ -70,7 +70,7 @@ roslaunch navigation_runner tunnel_real_px4.launch ...
 | 要求 OFFBOARD 后才允许策略介入 | `true` |
 | SRLC 外部 stop topic | 关闭 |
 | SRLC 请求 PX4 hold/land | 关闭 |
-| 起飞/平飞高度 | `1.2m` |
+| 起飞/平飞相对高度 | `1.2m` |
 | z 轴共享控制 | `lock_z_control=true` |
 | 默认水平边界 | `x,y ∈ [-3, 3]m` |
 | 默认高度边界 | `z ∈ [0.5, 3.0]m` |
@@ -272,7 +272,7 @@ roslaunch navigation_runner tunnel_real_px4.launch \
 
 - **不会自动切 OFFBOARD**
 - **会持续发送被动 hold setpoint，保证 PX4 可以接受 OFFBOARD**
-- **检测到 OFFBOARD 后会自动请求解锁，并飞向“起飞前地面 `x/y` + 参数 `takeoff_height`”的固定起飞点**
+- **检测到 OFFBOARD 后会自动请求解锁，并飞向“起飞前地面 `x/y` + `当前 z + takeoff_height`”的固定起飞点**
 - **不需要命令行向 SRLC 发送起飞指令**
 
 推荐流程：
@@ -281,7 +281,7 @@ roslaunch navigation_runner tunnel_real_px4.launch \
 2. 检查 `/tunnel_nav/lifecycle_state`，应处于 `WAIT_OFFBOARD`。
 3. 检查 `/tunnel_nav/status`，确认不是 `NO_ODOM`、`NO_LIDAR`、`MAVROS_NOT_CONNECTED`、`NO_RC_ACTION`。
 4. 飞手或地面站按现场流程切入 OFFBOARD/外部速度控制。
-5. SRLC 自动请求 arm；PX4 报告 armed 后爬升到 `takeoff_height` 并悬停。
+5. SRLC 自动请求 arm；PX4 报告 armed 后爬升到 `当前 z + takeoff_height` 并悬停。
 6. 起飞后等待 `post_takeoff_mode_delay`，默认 `2s`。
 7. SRLC 自动进入 `post_takeoff_mode` 指定模式：默认 `DIRECT`，也可启动时设为 `assist`。
 8. 摇杆输入超过 `assist_input_deadzone_norm` 后才发布非零速度 setpoint；低于死区保持悬停。
