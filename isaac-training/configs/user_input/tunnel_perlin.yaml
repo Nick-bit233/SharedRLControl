@@ -1,0 +1,14 @@
+# @package _global_
+
+defaults:
+  - /trajectory_gen_tunnel
+  - _self_
+
+output_path: "${hydra:runtime.cwd}/data/user_inputs/tunnel_perlin_v1.h5"
+
+generator:
+  kind: tunnel_perlin
+
+metadata:
+  env_family: tunnel
+  action_frame: body

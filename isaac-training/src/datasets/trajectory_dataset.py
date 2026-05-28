@@ -15,7 +15,7 @@ import torch
 import numpy as np
 import h5py
 import os
-from typing import Optional, Tuple, Dict, Union, Literal
+from typing import Any, Optional, Tuple, Dict, Union, Literal
 from dataclasses import dataclass
 
 
@@ -383,6 +383,8 @@ def create_trajectory_dataset(
     metadata: TrajectoryMetadata,
     compression: str = "gzip",
     compression_opts: int = 4,
+    metadata_attrs: Optional[Dict[str, Any]] = None,
+    extra_groups: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
 ):
     """
     Create an HDF5 trajectory dataset file.
@@ -396,8 +398,34 @@ def create_trajectory_dataset(
         metadata: TrajectoryMetadata object
         compression: HDF5 compression type
         compression_opts: Compression level
+        metadata_attrs: Additional HDF5 metadata attributes.
+        extra_groups: Optional nested groups such as intent diagnostics.
     """
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+
+    def _write_attr(group, key: str, value: Any):
+        if value is None:
+            return
+        if isinstance(value, (list, tuple)):
+            value = np.asarray(value)
+        group.attrs[key] = value
+
+    def _write_group(parent, group_name: str, values: Dict[str, Any]):
+        grp = parent.create_group(group_name)
+        for key, value in values.items():
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                _write_group(grp, key, value)
+                continue
+            arr = np.asarray(value)
+            kwargs = {}
+            if arr.ndim > 0:
+                kwargs = {
+                    "compression": compression,
+                    "compression_opts": compression_opts,
+                }
+            grp.create_dataset(key, data=arr, **kwargs)
     
     with h5py.File(output_path, 'w') as f:
         # Store trajectories with chunking for efficient partial reads
@@ -444,6 +472,13 @@ def create_trajectory_dataset(
         meta_grp.attrs['max_speed_z'] = metadata.max_speed_z
         meta_grp.attrs['max_speed_yaw'] = metadata.max_speed_yaw
         meta_grp.attrs['reference_map_bounds'] = list(metadata.reference_map_bounds)
+        if metadata_attrs:
+            for key, value in metadata_attrs.items():
+                _write_attr(meta_grp, key, value)
+
+        if extra_groups:
+            for group_name, values in extra_groups.items():
+                _write_group(f, group_name, values)
     
     print(f"[TrajectoryDataset] Created dataset at {output_path}")
     print(f"  - Trajectories: {metadata.num_trajectories}")

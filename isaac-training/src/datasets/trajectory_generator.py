@@ -27,7 +27,8 @@ import os
 import sys
 import math
 import argparse
-from typing import Tuple, Dict, Optional
+from pathlib import Path
+from typing import Any, Tuple, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 import numpy as np
@@ -41,6 +42,10 @@ from tqdm import tqdm
 
 import hydra
 from omegaconf import OmegaConf, DictConfig
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from trajectory_dataset import create_trajectory_dataset, TrajectoryMetadata
 
@@ -611,6 +616,120 @@ def generate_trajectories_cpu(
 FILE_PATH = os.path.join(os.path.dirname(__file__), "../../configs")
 
 
+def _generator_kind(cfg: DictConfig) -> str:
+    generator_cfg = cfg.get("generator", {})
+    kind = generator_cfg.get("kind", None)
+    if kind is not None:
+        return str(kind)
+    return "tunnel_perlin" if cfg.get("directional_bias", None) is not None else "legacy_perlin"
+
+
+def _metadata_attrs(cfg: DictConfig, generator_kind: str) -> Dict[str, Any]:
+    metadata_cfg = cfg.get("metadata", {})
+    return {
+        "schema_version": 2,
+        "generator_kind": generator_kind,
+        "action_frame": metadata_cfg.get("action_frame", "body"),
+        "env_family": metadata_cfg.get("env_family", "tunnel"),
+        "requires_env_geom": bool(generator_kind == "intent_pilot"),
+        "requires_assistant_action": bool(generator_kind == "intent_pilot"),
+        "assistant_policy": cfg.get("generator", {}).get("assistant_policy", ""),
+    }
+
+
+def _compute_bboxes(positions: np.ndarray) -> np.ndarray:
+    pos_min = positions.min(axis=1)
+    pos_max = positions.max(axis=1)
+    return np.concatenate([pos_min, pos_max], axis=-1).astype(np.float32)
+
+
+def _empty_styles(num_trajectories: int) -> Dict[str, np.ndarray]:
+    return {
+        "noise_freq": np.zeros(num_trajectories, dtype=np.float32),
+        "smoothness": np.zeros(num_trajectories, dtype=np.float32),
+        "laziness": np.zeros(num_trajectories, dtype=np.float32),
+    }
+
+
+def generate_intent_pilot_dataset(
+    cfg: DictConfig,
+    device: torch.device,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, Dict[str, np.ndarray]]]:
+    """Generate an offline intent-pilot dataset with a lightweight tunnel rollout."""
+    from src.datasets.visualize_pilot_distributions import (
+        generate_obstacle_field,
+        load_cfg,
+        rollout_model,
+    )
+
+    generator_cfg = cfg.get("generator", {})
+    experiment = generator_cfg.get("experiment", "tunnel_intent")
+    seed = int(cfg.get("seed", 42))
+    num_obstacles = int(generator_cfg.get("num_obstacles", 24))
+    batch_size = int(cfg.get("batch_size", 512))
+
+    if generator_cfg.get("assistant_policy", "zero") != "zero":
+        raise ValueError("intent_pilot currently supports only assistant_policy=zero")
+
+    vis_cfg = load_cfg(experiment, str(device))
+    OmegaConf.set_struct(vis_cfg, False)
+    vis_cfg.sim.dt = float(cfg.dt)
+    vis_cfg.algo.training_frame_num = int(cfg.trajectory_length)
+    vis_cfg.device = str(device)
+    OmegaConf.set_struct(vis_cfg, True)
+
+    all_velocities = []
+    all_positions = []
+    all_intent_modes = []
+    all_react_modes = []
+    all_threats = []
+
+    remaining = int(cfg.num_trajectories)
+    offset = 0
+    pbar = tqdm(total=remaining, desc="[Intent] Generating trajectories")
+    while remaining > 0:
+        current = min(batch_size, remaining)
+        field = generate_obstacle_field(
+            vis_cfg,
+            num_obstacles=num_obstacles,
+            seed=seed + 1000 + offset,
+            device=device,
+        )
+        result = rollout_model(
+            model_name="intent",
+            cfg=vis_cfg,
+            num_trajs=current,
+            steps=int(cfg.trajectory_length),
+            seed=seed + offset,
+            field=field,
+        )
+
+        # rollout_model uses (T, N, D); the dataset schema uses (N, T, D).
+        all_velocities.append(result["actions"].transpose(1, 0, 2).astype(np.float32))
+        all_positions.append(result["trajectories"][1:].transpose(1, 0, 2).astype(np.float32))
+        all_intent_modes.append(result["intent_modes"].transpose(1, 0).astype(np.int64))
+        all_react_modes.append(result["react_modes"].transpose(1, 0).astype(np.int64))
+        all_threats.append(result["threats"].transpose(1, 0).astype(np.float32))
+
+        offset += current
+        remaining -= current
+        pbar.update(current)
+    pbar.close()
+
+    velocities = np.concatenate(all_velocities, axis=0)
+    positions = np.concatenate(all_positions, axis=0)
+    bboxes = _compute_bboxes(positions)
+    styles = _empty_styles(len(velocities))
+    extra_groups = {
+        "intent": {
+            "intent_mode": np.concatenate(all_intent_modes, axis=0),
+            "react_mode": np.concatenate(all_react_modes, axis=0),
+            "threat": np.concatenate(all_threats, axis=0),
+        }
+    }
+    return velocities, positions, bboxes, styles, extra_groups
+
+
 @hydra.main(config_path=FILE_PATH, config_name="trajectory_gen", version_base=None)
 def main(cfg: DictConfig):
     """Main entry point for trajectory generation."""
@@ -618,9 +737,15 @@ def main(cfg: DictConfig):
     print("Offline Trajectory Generator")
     print("=" * 60)
     print(OmegaConf.to_yaml(cfg))
+
+    generator_kind = _generator_kind(cfg)
+    if generator_kind not in {"legacy_perlin", "tunnel_perlin", "intent_pilot"}:
+        raise ValueError(f"Unsupported generator.kind: {generator_kind}")
     
     # Check for distributed environment
     is_distributed = 'WORLD_SIZE' in os.environ and int(os.environ['WORLD_SIZE']) > 1
+    if is_distributed and generator_kind == "intent_pilot":
+        raise ValueError("intent_pilot generation does not support torch.distributed in v1")
     
     if is_distributed and cfg.backend == 'batched':
         dist.init_process_group(backend='nccl')
@@ -635,6 +760,7 @@ def main(cfg: DictConfig):
     
     if rank == 0:
         print(f"\nConfiguration:")
+        print(f"  - Generator: {generator_kind}")
         print(f"  - Backend: {cfg.backend}")
         print(f"  - Trajectories: {cfg.num_trajectories}")
         print(f"  - Length: {cfg.trajectory_length}")
@@ -643,45 +769,53 @@ def main(cfg: DictConfig):
         if is_distributed:
             print(f"  - World size: {world_size}")
     
+    extra_groups = None
+
     # Generate trajectories
-    if cfg.backend == 'batched':
-        velocities, positions, bboxes, styles = generate_trajectories_gpu(
-            num_trajectories=cfg.num_trajectories,
-            trajectory_length=cfg.trajectory_length,
-            action_dim=cfg.action_dim,
-            dt=cfg.dt,
-            max_speed=cfg.max_speed,
-            max_speed_z=cfg.max_speed_z,
-            max_speed_yaw=cfg.max_speed_yaw,
-            repulsive_gain=cfg.repulsive_gain,
-            map_bounds=tuple(cfg.reference_map_bounds),
-            style_config=cfg.style,
+    if generator_kind == "intent_pilot":
+        velocities, positions, bboxes, styles, extra_groups = generate_intent_pilot_dataset(
+            cfg=cfg,
             device=device,
-            batch_size=cfg.batch_size,
-            rank=rank,
-            world_size=world_size,
-            directional_bias=cfg.get("directional_bias", None),
         )
-    else:  # library
-        if cfg.get("directional_bias", None) is not None:
-            print(
-                "[Generator] WARNING: directional_bias is currently only "
-                "implemented for backend=batched (GPU). It will be ignored "
-                "by the CPU library backend."
+    else:
+        if cfg.backend == 'batched':
+            velocities, positions, bboxes, styles = generate_trajectories_gpu(
+                num_trajectories=cfg.num_trajectories,
+                trajectory_length=cfg.trajectory_length,
+                action_dim=cfg.action_dim,
+                dt=cfg.dt,
+                max_speed=cfg.max_speed,
+                max_speed_z=cfg.max_speed_z,
+                max_speed_yaw=cfg.max_speed_yaw,
+                repulsive_gain=cfg.repulsive_gain,
+                map_bounds=tuple(cfg.reference_map_bounds),
+                style_config=cfg.style,
+                device=device,
+                batch_size=cfg.batch_size,
+                rank=rank,
+                world_size=world_size,
+                directional_bias=cfg.get("directional_bias", None),
             )
-        velocities, positions, bboxes, styles = generate_trajectories_cpu(
-            num_trajectories=cfg.num_trajectories,
-            trajectory_length=cfg.trajectory_length,
-            action_dim=cfg.action_dim,
-            dt=cfg.dt,
-            max_speed=cfg.max_speed,
-            max_speed_z=cfg.max_speed_z,
-            max_speed_yaw=cfg.max_speed_yaw,
-            repulsive_gain=cfg.repulsive_gain,
-            map_bounds=tuple(cfg.reference_map_bounds),
-            style_config=cfg.style,
-            num_workers=cfg.num_workers,
-        )
+        else:  # library
+            if cfg.get("directional_bias", None) is not None:
+                print(
+                    "[Generator] WARNING: directional_bias is currently only "
+                    "implemented for backend=batched. It will be ignored "
+                    "by the CPU library backend."
+                )
+            velocities, positions, bboxes, styles = generate_trajectories_cpu(
+                num_trajectories=cfg.num_trajectories,
+                trajectory_length=cfg.trajectory_length,
+                action_dim=cfg.action_dim,
+                dt=cfg.dt,
+                max_speed=cfg.max_speed,
+                max_speed_z=cfg.max_speed_z,
+                max_speed_yaw=cfg.max_speed_yaw,
+                repulsive_gain=cfg.repulsive_gain,
+                map_bounds=tuple(cfg.reference_map_bounds),
+                style_config=cfg.style,
+                num_workers=cfg.num_workers,
+            )
     
     # For distributed: each rank saves to a temp file, rank 0 merges them
     if is_distributed and cfg.backend == 'batched':
@@ -803,6 +937,8 @@ def main(cfg: DictConfig):
             metadata=metadata,
             compression=cfg.compression,
             compression_opts=cfg.compression_level,
+            metadata_attrs=_metadata_attrs(cfg, generator_kind),
+            extra_groups=extra_groups,
         )
         
         print("\n" + "=" * 60)
