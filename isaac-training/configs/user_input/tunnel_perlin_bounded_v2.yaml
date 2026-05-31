@@ -1,0 +1,56 @@
+# @package _global_
+
+defaults:
+  - /trajectory_gen_tunnel
+  - _self_
+
+output_path: "${hydra:runtime.cwd}/data/user_inputs/tunnel_perlin_bounded_v2.h5"
+
+generator:
+  kind: tunnel_perlin_bounded_v2
+
+metadata:
+  env_family: tunnel
+  action_frame: body
+
+backend: batched
+device: "cuda:0"
+num_trajectories: 100000
+trajectory_length: 1024
+action_dim: 3
+batch_size: 1024
+
+dt: 0.016
+max_speed: 2.0
+max_speed_z: 0.8
+max_speed_yaw: 0.5
+repulsive_gain: 1.0
+
+# Approximate half-extents metadata for existing loaders. Exact non-symmetric
+# generation limits are recorded separately in metadata as generation_bounds_* .
+reference_map_bounds: [12.0, 5.0, 3.75]
+
+# Tunnel-local command prior for the actual training region. The generator starts
+# near the tunnel entrance and keeps pilot commands inside the reachable corridor
+# instead of producing a long post-goal tail.
+generation_bounds:
+  x: [-8.0, 12.0]
+  y: [-5.0, 5.0]
+  z: [2.5, 7.5]
+
+start_position: [-7.0, 0.0, 5.0]
+soft_wall_margin: [1.2, 1.0, 0.8]
+
+style:
+  frequency_base: 0.12
+  frequency_scale: 0.22
+  smoothness_base: 0.30
+  smoothness_scale: 0.45
+  laziness: 0.20
+
+directional_bias:
+  amp_scale: [0.18, 0.65, 0.30]
+  bias:      [1.00, 0.0, 0.0]
+
+compression: gzip
+compression_level: 4
