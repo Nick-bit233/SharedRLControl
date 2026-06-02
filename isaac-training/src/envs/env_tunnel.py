@@ -1043,11 +1043,11 @@ class EnvTunnelResidual(IsaacEnv):
         penalty_height = height_excess_up ** 2 + height_excess_down ** 2
 
         if self.dynamic_risk_mode == "hybrid_reward":
-            legacy_safety_scale = self.legacy_safety_scale
+            legacy_safety_scale = self.legacy_safety_scale  # Use default legacy safety reward weight
         elif self.dynamic_risk_mode in {"dynamic_reward", "full"}:
-            legacy_safety_scale = 0.0
+            legacy_safety_scale = 0.0  # Do not use the legacy safety reward
         else:
-            legacy_safety_scale = 1.0
+            legacy_safety_scale = 1.0  # Only legacy safety reward
 
         dynamic_risk_reward = (
             self.reward_risk_reduce
