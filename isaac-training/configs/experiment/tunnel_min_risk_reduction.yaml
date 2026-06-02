@@ -92,6 +92,20 @@ user_model:
   offline_mode: true
   dataset_path: ${hydra:runtime.cwd}/data/user_inputs/tunnel_perlin_bounded_v2.h5
   sampling_mode: scaled
+  # Explicit v2 sampling bounds. These replace the legacy sample_scaled
+  # z convention [1.0, 2 * map_range_z] and keep training-time command
+  # scaling aligned with the bounded tunnel dataset.
+  sampling_bounds:
+    x: [-8.0, 12.0]
+    y: [-5.0, 5.0]
+    z: [2.5, 7.5]
+  # Expand only z during runtime scaling so near-failure low-altitude states can
+  # still receive bounded recovery commands instead of triggering outside-bound
+  # warnings immediately below z=2.5.
+  sampling_bounds_expansion:
+    x: 0.0
+    y: 0.0
+    z: 2.0
   gpu_cache_reserve_gb: 2.0
   min_scale_factor: 0.5
   preload_data: true

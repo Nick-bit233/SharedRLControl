@@ -238,12 +238,19 @@ class TrajectoryDataset:
         batch_size: int,
         window_size: int,
         start_pos: torch.Tensor,
-        map_bounds: torch.Tensor,
+        map_bounds: Optional[torch.Tensor] = None,
+        lower_bounds: Optional[torch.Tensor] = None,
+        upper_bounds: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Sample random trajectory windows with scale-to-fit transformation.
         """
         assert window_size <= self.metadata.trajectory_length
+        if lower_bounds is None or upper_bounds is None:
+            assert map_bounds is not None, (
+                "map_bounds is required unless explicit lower_bounds and "
+                "upper_bounds are provided"
+            )
         
         # Random trajectory indices
         traj_indices = torch.randint(
@@ -273,47 +280,61 @@ class TrajectoryDataset:
         bbox_min = positions_relative.min(dim=1).values   # (B, 3) <= 0 along an axis
         bbox_max = positions_relative.max(dim=1).values   # (B, 3) >= 0 along an axis
 
-        # === Available room for the window, evaluated SEPARATELY per direction ===
-        # `start_pos` and `map_bounds` are in the SAME coordinate order (Isaac x,y,z).
-        # Convention: map_bounds[i] is the half-extent so the env axis i lies in
-        #   x: [-map_bounds[0], +map_bounds[0]]
-        #   y: [-map_bounds[1], +map_bounds[1]]
-        #   z: [           1.0,  2*map_bounds[2]]   (floor at 1.0)
-        # The window's drone position trace must satisfy
-        #     start_pos + scale * bbox_min  >=  lower_bound
-        #     start_pos + scale * bbox_max  <=  upper_bound
-        # which gives independent per-direction constraints below.
-        #
-        # NOTE on the previous bug:
-        #   The old formula `available_pos = map_bounds - start_pos.abs()` is only
-        #   correct when start_pos is at the centre of the map; for asymmetric
-        #   starts (e.g. the tunnel start at Isaac-x=-7 with map half-extent 12)
-        #   it severely under-estimates the room available in the +x direction
-        #   (it returned 5 m instead of the true 19 m), causing scale_factors to
-        #   collapse to `min_scale_factor=0.5` and silently halving every sampled
-        #   velocity. That was the dominant reason `debug/vec_target/x` averaged
-        #   ~0.5 m/s instead of the configured ~1.5 m/s.
-        room_pos = torch.empty_like(start_pos)
-        room_neg = torch.empty_like(start_pos)
-        # x, y axes use +/- map_bounds
-        room_pos[:, :2] = map_bounds[:2] - start_pos[:, :2]   # >=0 if start inside
-        room_neg[:, :2] = start_pos[:, :2] + map_bounds[:2]   # >=0 if start inside
-        # z axis uses [1.0, 2*map_bounds[2]]
-        room_pos[:, 2] = 2 * map_bounds[2] - start_pos[:, 2]
-        room_neg[:, 2] = start_pos[:, 2] - 1.0
+        if lower_bounds is None or upper_bounds is None:
+            map_bounds = map_bounds.to(device=start_pos.device, dtype=start_pos.dtype)
+            lower_vec = torch.stack(
+                (
+                    -map_bounds[0],
+                    -map_bounds[1],
+                    torch.tensor(1.0, device=start_pos.device, dtype=start_pos.dtype),
+                )
+            )
+            upper_vec = torch.stack(
+                (
+                    map_bounds[0],
+                    map_bounds[1],
+                    2 * map_bounds[2],
+                )
+            )
+            bounds_source = "legacy map_bounds"
+        else:
+            lower_vec = lower_bounds.to(device=start_pos.device, dtype=start_pos.dtype)
+            upper_vec = upper_bounds.to(device=start_pos.device, dtype=start_pos.dtype)
+            bounds_source = "explicit sampling_bounds"
 
-        # Defensive guard: negative room means start_pos is OUTSIDE the configured
-        # map_bounds along that axis (e.g. axis-order mismatch). Warn loudly and
-        # treat that direction as unconstrained.
+        if lower_vec.ndim == 1:
+            lower_vec = lower_vec.view(1, 3)
+        if upper_vec.ndim == 1:
+            upper_vec = upper_vec.view(1, 3)
+        lower_vec = lower_vec.expand_as(start_pos)
+        upper_vec = upper_vec.expand_as(start_pos)
+
+        # === Available room for the window, evaluated separately per direction ===
+        # The sampled relative position trace must satisfy:
+        #   start_pos + scale * bbox_min >= lower_bound
+        #   start_pos + scale * bbox_max <= upper_bound
+        # For legacy callers, bounds are still derived from map_bounds. For v2
+        # datasets, callers should pass explicit lower/upper sampling bounds so
+        # non-symmetric tunnel-local ranges and z-limits are preserved.
+        room_pos = upper_vec - start_pos
+        room_neg = start_pos - lower_vec
+
+        # Defensive guard: negative room means start_pos is already outside the
+        # configured sampling bounds. Keep training alive by not constraining that
+        # side of the scale calculation, but warn once because this affects
+        # near-boundary command statistics.
         if ((room_pos < 0) | (room_neg < 0)).any():
             if not getattr(self, "_warned_negative_available", False):
                 import logging
                 logging.getLogger(__name__).warning(
                     "[trajectory_dataset.sample_scaled] start_pos outside "
-                    "map_bounds along some axis (room_pos or room_neg < 0). "
-                    "Likely an axis-order mismatch between the calling env and "
-                    "the dataset. start_pos[0]=%s map_bounds=%s",
-                    start_pos[0].tolist(), map_bounds.tolist()
+                    "sampling bounds along some axis (room_pos or room_neg < 0). "
+                    "bounds_source=%s start_pos[0]=%s lower_bounds[0]=%s "
+                    "upper_bounds[0]=%s",
+                    bounds_source,
+                    start_pos[0].tolist(),
+                    lower_vec[0].tolist(),
+                    upper_vec[0].tolist(),
                 )
                 self._warned_negative_available = True
             inf = torch.full_like(room_pos, float("inf"))
@@ -363,14 +384,25 @@ class TrajectoryDataset:
         mode: Literal["raw", "scaled"] = "scaled",
         start_pos: Optional[torch.Tensor] = None,
         map_bounds: Optional[torch.Tensor] = None,
+        lower_bounds: Optional[torch.Tensor] = None,
+        upper_bounds: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, ...]:
         """Unified sampling interface."""
         if mode == "raw":
             return self.sample_raw(batch_size, window_size)
         elif mode == "scaled":
             assert start_pos is not None, "start_pos required for scaled mode"
-            assert map_bounds is not None, "map_bounds required for scaled mode"
-            return self.sample_scaled(batch_size, window_size, start_pos, map_bounds)
+            assert map_bounds is not None or (
+                lower_bounds is not None and upper_bounds is not None
+            ), "map_bounds or explicit lower_bounds/upper_bounds required for scaled mode"
+            return self.sample_scaled(
+                batch_size,
+                window_size,
+                start_pos,
+                map_bounds=map_bounds,
+                lower_bounds=lower_bounds,
+                upper_bounds=upper_bounds,
+            )
         else:
             raise ValueError(f"Unknown sampling mode: {mode}")
 

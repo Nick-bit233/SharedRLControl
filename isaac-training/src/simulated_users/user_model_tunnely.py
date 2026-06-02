@@ -3,7 +3,7 @@ import numpy as np
 import math
 import logging
 from enum import Enum
-from typing import Optional, Literal, TYPE_CHECKING
+from typing import Any, Optional, Literal, TYPE_CHECKING
 from omni_drones.utils.torch import quat_rotate, quat_rotate_inverse
 
 from src.core.profiler import get_profiler
@@ -115,6 +115,24 @@ class UserModelTunnel:
         self.env_map_range = torch.tensor(
             _raw_map_range, dtype=torch.float32, device=self.device
         )
+        self.sampling_lower_bounds = None
+        self.sampling_upper_bounds = None
+        sampling_bounds_cfg = cfg.user_model.get("sampling_bounds", None)
+        if sampling_bounds_cfg is not None:
+            lower, upper = self._build_sampling_bounds(
+                sampling_bounds_cfg,
+                cfg.user_model.get("sampling_bounds_expansion", 0.0),
+            )
+            self.sampling_lower_bounds = torch.tensor(
+                lower, dtype=torch.float32, device=self.device
+            )
+            self.sampling_upper_bounds = torch.tensor(
+                upper, dtype=torch.float32, device=self.device
+            )
+            print(
+                "[UserModel] Using explicit sampling_bounds "
+                f"lower={lower} upper={upper}"
+            )
 
         # Parameters
         self.buffer_size = cfg.algo.training_frame_num  # training frame num steps (e.g. 128 frames is about 2 seconds)
@@ -166,7 +184,56 @@ class UserModelTunnel:
         
         # Previous action for smoothing (Low Pass Filter)
         self.prev_filtered_action = torch.zeros(num_envs, 3, device=self.device)  # 3D velocity only
-        
+
+    @staticmethod
+    def _axis_bounds(bounds_cfg: Any, axis: str) -> list[float]:
+        values = bounds_cfg.get(axis, None)
+        if values is None:
+            raise ValueError(f"user_model.sampling_bounds.{axis} must be set")
+        values = list(values)
+        if len(values) != 2:
+            raise ValueError(f"user_model.sampling_bounds.{axis} must have two values")
+        lower, upper = float(values[0]), float(values[1])
+        if upper <= lower:
+            raise ValueError(
+                f"user_model.sampling_bounds.{axis} upper must be > lower, got {values}"
+            )
+        return [lower, upper]
+
+    @staticmethod
+    def _parse_bounds_expansion(expansion_cfg: Any) -> list[float]:
+        if expansion_cfg is None:
+            return [0.0, 0.0, 0.0]
+        if isinstance(expansion_cfg, (int, float)):
+            value = float(expansion_cfg)
+            return [value, value, value]
+        if hasattr(expansion_cfg, "get"):
+            return [float(expansion_cfg.get(axis, 0.0)) for axis in ("x", "y", "z")]
+        values = list(expansion_cfg)
+        if len(values) != 3:
+            raise ValueError(
+                "user_model.sampling_bounds_expansion must be a scalar, "
+                "a 3-value list, or a mapping with x/y/z"
+            )
+        return [float(v) for v in values]
+
+    @classmethod
+    def _build_sampling_bounds(
+        cls,
+        bounds_cfg: Any,
+        expansion_cfg: Any,
+    ) -> tuple[list[float], list[float]]:
+        lower = []
+        upper = []
+        expansion = cls._parse_bounds_expansion(expansion_cfg)
+        for axis, pad in zip(("x", "y", "z"), expansion):
+            axis_lower, axis_upper = cls._axis_bounds(bounds_cfg, axis)
+            if pad < 0:
+                raise ValueError("sampling_bounds_expansion values must be non-negative")
+            lower.append(axis_lower - pad)
+            upper.append(axis_upper + pad)
+        return lower, upper
+
     def reset(self, pos, quat, env_ids, seed=None):
         """
         Reset state for env_ids
@@ -323,7 +390,12 @@ class UserModelTunnel:
             else:
                 # Scaled sampling: boundary-aware
                 velocities, scale_factors, styles = self.dataset.sample_scaled(
-                    K, T, start_pos, self.env_map_range
+                    K,
+                    T,
+                    start_pos,
+                    map_bounds=self.env_map_range,
+                    lower_bounds=self.sampling_lower_bounds,
+                    upper_bounds=self.sampling_upper_bounds,
                 )
         
         with profiler.timer("user_model/dataset_velocity_postprocess"):
