@@ -221,6 +221,7 @@ def evaluate_policy_to_disk(
 ) -> dict[str, Any]:
     """Evaluate a policy and optionally save recorded videos to disk."""
 
+    torch = _torch()
     record_video = cfg.get("record_video", False)
     print(f"[Eval] Starting evaluation... Video recording: {record_video}")
 
@@ -231,28 +232,29 @@ def evaluate_policy_to_disk(
         eval_max_steps = int(env.max_episode_length)
 
         logging.info("[Eval] Running rollout...")
-        render_callback_follow, trajs = run_eval_rollout(
-            cfg,
-            env,
-            policy,
-            camera_mode="follow",
-            record_video=record_video,
-            eval_max_steps=eval_max_steps,
-            render_interval=render_interval,
-        )
-
-        render_callback_global = None
-        if record_video and cfg.get("global_view", False):
-            logging.info("[Eval] Running rollout with global camera view...")
-            render_callback_global, _ = run_eval_rollout(
+        with torch.no_grad():
+            render_callback_follow, trajs = run_eval_rollout(
                 cfg,
                 env,
                 policy,
-                camera_mode="global",
-                record_video=True,
+                camera_mode="follow",
+                record_video=record_video,
                 eval_max_steps=eval_max_steps,
                 render_interval=render_interval,
             )
+
+            render_callback_global = None
+            if record_video and cfg.get("global_view", False):
+                logging.info("[Eval] Running rollout with global camera view...")
+                render_callback_global, _ = run_eval_rollout(
+                    cfg,
+                    env,
+                    policy,
+                    camera_mode="global",
+                    record_video=True,
+                    eval_max_steps=eval_max_steps,
+                    render_interval=render_interval,
+                )
 
         logging.info(f"[Eval] trajs keys: {trajs.keys()}")
         info = flatten_first_episode_stats(trajs)

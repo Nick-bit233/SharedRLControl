@@ -14,6 +14,7 @@ from src.core.spec import ExperimentSpec
 # and implement a build_spec() function in its module script.
 SPEC_BUILDERS: dict[str, str] = {
     "tunnel": "experiment_specs.tunnel:build_spec",
+    "tunnel_min_risk_reduction": "experiment_specs.tunnel_min_risk_reduction:build_spec",
     "tunnel_lagrangian": "experiment_specs.tunnel_lagrangian:build_spec",
     "safety_shield": "experiment_specs.safety_shield:build_spec",
     "tunnel_intent": "experiment_specs.tunnel_intent:build_spec",

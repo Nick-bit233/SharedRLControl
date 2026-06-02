@@ -35,6 +35,7 @@ from src.core.trainning_utils import vec_to_body, vec_to_world
 from src.simulated_users.user_model_tunnely import UserModelTunnel
 from src.core.profiler import get_profiler
 from src.datasets.trajectory_dataset import TrajectoryDataset
+from src.envs.dynamic_risk import compute_dynamic_command_risk
 
 @height_field_to_mesh
 def tunnel_obstacles_terrain(difficulty: float, cfg: HfDiscreteObstaclesTerrainCfg) -> np.ndarray:
@@ -187,6 +188,24 @@ class EnvTunnelResidual(IsaacEnv):
         # Backward-compatible alias used by older configs and analysis notes.
         self.enable_task_reward = self.enable_following_reward
 
+        risk_cfg = cfg.env.get("dynamic_risk", {})
+        self.dynamic_risk_mode = str(risk_cfg.get("mode", "off"))
+        self.enable_dynamic_risk = self.dynamic_risk_mode != "off"
+        self.enable_dynamic_risk_reward = self.dynamic_risk_mode in {
+            "hybrid_reward",
+            "dynamic_reward",
+            "full",
+        }
+        self.dynamic_risk_model_cfg = risk_cfg.get("model", {})
+        self.dynamic_risk_reward_cfg = risk_cfg.get("reward", {})
+        self.dynamic_risk_metrics_cfg = risk_cfg.get("metrics", {})
+        self.legacy_safety_scale = float(
+            risk_cfg.get(
+                "legacy_safety_scale",
+                0.3 if self.dynamic_risk_mode == "hybrid_reward" else 0.0,
+            )
+        )
+
         # User Model Initialization
         # Check for offline mode configuration
         offline_mode = cfg.user_model.get("offline_mode", False)
@@ -218,6 +237,31 @@ class EnvTunnelResidual(IsaacEnv):
             self.prev_human_action = torch.zeros(self.num_envs, 3)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
+            self.issue_velocity_w = torch.zeros(self.num_envs, 3)
+            self.issue_human_action_b = torch.zeros(self.num_envs, 3)
+            self.issue_human_action_w = torch.zeros(self.num_envs, 3)
+            self.issue_action_w = torch.zeros(self.num_envs, 3)
+            self.issue_hold_command_w = torch.zeros(self.num_envs, 3)
+            num_lidar_rays = self.lidar_hbeams * self.lidar_vbeams
+            self.issue_ray_dirs_w = torch.zeros(self.num_envs, num_lidar_rays, 3)
+            self.issue_ray_dists = torch.full((self.num_envs, num_lidar_rays), self.lidar_range)
+            self.pilot_risk_dyn_post = torch.zeros(self.num_envs, 1)
+            self.assist_risk_dyn_post = torch.zeros(self.num_envs, 1)
+            self.assist_risk_dyn_full = torch.zeros(self.num_envs, 1)
+            self.delay_risk = torch.zeros(self.num_envs, 1)
+            self.risk_reduction_dyn = torch.zeros(self.num_envs, 1)
+            self.min_clearance_pilot = torch.full((self.num_envs, 1), self.lidar_range)
+            self.min_clearance_assist = torch.full((self.num_envs, 1), self.lidar_range)
+            self.follow_gate = torch.ones(self.num_envs, 1)
+            self.modal_residual_norm = torch.zeros(self.num_envs, 1)
+            self.risk_worsening = torch.zeros(self.num_envs, 1)
+            self.intervention = torch.zeros(self.num_envs, 1)
+            self.unnecessary_intervention = torch.zeros(self.num_envs, 1)
+            self.unsafe_non_intervention = torch.zeros(self.num_envs, 1)
+            self.reward_risk_reduce = torch.zeros(self.num_envs, 1)
+            self.reward_risk_worse = torch.zeros(self.num_envs, 1)
+            self.reward_abs_risk = torch.zeros(self.num_envs, 1)
+            self.reward_delay_risk = torch.zeros(self.num_envs, 1)
             # Cumulative following error for early termination
             self.cumulative_error = torch.zeros(self.num_envs, 1)
             self.error_ema_alpha = 0.995  # Exponential moving average decay factor
@@ -404,7 +448,12 @@ class EnvTunnelResidual(IsaacEnv):
         # Reward Spec
         self.reward_spec = Composite({
             "agents": Composite({
-                "reward": Unbounded((1,))
+                "reward": Unbounded((1,)),
+                "pilot_risk_dyn_post": Unbounded((1,)),
+                "assist_risk_dyn_post": Unbounded((1,)),
+                "assist_risk_dyn_full": Unbounded((1,)),
+                "delay_risk": Unbounded((1,)),
+                "risk_reduction_dyn": Unbounded((1,)),
             })
         }).expand(self.num_envs).to(self.device)
 
@@ -428,6 +477,23 @@ class EnvTunnelResidual(IsaacEnv):
             "debug_pos_world": Unbounded(3),
             "diag_reward": Unbounded(1),
             "diag_reward_task": Unbounded(1),
+            "diag_pilot_risk_dyn_post": Unbounded(1),
+            "diag_assist_risk_dyn_post": Unbounded(1),
+            "diag_assist_risk_dyn_full": Unbounded(1),
+            "diag_delay_risk": Unbounded(1),
+            "diag_risk_reduction_dyn": Unbounded(1),
+            "diag_min_clearance_pilot": Unbounded(1),
+            "diag_min_clearance_assist": Unbounded(1),
+            "diag_follow_gate": Unbounded(1),
+            "diag_reward_risk_reduce": Unbounded(1),
+            "diag_reward_risk_worse": Unbounded(1),
+            "diag_reward_abs_risk": Unbounded(1),
+            "diag_reward_delay_risk": Unbounded(1),
+            "diag_risk_worsening_rate": Unbounded(1),
+            "diag_intervention_rate": Unbounded(1),
+            "diag_unnecessary_intervention_rate": Unbounded(1),
+            "diag_unsafe_non_intervention_rate": Unbounded(1),
+            "diag_modal_residual_norm": Unbounded(1),
             "diag_penalty_smooth": Unbounded(1),
             "diag_penalty_height": Unbounded(1),
             "terminated": Unbounded(1),
@@ -495,6 +561,30 @@ class EnvTunnelResidual(IsaacEnv):
         self.agent_action[env_ids] = 0.
         self.prev_action_command[env_ids] = 0.
         self.prev_human_action[env_ids] = 0.
+        self.issue_velocity_w[env_ids] = 0.
+        self.issue_human_action_b[env_ids] = 0.
+        self.issue_human_action_w[env_ids] = 0.
+        self.issue_action_w[env_ids] = 0.
+        self.issue_hold_command_w[env_ids] = 0.
+        self.issue_ray_dirs_w[env_ids] = 0.
+        self.issue_ray_dists[env_ids] = self.lidar_range
+        self.pilot_risk_dyn_post[env_ids] = 0.
+        self.assist_risk_dyn_post[env_ids] = 0.
+        self.assist_risk_dyn_full[env_ids] = 0.
+        self.delay_risk[env_ids] = 0.
+        self.risk_reduction_dyn[env_ids] = 0.
+        self.min_clearance_pilot[env_ids] = self.lidar_range
+        self.min_clearance_assist[env_ids] = self.lidar_range
+        self.follow_gate[env_ids] = 1.
+        self.modal_residual_norm[env_ids] = 0.
+        self.risk_worsening[env_ids] = 0.
+        self.intervention[env_ids] = 0.
+        self.unnecessary_intervention[env_ids] = 0.
+        self.unsafe_non_intervention[env_ids] = 0.
+        self.reward_risk_reduce[env_ids] = 0.
+        self.reward_risk_worse[env_ids] = 0.
+        self.reward_abs_risk[env_ids] = 0.
+        self.reward_delay_risk[env_ids] = 0.
         # Reset cumulative following error
         self.cumulative_error[env_ids] = 0.
 
@@ -532,10 +622,116 @@ class EnvTunnelResidual(IsaacEnv):
             idx = (env_ids == 0).nonzero(as_tuple=True)[0].item()
             self.viz_human_pos = pos[idx, 0].clone()
 
+    def _cache_issue_time_inputs(self, tensordict: TensorDictBase) -> None:
+        if not self.enable_dynamic_risk:
+            return
+
+        obs_state = tensordict[("agents", "observation", "state")]
+        obs_human_action = tensordict[("agents", "observation", "human_action")]
+        if obs_state.ndim == 3 and obs_state.shape[1] == 1:
+            obs_state = obs_state.squeeze(1)
+        if obs_human_action.ndim == 3 and obs_human_action.shape[1] == 1:
+            obs_human_action = obs_human_action.squeeze(1)
+
+        issue_quat = obs_state[..., 6:10]
+        issue_vel_b = obs_state[..., :3]
+        issue_human_b = obs_human_action[..., :3]
+
+        self.issue_velocity_w[:] = vec_to_world(
+            issue_vel_b,
+            issue_quat,
+            orientation_only=True,
+            yaw_only=False,
+        )
+        self.issue_human_action_b[:] = issue_human_b
+        self.issue_human_action_w[:] = vec_to_world(
+            issue_human_b,
+            issue_quat,
+            orientation_only=True,
+            yaw_only=True,
+        )
+        self.issue_hold_command_w[:] = self.prev_action_command[..., :3]
+
+        if self.enable_lidar and self.lidar is not None:
+            ray_vecs_w = self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1)
+            ray_dists = ray_vecs_w.norm(dim=-1).clamp_max(self.lidar_range)
+            ray_dirs_w = ray_vecs_w / (ray_dists.unsqueeze(-1) + 1e-6)
+            self.issue_ray_dirs_w[:] = ray_dirs_w
+            self.issue_ray_dists[:] = ray_dists
+        else:
+            self.issue_ray_dirs_w[:] = 0.
+            self.issue_ray_dists[:] = self.lidar_range
+
+    def _compute_dynamic_risk_terms(self) -> None:
+        if not (self.enable_dynamic_risk and self.enable_lidar and self.lidar is not None):
+            self.pilot_risk_dyn_post.zero_()
+            self.assist_risk_dyn_post.zero_()
+            self.assist_risk_dyn_full.zero_()
+            self.delay_risk.zero_()
+            self.risk_reduction_dyn.zero_()
+            self.min_clearance_pilot.fill_(self.lidar_range)
+            self.min_clearance_assist.fill_(self.lidar_range)
+            self.follow_gate.fill_(1.0)
+            return
+
+        pilot = compute_dynamic_command_risk(
+            velocity_w=self.issue_velocity_w,
+            command_w=self.issue_human_action_w,
+            hold_command_w=self.issue_hold_command_w,
+            ray_dirs_w=self.issue_ray_dirs_w,
+            ray_dists=self.issue_ray_dists,
+            params=self.dynamic_risk_model_cfg,
+        )
+        assist = compute_dynamic_command_risk(
+            velocity_w=self.issue_velocity_w,
+            command_w=self.issue_action_w,
+            hold_command_w=self.issue_hold_command_w,
+            ray_dirs_w=self.issue_ray_dirs_w,
+            ray_dists=self.issue_ray_dists,
+            params=self.dynamic_risk_model_cfg,
+        )
+
+        self.pilot_risk_dyn_post[:] = pilot["rho_post"]
+        self.assist_risk_dyn_post[:] = assist["rho_post"]
+        self.assist_risk_dyn_full[:] = assist["rho_full"]
+        self.delay_risk[:] = assist["rho_delay"]
+        self.risk_reduction_dyn[:] = self.pilot_risk_dyn_post - self.assist_risk_dyn_post
+        self.min_clearance_pilot[:] = pilot["min_clearance"]
+        self.min_clearance_assist[:] = assist["min_clearance"]
+
+        alpha_f = float(self.dynamic_risk_reward_cfg.get("alpha_f", 0.5))
+        g_min = float(self.dynamic_risk_reward_cfg.get("g_min", 0.35))
+        self.follow_gate[:] = (1.0 - alpha_f * self.pilot_risk_dyn_post).clamp(g_min, 1.0)
+
+    def _update_dynamic_risk_stats(self) -> None:
+        step_count = self.progress_buf.unsqueeze(1).clamp_min(1).float()
+
+        def update_mean(key: str, value: torch.Tensor) -> None:
+            self.stats[key] = self.stats[key] + (value - self.stats[key]) / step_count
+
+        update_mean("diag_pilot_risk_dyn_post", self.pilot_risk_dyn_post)
+        update_mean("diag_assist_risk_dyn_post", self.assist_risk_dyn_post)
+        update_mean("diag_assist_risk_dyn_full", self.assist_risk_dyn_full)
+        update_mean("diag_delay_risk", self.delay_risk)
+        update_mean("diag_risk_reduction_dyn", self.risk_reduction_dyn)
+        update_mean("diag_min_clearance_pilot", self.min_clearance_pilot)
+        update_mean("diag_min_clearance_assist", self.min_clearance_assist)
+        update_mean("diag_follow_gate", self.follow_gate)
+        update_mean("diag_reward_risk_reduce", self.reward_risk_reduce)
+        update_mean("diag_reward_risk_worse", self.reward_risk_worse)
+        update_mean("diag_reward_abs_risk", self.reward_abs_risk)
+        update_mean("diag_reward_delay_risk", self.reward_delay_risk)
+        update_mean("diag_risk_worsening_rate", self.risk_worsening)
+        update_mean("diag_intervention_rate", self.intervention)
+        update_mean("diag_unnecessary_intervention_rate", self.unnecessary_intervention)
+        update_mean("diag_unsafe_non_intervention_rate", self.unsafe_non_intervention)
+        update_mean("diag_modal_residual_norm", self.modal_residual_norm)
+
     def _pre_sim_step(self, tensordict: TensorDictBase):
 
         # Store last step action command for smoothness reward
         self.prev_action_command[:] = self.agent_action.clone()
+        self._cache_issue_time_inputs(tensordict)
 
         # Get new action command from policy (world frame)
         action_command = tensordict[("agents", "action")] 
@@ -543,6 +739,8 @@ class EnvTunnelResidual(IsaacEnv):
         # Ensure actions shape is compatible
         if action_command.ndim == 3:
             action_command = action_command.squeeze(1)
+        if self.enable_dynamic_risk:
+            self.issue_action_w[:] = action_command[..., :3]
         self.agent_action[:] = action_command.clone()
         # 添加一个探针来记录原始的agent action command，看看是否是action_command本身的z值导致了高度不稳定
         self.agent_action_original[:] = action_command.clone()
@@ -666,6 +864,9 @@ class EnvTunnelResidual(IsaacEnv):
             orientation_only=True,
             yaw_only=True
         )
+        if self.enable_dynamic_risk_reward:
+            target_vel_w = self.issue_human_action_w.clone()
+        self._compute_dynamic_risk_terms()
         
         # a. Safety Penalty (Barrier Function)
         # Instead of a positive reward for being far, we apply a negative penalty for being close.
@@ -773,6 +974,32 @@ class EnvTunnelResidual(IsaacEnv):
         # Combined Task Reward (calculated for diagnostics)
         reward_task = 1.0 * reward_speed_match + 0.5 * reward_direction
 
+        residual_norm = (self.issue_action_w - self.issue_human_action_w).norm(dim=-1, keepdim=True) / max(self.max_action_vel, 1e-6)
+        self.modal_residual_norm[:] = residual_norm
+        epsilon_delta = float(self.dynamic_risk_metrics_cfg.get("epsilon_delta", 0.05))
+        rho_safe = float(self.dynamic_risk_metrics_cfg.get("rho_safe", 0.2))
+        rho_danger = float(self.dynamic_risk_metrics_cfg.get("rho_danger", 0.7))
+        self.risk_worsening[:] = (self.assist_risk_dyn_post > self.pilot_risk_dyn_post).float()
+        self.intervention[:] = (residual_norm > epsilon_delta).float()
+        self.unnecessary_intervention[:] = (
+            (residual_norm > epsilon_delta) & (self.pilot_risk_dyn_post < rho_safe)
+        ).float()
+        self.unsafe_non_intervention[:] = (
+            (residual_norm <= epsilon_delta) & (self.pilot_risk_dyn_post > rho_danger)
+        ).float()
+
+        self.reward_risk_reduce.zero_()
+        self.reward_risk_worse.zero_()
+        self.reward_abs_risk.zero_()
+        self.reward_delay_risk.zero_()
+        if self.enable_dynamic_risk_reward and self.enable_safety_reward:
+            self.reward_risk_reduce[:] = float(self.dynamic_risk_reward_cfg.get("w_delta_rho", 0.5)) * self.risk_reduction_dyn
+            self.reward_risk_worse[:] = -float(self.dynamic_risk_reward_cfg.get("w_worse", 1.5)) * (
+                self.assist_risk_dyn_post - self.pilot_risk_dyn_post
+            ).clamp(min=0.0)
+            self.reward_abs_risk[:] = -float(self.dynamic_risk_reward_cfg.get("w_abs", 0.4)) * self.assist_risk_dyn_full
+            self.reward_delay_risk[:] = -float(self.dynamic_risk_reward_cfg.get("w_delay", 0.3)) * self.delay_risk
+
         # d. Smoothness Penalty
         action_diff = (self.agent_action - self.prev_action_command).norm(dim=-1, keepdim=True)
         penalty_action_smoothness = (action_diff / self.max_action_vel) ** 2
@@ -781,7 +1008,10 @@ class EnvTunnelResidual(IsaacEnv):
         # [Analysis]: If enable_task_reward is False, the agent acts as a pure "Safety Shield".
         # It has no incentive to follow velocity other than the Residual Regularization term in the loss.
         # This removes the conflict where deviating for safety penalizes task reward.
-        task_reward_term = reward_task if self.enable_following_reward else 0.0
+        if self.enable_following_reward:
+            task_reward_term = reward_task * self.follow_gate if self.enable_dynamic_risk_reward else reward_task
+        else:
+            task_reward_term = 0.0
 
         # Survival reward: positive reward per step alive
         # Reduced to prevent hovering from being optimal (was 0.5)
@@ -804,12 +1034,27 @@ class EnvTunnelResidual(IsaacEnv):
         height_excess_up = (z - (h_max + 0.2)).clamp(min=0.0)
         height_excess_down = ((h_min - 0.2) - z).clamp(min=0.0)
         penalty_height = height_excess_up ** 2 + height_excess_down ** 2
+
+        if self.dynamic_risk_mode == "hybrid_reward":
+            legacy_safety_scale = self.legacy_safety_scale
+        elif self.dynamic_risk_mode in {"dynamic_reward", "full"}:
+            legacy_safety_scale = 0.0
+        else:
+            legacy_safety_scale = 1.0
+
+        dynamic_risk_reward = (
+            self.reward_risk_reduce
+            + self.reward_risk_worse
+            + self.reward_abs_risk
+            + self.reward_delay_risk
+        )
         
         self.reward = (
             task_reward_term
             + reward_survival
             + reward_progress
-            + float(reward_params.get("safety_weight", 3.0)) * r_safety  # Stronger safety signal (was 2.0)
+            + legacy_safety_scale * float(reward_params.get("safety_weight", 3.0)) * r_safety
+            + dynamic_risk_reward
             - float(reward_params.get("height_penalty_weight", 10.0)) * penalty_height
             - (float(reward_params.get("smoothness_weight", 0.5)) * penalty_action_smoothness if self.enable_smoothness_penalty else 0.0)
         )
@@ -956,6 +1201,7 @@ class EnvTunnelResidual(IsaacEnv):
         # === DIAGNOSTIC: Log internal reward components to stats ===
         self.stats["diag_reward"] = self.reward
         self.stats["diag_reward_task"] = reward_task
+        self._update_dynamic_risk_stats()
         self.stats["diag_penalty_smooth"] = penalty_action_smoothness
         self.stats["diag_penalty_height"] = penalty_height
         
@@ -967,12 +1213,15 @@ class EnvTunnelResidual(IsaacEnv):
         self.stats["debug_vec_world"] = drone_vel_w
         self.stats["debug_vec_policy"] = self.agent_action_original
         # Convert human action from body frame to world frame for consistent comparison
-        human_action_w = vec_to_world(
-            human_actions_local[:, :3],
-            drone_orientation_q,
-            orientation_only=True,
-            yaw_only=True
-        )
+        if self.enable_dynamic_risk:
+            human_action_w = target_vel_w
+        else:
+            human_action_w = vec_to_world(
+                human_actions_local[:, :3],
+                drone_orientation_q,
+                orientation_only=True,
+                yaw_only=True
+            )
         self.stats["debug_vec_target"] = human_action_w
         self.stats["debug_pos_world"] = drone_pos_w
         # [Debug Print] Check if drone is falling despite 0 command
@@ -1006,7 +1255,12 @@ class EnvTunnelResidual(IsaacEnv):
         return TensorDict(
             {
                 "agents": {
-                    "reward": reward
+                    "reward": reward,
+                    "pilot_risk_dyn_post": self.pilot_risk_dyn_post,
+                    "assist_risk_dyn_post": self.assist_risk_dyn_post,
+                    "assist_risk_dyn_full": self.assist_risk_dyn_full,
+                    "delay_risk": self.delay_risk,
+                    "risk_reduction_dyn": self.risk_reduction_dyn,
                 },
                 "done": terminated | truncated,
                 "terminated": terminated,

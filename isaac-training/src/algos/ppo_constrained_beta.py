@@ -299,6 +299,11 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         
         # Residual regularization coefficient
         self.reg_coeff = cfg.get("reg_coeff", 0.01)
+        risk_reg_cfg = cfg.get("risk_regularization", {})
+        self.use_risk_regularization = bool(risk_reg_cfg.get("enable", False))
+        self.risk_reg_g_safe = float(risk_reg_cfg.get("g_safe", 1.0))
+        self.risk_reg_g_danger = float(risk_reg_cfg.get("g_danger", 0.05))
+        self.risk_reg_power = float(risk_reg_cfg.get("power", 1.0))
         self.policy_mode = cfg.get("policy_mode", "residual")
         if self.policy_mode not in ("residual", "direct"):
             raise ValueError("algo.policy_mode must be either 'residual' or 'direct'")
@@ -697,18 +702,29 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             actor_loss = -torch.mean(torch.min(surr1, surr2)) * self.action_dim 
 
             # 3. Regularization Loss — penalize deviation from human intent.
-            # Residual mode regularizes the learned residual in Beta [0, 1] space.
-            # Direct mode regularizes the direct mean against the pilot command in
-            # the same [0, 1] space, so NoResidual removes only residual centering
-            # instead of also removing the intent-fidelity constraint.
-            if self.policy_mode == "residual":
-                reg_loss = minibatch["_mean_delta"].pow(2).sum(dim=-1).mean()
+            human_action = minibatch[("agents", "observation", "human_action")]
+            human_action_norm = human_action / self.action_limit
+            human_action_01 = ((human_action_norm + 1.0) / 2.0).clamp(0.01, 0.99)
+            reg_gate = torch.ones_like(human_action_01[..., 0])
+            modal_residual = torch.zeros_like(reg_gate)
+            if self.use_risk_regularization:
+                mode_01 = ((action_dist.mode + 1.0) / 2.0).clamp(0.01, 0.99)
+                modal_residual = (mode_01 - human_action_01).pow(2).sum(dim=-1)
+                pilot_risk = minibatch.get(("next", "agents", "pilot_risk_dyn_post"), None)
+                if pilot_risk is None:
+                    raise KeyError("risk_regularization requires next/agents/pilot_risk_dyn_post")
+                pilot_risk = pilot_risk.detach().squeeze(-1).clamp(0.0, 1.0)
+                reg_gate = self.risk_reg_g_danger + (
+                    self.risk_reg_g_safe - self.risk_reg_g_danger
+                ) * (1.0 - pilot_risk).clamp(0.0, 1.0).pow(self.risk_reg_power)
+                reg_loss = (reg_gate * modal_residual).mean()
+            elif self.policy_mode == "residual":
+                modal_residual = minibatch["_mean_delta"].pow(2).sum(dim=-1)
+                reg_loss = modal_residual.mean()
             else:
                 direct_mean_01 = torch.sigmoid(minibatch["_mean_delta"]).clamp(0.01, 0.99)
-                human_action = minibatch[("agents", "observation", "human_action")]
-                human_action_norm = human_action / self.action_limit
-                human_action_01 = ((human_action_norm + 1.0) / 2.0).clamp(0.01, 0.99)
-                reg_loss = (direct_mean_01 - human_action_01).pow(2).sum(dim=-1).mean()
+                modal_residual = (direct_mean_01 - human_action_01).pow(2).sum(dim=-1)
+                reg_loss = modal_residual.mean()
 
             # 4. Policy Loss
             loss_pi = actor_loss + self.reg_coeff * reg_loss
@@ -763,6 +779,8 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
                 "critic_loss": critic_loss,
                 "entropy": entropy_loss,
                 "reg_loss": reg_loss,
+                "reg_gate": reg_gate.mean(),
+                "modal_residual": modal_residual.mean(),
                 "actor_grad_norm": actor_grad_norm,
                 "critic_grad_norm": critic_grad_norm,
                 "explained_var": explained_var
@@ -790,6 +808,8 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             "critic_loss": torch.tensor(float('nan')),
             "entropy": torch.tensor(float('nan')),
             "reg_loss": torch.tensor(float('nan')),
+            "reg_gate": torch.tensor(float('nan')),
+            "modal_residual": torch.tensor(float('nan')),
             "actor_grad_norm": torch.tensor(float('nan')),
             "critic_grad_norm": torch.tensor(float('nan')),
             "explained_var": torch.tensor(float('nan')),
