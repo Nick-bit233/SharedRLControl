@@ -33,6 +33,8 @@ def _resolve_runtime_path(path: str | None, hydra_cfg: Any) -> str | None:
 
 def _prepare_eval_cfg(cfg: Any) -> None:
     OmegaConf.set_struct(cfg, False)
+    eval_seed = int(cfg.eval.get("seed", cfg.get("seed", 42)))
+    cfg.seed = eval_seed
     cfg.headless = True
     cfg.wandb.mode = "disabled"
     cfg.record_video = bool(cfg.eval.get("record_video", False))
@@ -41,6 +43,19 @@ def _prepare_eval_cfg(cfg: Any) -> None:
     if not cfg.eval.get("keep_num_envs", False):
         cfg.env.num_envs = int(cfg.eval.get("num_envs", 4))
     OmegaConf.set_struct(cfg, True)
+
+
+def _set_global_seed(seed: int) -> None:
+    import random
+
+    import numpy as np
+    import torch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _serializable_info(info: dict[str, Any]) -> dict[str, Any]:
@@ -60,6 +75,8 @@ def _serializable_info(info: dict[str, Any]) -> dict[str, Any]:
 def main(cfg: Any) -> None:
     _configure_cuda_env()
     _prepare_eval_cfg(cfg)
+    eval_seed = int(cfg.eval.get("seed", cfg.get("seed", 42)))
+    _set_global_seed(eval_seed)
 
     from hydra.core.hydra_config import HydraConfig
     from experiment_specs.registry import build_spec_from_cfg
@@ -91,7 +108,7 @@ def main(cfg: Any) -> None:
             env,
             policy,
             output_dir=output_dir,
-            seed=int(cfg.eval.get("seed", 42)),
+            seed=eval_seed,
         )
         info_path = os.path.join(output_dir, "eval_info.json")
         with open(info_path, "w") as file:

@@ -279,6 +279,13 @@ class EnvTunnelResidual(IsaacEnv):
         self.viz_traj_agent = []
         self.viz_human_pos = None
 
+    def set_seed(self, seed: int):
+        result = super().set_seed(seed)
+        self.seed = int(seed)
+        if hasattr(self.user_model, "set_eval_seed"):
+            self.user_model.set_eval_seed(self.seed)
+        return result
+
     def _design_scene(self):
         # Init DRONE and CONTROLLER here, default prim path: /World/envs/envs_0
         self.drone, self.controller = MultirotorBase.make(

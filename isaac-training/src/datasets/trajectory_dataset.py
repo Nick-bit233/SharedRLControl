@@ -193,6 +193,7 @@ class TrajectoryDataset:
         self,
         batch_size: int,
         window_size: int,
+        generator: Optional[torch.Generator] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Sample random trajectory windows without any transformations.
@@ -202,12 +203,22 @@ class TrajectoryDataset:
         
         # Random trajectory indices
         traj_indices = torch.randint(
-            0, self.metadata.num_trajectories, (batch_size,), device=self.device
+            0,
+            self.metadata.num_trajectories,
+            (batch_size,),
+            device=self.device,
+            generator=generator,
         )
         
         # Random start offsets within each trajectory
         max_offset = self.metadata.trajectory_length - window_size
-        start_offsets = torch.randint(0, max_offset + 1, (batch_size,), device=self.device)
+        start_offsets = torch.randint(
+            0,
+            max_offset + 1,
+            (batch_size,),
+            device=self.device,
+            generator=generator,
+        )
         
         # Load full trajectories (from memory)
         full_velocities, _ = self._get_from_cache_or_load(traj_indices)
@@ -241,6 +252,7 @@ class TrajectoryDataset:
         map_bounds: Optional[torch.Tensor] = None,
         lower_bounds: Optional[torch.Tensor] = None,
         upper_bounds: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Sample random trajectory windows with scale-to-fit transformation.
@@ -254,12 +266,22 @@ class TrajectoryDataset:
         
         # Random trajectory indices
         traj_indices = torch.randint(
-            0, self.metadata.num_trajectories, (batch_size,), device=self.device
+            0,
+            self.metadata.num_trajectories,
+            (batch_size,),
+            device=self.device,
+            generator=generator,
         )
         
         # Random start offsets
         max_offset = self.metadata.trajectory_length - window_size
-        start_offsets = torch.randint(0, max_offset + 1, (batch_size,), device=self.device)
+        start_offsets = torch.randint(
+            0,
+            max_offset + 1,
+            (batch_size,),
+            device=self.device,
+            generator=generator,
+        )
         
         # Load full trajectories (from memory)
         full_velocities, full_positions = self._get_from_cache_or_load(traj_indices)
@@ -386,10 +408,11 @@ class TrajectoryDataset:
         map_bounds: Optional[torch.Tensor] = None,
         lower_bounds: Optional[torch.Tensor] = None,
         upper_bounds: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
     ) -> Tuple[torch.Tensor, ...]:
         """Unified sampling interface."""
         if mode == "raw":
-            return self.sample_raw(batch_size, window_size)
+            return self.sample_raw(batch_size, window_size, generator=generator)
         elif mode == "scaled":
             assert start_pos is not None, "start_pos required for scaled mode"
             assert map_bounds is not None or (
@@ -402,6 +425,7 @@ class TrajectoryDataset:
                 map_bounds=map_bounds,
                 lower_bounds=lower_bounds,
                 upper_bounds=upper_bounds,
+                generator=generator,
             )
         else:
             raise ValueError(f"Unknown sampling mode: {mode}")

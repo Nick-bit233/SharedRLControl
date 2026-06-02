@@ -102,6 +102,9 @@ class UserModelTunnel:
         #     print("[Warning]: Using 'noise' library for Perlin noise generation. This runs on cpu and may be slower than the batched implementation.")
         self.device = cfg.device
         self.dt = cfg.sim.dt
+        self._dataset_eval_generator: Optional[torch.Generator] = None
+        self._dataset_eval_seed: Optional[int] = None
+        self._use_eval_dataset_generator = False
         
         # Map boundaries for APF [x, y, z] in IsaacSim world frame.
         # NOTE: cfg.env.map_range is stored as [Isaac-y, Isaac-x, Isaac-z] half-extents
@@ -185,6 +188,18 @@ class UserModelTunnel:
         # Previous action for smoothing (Low Pass Filter)
         self.prev_filtered_action = torch.zeros(num_envs, 3, device=self.device)  # 3D velocity only
 
+    def set_eval_seed(self, seed: int) -> None:
+        """Reset the offline dataset sampler for deterministic evaluation."""
+
+        self._dataset_eval_seed = int(seed)
+        self._dataset_eval_generator = torch.Generator(device=self.device)
+        self._dataset_eval_generator.manual_seed(self._dataset_eval_seed + 1_000_003)
+        self._use_eval_dataset_generator = True
+
+    def _ensure_eval_dataset_generator(self, seed: int) -> None:
+        if self._dataset_eval_generator is None or self._dataset_eval_seed != int(seed):
+            self.set_eval_seed(seed)
+
     @staticmethod
     def _axis_bounds(bounds_cfg: Any, axis: str) -> list[float]:
         values = bounds_cfg.get(axis, None)
@@ -254,6 +269,8 @@ class UserModelTunnel:
         # Handle Seeding
         if seed is not None:
             # Evaluation Mode: Deterministic
+            if self.offline_mode:
+                self._ensure_eval_dataset_generator(int(seed))
 
             # 使用 seed + env_id 确保每个环境不同，但每次运行一致
             gen = torch.Generator(device=self.device)
@@ -278,6 +295,7 @@ class UserModelTunnel:
             
         else:
             # Training Mode: Random generate seeds and styles
+            self._use_eval_dataset_generator = False
             self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, self.num_channels), device=self.device)  # 3 channels for vx, vy, vz
             self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * self.freq_scale + self.freq_base
             if self.cfg.user_model.get("max_noise_freq", None) is not None:
@@ -381,11 +399,20 @@ class UserModelTunnel:
         
         K = len(env_ids)
         T = self.buffer_size
+        dataset_generator = (
+            self._dataset_eval_generator
+            if self._use_eval_dataset_generator
+            else None
+        )
         
         with profiler.timer("user_model/dataset_sample"):
             if self.sampling_mode == "raw":
                 # Raw sampling: no boundary handling
-                velocities, styles = self.dataset.sample_raw(K, T)
+                velocities, styles = self.dataset.sample_raw(
+                    K,
+                    T,
+                    generator=dataset_generator,
+                )
                 # velocities: (K, T, D)
             else:
                 # Scaled sampling: boundary-aware
@@ -396,6 +423,7 @@ class UserModelTunnel:
                     map_bounds=self.env_map_range,
                     lower_bounds=self.sampling_lower_bounds,
                     upper_bounds=self.sampling_upper_bounds,
+                    generator=dataset_generator,
                 )
         
         with profiler.timer("user_model/dataset_velocity_postprocess"):

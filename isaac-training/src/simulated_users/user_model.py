@@ -278,6 +278,9 @@ class UserModel:
         #     print("[Warning]: Using 'noise' library for Perlin noise generation. This runs on cpu and may be slower than the batched implementation.")
         self.device = cfg.device
         self.dt = cfg.sim.dt
+        self._dataset_eval_generator: Optional[torch.Generator] = None
+        self._dataset_eval_seed: Optional[int] = None
+        self._use_eval_dataset_generator = False
         
         # Map boundaries for APF [x, y, z]
         # Assuming map_range is half-extents
@@ -332,6 +335,18 @@ class UserModel:
         
         # Previous action for smoothing (Low Pass Filter)
         self.prev_filtered_action = torch.zeros(num_envs, 3, device=self.device)  # 3D velocity only
+
+    def set_eval_seed(self, seed: int) -> None:
+        """Reset the offline dataset sampler for deterministic evaluation."""
+
+        self._dataset_eval_seed = int(seed)
+        self._dataset_eval_generator = torch.Generator(device=self.device)
+        self._dataset_eval_generator.manual_seed(self._dataset_eval_seed + 1_000_003)
+        self._use_eval_dataset_generator = True
+
+    def _ensure_eval_dataset_generator(self, seed: int) -> None:
+        if self._dataset_eval_generator is None or self._dataset_eval_seed != int(seed):
+            self.set_eval_seed(seed)
         
     def reset(self, pos, quat, env_ids, seed=None):
         """
@@ -353,6 +368,8 @@ class UserModel:
         # Handle Seeding
         if seed is not None:
             # Evaluation Mode: Deterministic
+            if self.offline_mode:
+                self._ensure_eval_dataset_generator(int(seed))
 
             # 使用 seed + env_id 确保每个环境不同，但每次运行一致
             gen = torch.Generator(device=self.device)
@@ -375,6 +392,7 @@ class UserModel:
             
         else:
             # Training Mode: Random generate seeds and styles
+            self._use_eval_dataset_generator = False
             self.noise_seeds[env_ids] = torch.randint(0, 100000, (K, 3), device=self.device)  # 3 channels for vx, vy, vz
             self.styles['noise_freq'][env_ids] = torch.rand(K, 1, device=self.device) * self.freq_scale + self.freq_base
             self.styles['smoothness'][env_ids] = torch.rand(K, 1, device=self.device) * self.smooth_scale + self.smooth_base
@@ -479,16 +497,29 @@ class UserModel:
         
         K = len(env_ids)
         T = self.buffer_size
+        dataset_generator = (
+            self._dataset_eval_generator
+            if self._use_eval_dataset_generator
+            else None
+        )
         
         with profiler.timer("user_model/dataset_sample"):
             if self.sampling_mode == "raw":
                 # Raw sampling: no boundary handling
-                velocities, styles = self.dataset.sample_raw(K, T)
+                velocities, styles = self.dataset.sample_raw(
+                    K,
+                    T,
+                    generator=dataset_generator,
+                )
                 # velocities: (K, T, D)
             else:
                 # Scaled sampling: boundary-aware
                 velocities, scale_factors, styles = self.dataset.sample_scaled(
-                    K, T, start_pos, self.env_map_range
+                    K,
+                    T,
+                    start_pos,
+                    self.env_map_range,
+                    generator=dataset_generator,
                 )
         
         with profiler.timer("user_model/dataset_velocity_postprocess"):
