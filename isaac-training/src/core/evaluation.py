@@ -7,6 +7,7 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
+from src.core.eval_tracing import save_eval_trace_artifacts, trace_enabled
 from src.core.wandb_utils import add_video, video_fps_from_cfg
 
 
@@ -270,6 +271,11 @@ def evaluate_policy_to_disk(
                 },
                 output_dir,
             )
+
+        if trace_enabled(cfg):
+            trace_info = save_eval_trace_artifacts(cfg, trajs, output_dir, env=env)
+            info.update({f"trace/{key}": value for key, value in trace_info.items()})
+            logging.info(f"[Eval] trace artifacts: {trace_info}")
 
         return info
     finally:

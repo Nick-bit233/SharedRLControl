@@ -39,6 +39,16 @@ eval:
   global_view: false
   keep_num_envs: false
   grid: null
+  trace:
+    enable: false
+    save_npz: true
+    plot: true
+    selection: diagnostic
+    env_ids: null
+    max_episodes: 6
+    risk_key: assist_risk_dyn_full
+    include_lidar_min_distance: true
+    plot_dir: plots
 
 early_stopping:
   enable: false

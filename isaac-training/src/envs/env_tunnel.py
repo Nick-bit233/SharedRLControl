@@ -1328,11 +1328,11 @@ class EnvTunnelResidual(IsaacEnv):
             {
                 "agents": {
                     "reward": reward,
-                    "pilot_risk_dyn_post": self.pilot_risk_dyn_post,
-                    "assist_risk_dyn_post": self.assist_risk_dyn_post,
-                    "assist_risk_dyn_full": self.assist_risk_dyn_full,
-                    "delay_risk": self.delay_risk,
-                    "risk_reduction_dyn": self.risk_reduction_dyn,
+                    "pilot_risk_dyn_post": self.pilot_risk_dyn_post.clone(),
+                    "assist_risk_dyn_post": self.assist_risk_dyn_post.clone(),
+                    "assist_risk_dyn_full": self.assist_risk_dyn_full.clone(),
+                    "delay_risk": self.delay_risk.clone(),
+                    "risk_reduction_dyn": self.risk_reduction_dyn.clone(),
                 },
                 "done": terminated | truncated,
                 "terminated": terminated,
