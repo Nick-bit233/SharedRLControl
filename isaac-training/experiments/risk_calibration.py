@@ -6,6 +6,7 @@ import json
 import math
 import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -201,6 +202,7 @@ def main(cfg: Any) -> None:
                 "num_envs": int(cfg.env.num_envs),
                 "max_episode_length": int(env.max_episode_length),
                 "score": "assist_risk_dyn_full",
+                "risk_estimator": str(cfg.env.get("dynamic_risk", {}).get("estimator", "legacy_rollout")),
             }
         )
 
@@ -226,6 +228,9 @@ def main(cfg: Any) -> None:
         print(f"[RiskCalibration] risk_trace.npz written: {output / 'risk_trace.npz'}")
         print(f"[RiskCalibration] risk_bins.csv written: {output / 'risk_bins.csv'}")
         print(f"[RiskCalibration] eval_info.json written: {info_path}")
+    except BaseException:
+        traceback.print_exc()
+        raise
     finally:
         sim_app.close()
 

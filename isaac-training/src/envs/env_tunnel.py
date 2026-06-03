@@ -36,6 +36,7 @@ from src.simulated_users.user_model_tunnely import UserModelTunnel
 from src.core.profiler import get_profiler
 from src.datasets.trajectory_dataset import TrajectoryDataset
 from src.envs.dynamic_risk import compute_dynamic_command_risk
+from src.envs.simple_risk import compute_simple_lidar_command_risk
 
 @height_field_to_mesh
 def tunnel_obstacles_terrain(difficulty: float, cfg: HfDiscreteObstaclesTerrainCfg) -> np.ndarray:
@@ -190,6 +191,7 @@ class EnvTunnelResidual(IsaacEnv):
 
         risk_cfg = cfg.env.get("dynamic_risk", {})
         self.dynamic_risk_mode = str(risk_cfg.get("mode", "off"))
+        self.dynamic_risk_estimator = str(risk_cfg.get("estimator", "legacy_rollout"))
         self.enable_dynamic_risk = self.dynamic_risk_mode != "off"
         self.enable_dynamic_risk_reward = self.dynamic_risk_mode in {
             "hybrid_reward",
@@ -197,6 +199,7 @@ class EnvTunnelResidual(IsaacEnv):
             "full",
         }
         self.dynamic_risk_model_cfg = risk_cfg.get("model", {})
+        self.simple_risk_model_cfg = risk_cfg.get("simple", {})
         self.dynamic_risk_reward_cfg = risk_cfg.get("reward", {})
         self.dynamic_risk_metrics_cfg = risk_cfg.get("metrics", {})
         self.legacy_safety_scale = float(
@@ -237,6 +240,7 @@ class EnvTunnelResidual(IsaacEnv):
             self.prev_human_action = torch.zeros(self.num_envs, 3)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
+            self.issue_position_w = torch.zeros(self.num_envs, 3)
             self.issue_velocity_w = torch.zeros(self.num_envs, 3)
             self.issue_human_action_b = torch.zeros(self.num_envs, 3)
             self.issue_human_action_w = torch.zeros(self.num_envs, 3)
@@ -252,6 +256,10 @@ class EnvTunnelResidual(IsaacEnv):
             self.risk_reduction_dyn = torch.zeros(self.num_envs, 1)
             self.min_clearance_pilot = torch.full((self.num_envs, 1), self.lidar_range)
             self.min_clearance_assist = torch.full((self.num_envs, 1), self.lidar_range)
+            self.assist_risk_proximity = torch.zeros(self.num_envs, 1)
+            self.assist_risk_velocity = torch.zeros(self.num_envs, 1)
+            self.assist_risk_command = torch.zeros(self.num_envs, 1)
+            self.pilot_risk_command = torch.zeros(self.num_envs, 1)
             self.follow_gate = torch.ones(self.num_envs, 1)
             self.modal_residual_norm = torch.zeros(self.num_envs, 1)
             self.risk_worsening = torch.zeros(self.num_envs, 1)
@@ -491,6 +499,10 @@ class EnvTunnelResidual(IsaacEnv):
             "diag_risk_reduction_dyn": Unbounded(1),
             "diag_min_clearance_pilot": Unbounded(1),
             "diag_min_clearance_assist": Unbounded(1),
+            "diag_assist_risk_proximity": Unbounded(1),
+            "diag_assist_risk_velocity": Unbounded(1),
+            "diag_assist_risk_command": Unbounded(1),
+            "diag_pilot_risk_command": Unbounded(1),
             "diag_follow_gate": Unbounded(1),
             "diag_reward_risk_reduce": Unbounded(1),
             "diag_reward_risk_worse": Unbounded(1),
@@ -568,6 +580,7 @@ class EnvTunnelResidual(IsaacEnv):
         self.agent_action[env_ids] = 0.
         self.prev_action_command[env_ids] = 0.
         self.prev_human_action[env_ids] = 0.
+        self.issue_position_w[env_ids] = 0.
         self.issue_velocity_w[env_ids] = 0.
         self.issue_human_action_b[env_ids] = 0.
         self.issue_human_action_w[env_ids] = 0.
@@ -582,6 +595,10 @@ class EnvTunnelResidual(IsaacEnv):
         self.risk_reduction_dyn[env_ids] = 0.
         self.min_clearance_pilot[env_ids] = self.lidar_range
         self.min_clearance_assist[env_ids] = self.lidar_range
+        self.assist_risk_proximity[env_ids] = 0.
+        self.assist_risk_velocity[env_ids] = 0.
+        self.assist_risk_command[env_ids] = 0.
+        self.pilot_risk_command[env_ids] = 0.
         self.follow_gate[env_ids] = 1.
         self.modal_residual_norm[env_ids] = 0.
         self.risk_worsening[env_ids] = 0.
@@ -643,6 +660,13 @@ class EnvTunnelResidual(IsaacEnv):
         issue_quat = obs_state[..., 6:10]
         issue_vel_b = obs_state[..., :3]
         issue_human_b = obs_human_action[..., :3]
+        try:
+            issue_root_state = tensordict[("info", "drone_state")]
+            if issue_root_state.ndim == 3 and issue_root_state.shape[1] == 1:
+                issue_root_state = issue_root_state.squeeze(1)
+            self.issue_position_w[:] = issue_root_state[..., :3]
+        except KeyError:
+            self.issue_position_w[:] = self.root_state[..., :3].squeeze(1)
 
         self.issue_velocity_w[:] = vec_to_world(
             issue_vel_b,
@@ -678,25 +702,62 @@ class EnvTunnelResidual(IsaacEnv):
             self.risk_reduction_dyn.zero_()
             self.min_clearance_pilot.fill_(self.lidar_range)
             self.min_clearance_assist.fill_(self.lidar_range)
+            self.assist_risk_proximity.zero_()
+            self.assist_risk_velocity.zero_()
+            self.assist_risk_command.zero_()
+            self.pilot_risk_command.zero_()
             self.follow_gate.fill_(1.0)
             return
 
-        pilot = compute_dynamic_command_risk(
-            velocity_w=self.issue_velocity_w,
-            command_w=self.issue_human_action_w,
-            hold_command_w=self.issue_hold_command_w,
-            ray_dirs_w=self.issue_ray_dirs_w,
-            ray_dists=self.issue_ray_dists,
-            params=self.dynamic_risk_model_cfg,
-        )
-        assist = compute_dynamic_command_risk(
-            velocity_w=self.issue_velocity_w,
-            command_w=self.issue_action_w,
-            hold_command_w=self.issue_hold_command_w,
-            ray_dirs_w=self.issue_ray_dirs_w,
-            ray_dists=self.issue_ray_dists,
-            params=self.dynamic_risk_model_cfg,
-        )
+        if self.dynamic_risk_estimator == "simple_lidar":
+            pilot = compute_simple_lidar_command_risk(
+                position_w=self.issue_position_w,
+                velocity_w=self.issue_velocity_w,
+                command_w=self.issue_human_action_w,
+                ray_dirs_w=self.issue_ray_dirs_w,
+                ray_dists=self.issue_ray_dists,
+                height_range=self.height_range.squeeze(1),
+                params=self.simple_risk_model_cfg,
+            )
+            assist = compute_simple_lidar_command_risk(
+                position_w=self.issue_position_w,
+                velocity_w=self.issue_velocity_w,
+                command_w=self.issue_action_w,
+                ray_dirs_w=self.issue_ray_dirs_w,
+                ray_dists=self.issue_ray_dists,
+                height_range=self.height_range.squeeze(1),
+                params=self.simple_risk_model_cfg,
+            )
+            self.assist_risk_proximity[:] = assist["risk_proximity"]
+            self.assist_risk_velocity[:] = assist["risk_velocity"]
+            self.assist_risk_command[:] = assist["risk_command"]
+            self.pilot_risk_command[:] = pilot["risk_command"]
+        elif self.dynamic_risk_estimator == "legacy_rollout":
+            pilot = compute_dynamic_command_risk(
+                velocity_w=self.issue_velocity_w,
+                command_w=self.issue_human_action_w,
+                hold_command_w=self.issue_hold_command_w,
+                ray_dirs_w=self.issue_ray_dirs_w,
+                ray_dists=self.issue_ray_dists,
+                params=self.dynamic_risk_model_cfg,
+            )
+            assist = compute_dynamic_command_risk(
+                velocity_w=self.issue_velocity_w,
+                command_w=self.issue_action_w,
+                hold_command_w=self.issue_hold_command_w,
+                ray_dirs_w=self.issue_ray_dirs_w,
+                ray_dists=self.issue_ray_dists,
+                params=self.dynamic_risk_model_cfg,
+            )
+            self.assist_risk_proximity.zero_()
+            self.assist_risk_velocity.zero_()
+            self.assist_risk_command.zero_()
+            self.pilot_risk_command.zero_()
+        else:
+            raise ValueError(
+                "env.dynamic_risk.estimator must be 'simple_lidar' or 'legacy_rollout', "
+                f"got {self.dynamic_risk_estimator!r}"
+            )
 
         self.pilot_risk_dyn_post[:] = pilot["rho_post"]
         self.assist_risk_dyn_post[:] = assist["rho_post"]
@@ -723,6 +784,10 @@ class EnvTunnelResidual(IsaacEnv):
         update_mean("diag_risk_reduction_dyn", self.risk_reduction_dyn)
         update_mean("diag_min_clearance_pilot", self.min_clearance_pilot)
         update_mean("diag_min_clearance_assist", self.min_clearance_assist)
+        update_mean("diag_assist_risk_proximity", self.assist_risk_proximity)
+        update_mean("diag_assist_risk_velocity", self.assist_risk_velocity)
+        update_mean("diag_assist_risk_command", self.assist_risk_command)
+        update_mean("diag_pilot_risk_command", self.pilot_risk_command)
         update_mean("diag_follow_gate", self.follow_gate)
         update_mean("diag_reward_risk_reduce", self.reward_risk_reduce)
         update_mean("diag_reward_risk_worse", self.reward_risk_worse)

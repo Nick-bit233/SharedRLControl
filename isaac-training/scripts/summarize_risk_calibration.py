@@ -142,7 +142,7 @@ def _make_plots(root: Path, group_traces: dict[tuple[int, str], dict[str, np.nda
                 x, y = _rate_by_bin(trace, metric)
                 ax.plot(x, y, marker="o", label=method, color=colors[method])
             ax.set_title(title)
-            ax.set_xlabel("assist_risk_dyn_full bin center")
+            ax.set_xlabel("risk score bin center")
             ax.set_ylabel("empirical rate")
             ax.set_ylim(0.0, 1.0)
             ax.grid(True, alpha=0.3)
@@ -161,7 +161,7 @@ def _make_plots(root: Path, group_traces: dict[tuple[int, str], dict[str, np.nda
             x, y = _sample_fraction_by_bin(trace)
             ax.bar(x + offset, y, width=width, label=method, color=colors[method], alpha=0.75)
         ax.set_title(f"Risk exposure distribution, obs={obs}")
-        ax.set_xlabel("assist_risk_dyn_full bin center")
+        ax.set_xlabel("risk score bin center")
         ax.set_ylabel("sample fraction")
         ax.grid(True, axis="y", alpha=0.3)
         ax.legend()
@@ -201,7 +201,7 @@ def _corr_from_bins(trace: dict[str, np.ndarray]) -> float:
 
 def _write_summary(root: Path, records: list[dict[str, Any]], group_traces: dict[tuple[int, str], dict[str, np.ndarray]], plot_paths: list[Path]) -> None:
     lines: list[str] = []
-    lines.append("# Dynamic Risk Calibration Summary")
+    lines.append("# Risk Calibration Summary")
     lines.append("")
     lines.append(f"- traces: {len(records)}")
     lines.append(f"- output: `{root}`")
@@ -209,6 +209,8 @@ def _write_summary(root: Path, records: list[dict[str, Any]], group_traces: dict
         metadata = records[0]["metadata"]
         lines.append(f"- horizon_sec: {metadata.get('horizon_sec', 'unknown')}")
         lines.append(f"- near_miss_distance: {metadata.get('near_miss_distance', 'unknown')}")
+        lines.append(f"- risk_estimator: {metadata.get('risk_estimator', 'unknown')}")
+        lines.append(f"- score: {metadata.get('score', 'unknown')}")
     lines.append("")
     lines.append("## Group Metrics")
     lines.append("")
