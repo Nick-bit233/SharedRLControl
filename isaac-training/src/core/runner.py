@@ -53,8 +53,10 @@ class RuntimeSettings:
     profiling_batches: int = 10
     max_iterations: int = 20010
     max_frame_num: int = 0
-    eval_interval: int = 500
+    eval_interval: int = 0
     save_interval: int = 500
+    train_eval_enabled: bool = False
+    checkpoint_scoring_enabled: bool = False
     profiler_log_file: str | None = None
 
 
@@ -84,6 +86,9 @@ def _resolve_settings(cfg: Any) -> RuntimeSettings:
     profiling_mode = cfg.get("profiling_mode", False)
     env_test_mode = cfg.get("env_test_mode", False)
     profiling_batches = cfg.get("profiling_batches", 10)
+    train_eval_cfg = cfg.get("train_eval", {}) or {}
+    train_eval_enabled = bool(train_eval_cfg.get("enable", False))
+    checkpoint_scoring_enabled = bool(train_eval_cfg.get("checkpoint_scoring", False))
 
     disable_wandb_for_special_modes(
         cfg,
@@ -100,11 +105,27 @@ def _resolve_settings(cfg: Any) -> RuntimeSettings:
         max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * profiling_batches
         eval_interval = 0
         save_interval = profiling_batches + 1
+        train_eval_enabled = False
+        checkpoint_scoring_enabled = False
     else:
         max_iterations = cfg.get("max_iterations", 20010)
         max_frame_num = cfg.algo.training_frame_num * cfg.env.num_envs * max_iterations
-        eval_interval = cfg.get("eval_interval", 500)
+        eval_interval = int(train_eval_cfg.get("interval", cfg.get("eval_interval", 0)))
         save_interval = cfg.get("save_interval", 500)
+
+    if env_test_mode and not profiling_mode and not train_eval_enabled:
+        # Preserve the quick sanity-check behavior: run one eval cycle and exit.
+        train_eval_enabled = True
+        eval_interval = 1
+        checkpoint_scoring_enabled = False
+
+    if not train_eval_enabled:
+        eval_interval = 0
+        checkpoint_scoring_enabled = False
+    elif eval_interval <= 0:
+        print("[Train] train_eval.enable=true but train_eval.interval/eval_interval <= 0; disabling train-time eval.")
+        train_eval_enabled = False
+        checkpoint_scoring_enabled = False
 
     return RuntimeSettings(
         profiling_mode=profiling_mode,
@@ -114,6 +135,8 @@ def _resolve_settings(cfg: Any) -> RuntimeSettings:
         max_frame_num=max_frame_num,
         eval_interval=eval_interval,
         save_interval=save_interval,
+        train_eval_enabled=train_eval_enabled,
+        checkpoint_scoring_enabled=checkpoint_scoring_enabled,
     )
 
 
@@ -185,9 +208,12 @@ def _restore_best_state_from_resume(
     return best_state
 
 
-def _make_early_stopping(cfg: Any) -> EarlyStoppingState | None:
+def _make_early_stopping(cfg: Any, settings: RuntimeSettings) -> EarlyStoppingState | None:
     es_cfg = cfg.get("early_stopping", {})
     if not es_cfg.get("enable", False):
+        return None
+    if not settings.train_eval_enabled:
+        print("[Train] Early stopping requested but train_eval.enable=false; disabling early stopping.")
         return None
 
     state = EarlyStoppingState(
@@ -321,8 +347,13 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
     episode_stats = make_episode_stats(env)
 
     # [Extra states initialization]
-    best_state = _restore_best_state_from_resume(checkpoint_state, eval_summary_fn)
-    early_stopping = _make_early_stopping(cfg)
+    early_stopping = _make_early_stopping(cfg, settings)
+    track_eval_best = settings.checkpoint_scoring_enabled or early_stopping is not None
+    best_state = (
+        _restore_best_state_from_resume(checkpoint_state, eval_summary_fn)
+        if track_eval_best
+        else BestCheckpointState()
+    )
     latest_eval_success: float | None = None
 
     # [Lifecycle Hooks] Called before the whole training process.
@@ -415,9 +446,10 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
             )
 
             # [Evaluation Step]
-            if settings.eval_interval > 0 and last_i % settings.eval_interval == 0:
+            if settings.train_eval_enabled and settings.eval_interval > 0 and last_i % settings.eval_interval == 0:
                 # Evaluation returns raw eval/* metrics. The spec-owned summary
-                # function decides how to rank them for best-checkpoint tracking.
+                # keeps latest_eval_success current for hooks. It only affects
+                # checkpoint selection when checkpoint scoring is explicitly on.
                 logging.info(f"Eval at iter {global_iter} ({collector._frames} steps).")
                 
                 # [Lifecycle Hooks] Called before each evaluation rollout.
@@ -428,9 +460,10 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 print(f"[Train] Eval info at iter {global_iter} ({collector._frames} steps): DONE")
 
                 summary = eval_summary_fn(eval_info)
-                info["eval/checkpoint_score"] = summary.score
                 current_success = summary.success
                 latest_eval_success = current_success
+                if settings.checkpoint_scoring_enabled:
+                    info["eval/checkpoint_score"] = summary.score
 
                 # [Lifecycle Hooks] Called after each evaluation step.
                 context.update(
@@ -448,34 +481,42 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                     break
 
                 # Keep the best policy in memory and save a policy-only best
-                # checkpoint immediately. 
-                if _update_best_state(best_state, summary, eval_info, policy):
-                    best_paths = save_best_checkpoint(
-                        run,
-                        cfg,
-                        best_state=best_state,
-                        fallback_checkpoint_path=cfg.log_output_dir,
-                        policy=policy,
-                        iter_value=global_iter,
-                        env_frames=current_env_frames,
-                        adapter=checkpoint_adapter,
-                        extra_state=_checkpoint_extra_state(context),
-                        policy_only=spec.best_checkpoint_policy_only,
-                    )
-                    best_checkpoint_path = best_paths.checkpoint_path
-                    print(
-                        f"[Train] New best model! score={best_state.eval_score:.3f} "
-                        f"success={best_state.eval_success:.3f} collision={best_state.eval_collision:.3f} "
-                        f"at iter {global_iter}"
-                    )
+                # checkpoint immediately only when checkpoint scoring is enabled.
+                if track_eval_best:
+                    if _update_best_state(best_state, summary, eval_info, policy):
+                        if settings.checkpoint_scoring_enabled:
+                            best_paths = save_best_checkpoint(
+                                run,
+                                cfg,
+                                best_state=best_state,
+                                fallback_checkpoint_path=cfg.log_output_dir,
+                                policy=policy,
+                                iter_value=global_iter,
+                                env_frames=current_env_frames,
+                                adapter=checkpoint_adapter,
+                                extra_state=_checkpoint_extra_state(context),
+                                policy_only=spec.best_checkpoint_policy_only,
+                            )
+                            best_checkpoint_path = best_paths.checkpoint_path
+                            print(
+                                f"[Train] New best model! score={best_state.eval_score:.3f} "
+                                f"success={best_state.eval_success:.3f} collision={best_state.eval_collision:.3f} "
+                                f"at iter {global_iter}"
+                            )
+                        else:
+                            print(
+                                f"[Train] New in-memory early-stopping best: "
+                                f"success={best_state.eval_success:.3f} collision={best_state.eval_collision:.3f} "
+                                f"at iter {global_iter}"
+                            )
 
-                if _should_stop_for_early_stopping(
-                    early_stopping,
-                    best_state,
-                    current_success,
-                    policy,
-                ):
-                    break
+                    if _should_stop_for_early_stopping(
+                        early_stopping,
+                        best_state,
+                        current_success,
+                        policy,
+                    ):
+                        break
 
             # [Lifecycle Hooks] Called after train step, can be customized.
             context.update(
@@ -511,7 +552,7 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                     iter_value=global_iter,
                     env_frames=current_env_frames,
                     adapter=checkpoint_adapter,
-                    best_state=best_state,
+                    best_state=best_state if track_eval_best else None,
                     extra_state=_checkpoint_extra_state(context),
                 )
                 latest_checkpoint_path = latest_paths.checkpoint_path
@@ -519,8 +560,8 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 call_hooks(hooks, "on_after_checkpoint", context)
 
     finally:
-        # Always attempt final/best checkpoint and wandb cleanup, even if the
-        # loop breaks early due to env_test_mode or early stopping.
+        # Always attempt final checkpoint and wandb cleanup, even if the loop
+        # breaks early due to env_test_mode or early stopping.
         final_iter = checkpoint_state.start_iter + last_i if last_i >= 0 else checkpoint_state.start_iter - 1
         final_env_frames = collector_env_frames(
             collector,
@@ -537,7 +578,8 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
         call_hooks(hooks, "on_after_training", context)
 
         if not settings.profiling_mode:
-            # Normal runs summarize with final checkpoint and best checkpoint paths. 
+            # Normal runs always write a final checkpoint. A best checkpoint is
+            # only written when train-time checkpoint scoring is enabled.
             call_hooks(hooks, "on_before_checkpoint", context)
             final_paths = save_final_checkpoint(
                 run,
@@ -546,23 +588,24 @@ def run_training(cfg: Any, spec: ExperimentSpec) -> RunnerResult:
                 iter_value=final_iter,
                 env_frames=final_env_frames,
                 adapter=checkpoint_adapter,
-                best_state=best_state,
+                best_state=best_state if track_eval_best else None,
                 extra_state=_checkpoint_extra_state(context),
             )
             final_checkpoint_path = final_paths.checkpoint_path
-            best_paths = save_best_checkpoint(
-                run,
-                cfg,
-                best_state=best_state,
-                fallback_checkpoint_path=final_checkpoint_path,
-                policy=policy,
-                iter_value=final_iter,
-                env_frames=final_env_frames,
-                adapter=checkpoint_adapter,
-                extra_state=_checkpoint_extra_state(context),
-                policy_only=spec.best_checkpoint_policy_only,
-            )
-            best_checkpoint_path = best_paths.checkpoint_path
+            if settings.checkpoint_scoring_enabled:
+                best_paths = save_best_checkpoint(
+                    run,
+                    cfg,
+                    best_state=best_state,
+                    fallback_checkpoint_path=final_checkpoint_path,
+                    policy=policy,
+                    iter_value=final_iter,
+                    env_frames=final_env_frames,
+                    adapter=checkpoint_adapter,
+                    extra_state=_checkpoint_extra_state(context),
+                    policy_only=spec.best_checkpoint_policy_only,
+                )
+                best_checkpoint_path = best_paths.checkpoint_path
             context.update(
                 {
                     "final_checkpoint_path": final_checkpoint_path,

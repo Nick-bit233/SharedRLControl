@@ -84,11 +84,16 @@ algo:
     g_danger: 0.05
     power: 1.0
 
-max_iterations: 3003
-eval_interval: 100
+max_iterations: 1003
+eval_interval: 0
 save_interval: 100
 init_checkpoint: null
 resume_checkpoint: null
+
+train_eval:
+  enable: false
+  interval: 100
+  checkpoint_scoring: false
 
 curriculum:
   enable: False
@@ -102,7 +107,7 @@ curriculum:
   reg_step: 0.03
 
 early_stopping:
-  enable: True
+  enable: False
   patience: 5
   min_delta: 0.10
 
