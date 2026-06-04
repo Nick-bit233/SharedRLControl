@@ -55,7 +55,7 @@ env:
       side_distance_trigger: 1.0
       side_distance_temperature: 0.20
       side_ttc_safe: 0.8
-      side_ttc_temperature: 0.25
+      side_ttc_temperature: 0.30
       hit_epsilon: 0.02
     reward:
       w_delta_rho: 0.0
