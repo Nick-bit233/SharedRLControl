@@ -117,7 +117,8 @@ isaac-training/third_party/warp/_build/
 
 # Ignore test logs and files
 isaac-training/outputs/
-isaac-training/tests/
+isaac-training/tests/*
+!isaac-training/tests/test_offline_trajectory_playback.py
 isaac-training/figures/
 
 outputs/

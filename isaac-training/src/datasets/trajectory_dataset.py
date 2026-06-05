@@ -220,87 +220,89 @@ class TrajectoryDataset:
             generator=generator,
         )
         
-        # Load full trajectories (from memory)
-        full_velocities, _ = self._get_from_cache_or_load(traj_indices)
+        velocities, _ = self.get_windows(traj_indices, start_offsets, window_size)
+        styles = self.get_styles(traj_indices)
         
-        # Extract windows using advanced indexing
-        window_indices = start_offsets.unsqueeze(1) + torch.arange(
-            window_size, device=self.device
-        ).unsqueeze(0)  # (B, window_size)
-        
-        velocities = torch.gather(
-            full_velocities,
-            dim=1,
-            index=window_indices.unsqueeze(-1).expand(-1, -1, self.metadata.action_dim)
-        )
-        
-        # Get styles
+        return velocities, styles
+
+    def get_styles(self, traj_indices: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Return style metadata for the given trajectory indices."""
+        traj_indices = traj_indices.to(device=self.device, dtype=torch.long)
         style_indices = traj_indices % self.style_len
-        styles = {
+        return {
             'noise_freq': self.styles['noise_freq'][style_indices],
             'smoothness': self.styles['smoothness'][style_indices],
             'laziness': self.styles['laziness'][style_indices],
         }
-        
-        return velocities, styles
-    
-    def sample_scaled(
+
+    def get_windows(
         self,
-        batch_size: int,
+        traj_indices: torch.Tensor,
+        start_offsets: torch.Tensor,
         window_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Gather fixed trajectory windows by index and offset.
+
+        This is the deterministic counterpart to random sampling. It is used by
+        episode-contiguous user playback while keeping the old random sampling
+        methods available for existing callers.
+        """
+        assert window_size <= self.metadata.trajectory_length, \
+            f"window_size ({window_size}) must be <= trajectory_length ({self.metadata.trajectory_length})"
+        if traj_indices.ndim != 1 or start_offsets.ndim != 1:
+            raise ValueError("traj_indices and start_offsets must be 1D tensors")
+        if len(traj_indices) != len(start_offsets):
+            raise ValueError("traj_indices and start_offsets must have the same length")
+        if len(traj_indices) == 0:
+            return (
+                torch.zeros((0, window_size, self.metadata.action_dim), device=self.device),
+                torch.zeros((0, window_size, 3), device=self.device),
+            )
+
+        traj_indices = traj_indices.to(device=self.device, dtype=torch.long)
+        start_offsets = start_offsets.to(device=self.device, dtype=torch.long)
+        max_offset = self.metadata.trajectory_length - window_size
+        if ((start_offsets < 0) | (start_offsets > max_offset)).any():
+            raise ValueError(
+                f"start_offsets must be in [0, {max_offset}] for window_size={window_size}"
+            )
+
+        full_velocities, full_positions = self._get_from_cache_or_load(traj_indices)
+        window_indices = start_offsets.unsqueeze(1) + torch.arange(
+            window_size, device=self.device
+        ).unsqueeze(0)
+
+        velocities = torch.gather(
+            full_velocities,
+            dim=1,
+            index=window_indices.unsqueeze(-1).expand(-1, -1, self.metadata.action_dim),
+        )
+        positions = torch.gather(
+            full_positions,
+            dim=1,
+            index=window_indices.unsqueeze(-1).expand(-1, -1, 3),
+        )
+        return velocities, positions
+
+    def compute_scale_factors(
+        self,
+        positions_window: torch.Tensor,
         start_pos: torch.Tensor,
         map_bounds: Optional[torch.Tensor] = None,
         lower_bounds: Optional[torch.Tensor] = None,
         upper_bounds: Optional[torch.Tensor] = None,
-        generator: Optional[torch.Generator] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Sample random trajectory windows with scale-to-fit transformation.
-        """
-        assert window_size <= self.metadata.trajectory_length
+    ) -> torch.Tensor:
+        """Compute boundary-aware velocity scale factors for position windows."""
         if lower_bounds is None or upper_bounds is None:
             assert map_bounds is not None, (
                 "map_bounds is required unless explicit lower_bounds and "
                 "upper_bounds are provided"
             )
-        
-        # Random trajectory indices
-        traj_indices = torch.randint(
-            0,
-            self.metadata.num_trajectories,
-            (batch_size,),
-            device=self.device,
-            generator=generator,
-        )
-        
-        # Random start offsets
-        max_offset = self.metadata.trajectory_length - window_size
-        start_offsets = torch.randint(
-            0,
-            max_offset + 1,
-            (batch_size,),
-            device=self.device,
-            generator=generator,
-        )
-        
-        # Load full trajectories (from memory)
-        full_velocities, full_positions = self._get_from_cache_or_load(traj_indices)
-        
-        # Extract position windows
-        window_indices = start_offsets.unsqueeze(1) + torch.arange(
-            window_size, device=self.device
-        ).unsqueeze(0)  # (B, window_size)
-        
-        positions_window = torch.gather(
-            full_positions,
-            dim=1,
-            index=window_indices.unsqueeze(-1).expand(-1, -1, 3)
-        )  # (B, window_size, 3)
-        
-        # Compute window bboxes (relative to window's start position)
+
         positions_relative = positions_window - positions_window[:, 0:1, :]
-        bbox_min = positions_relative.min(dim=1).values   # (B, 3) <= 0 along an axis
-        bbox_max = positions_relative.max(dim=1).values   # (B, 3) >= 0 along an axis
+        bbox_min = positions_relative.min(dim=1).values
+        bbox_max = positions_relative.max(dim=1).values
 
         if lower_bounds is None or upper_bounds is None:
             map_bounds = map_bounds.to(device=start_pos.device, dtype=start_pos.dtype)
@@ -331,25 +333,14 @@ class TrajectoryDataset:
         lower_vec = lower_vec.expand_as(start_pos)
         upper_vec = upper_vec.expand_as(start_pos)
 
-        # === Available room for the window, evaluated separately per direction ===
-        # The sampled relative position trace must satisfy:
-        #   start_pos + scale * bbox_min >= lower_bound
-        #   start_pos + scale * bbox_max <= upper_bound
-        # For legacy callers, bounds are still derived from map_bounds. For v2
-        # datasets, callers should pass explicit lower/upper sampling bounds so
-        # non-symmetric tunnel-local ranges and z-limits are preserved.
         room_pos = upper_vec - start_pos
         room_neg = start_pos - lower_vec
 
-        # Defensive guard: negative room means start_pos is already outside the
-        # configured sampling bounds. Keep training alive by not constraining that
-        # side of the scale calculation, but warn once because this affects
-        # near-boundary command statistics.
         if ((room_pos < 0) | (room_neg < 0)).any():
             if not getattr(self, "_warned_negative_available", False):
                 import logging
                 logging.getLogger(__name__).warning(
-                    "[trajectory_dataset.sample_scaled] start_pos outside "
+                    "[trajectory_dataset.compute_scale_factors] start_pos outside "
                     "sampling bounds along some axis (room_pos or room_neg < 0). "
                     "bounds_source=%s start_pos[0]=%s lower_bounds[0]=%s "
                     "upper_bounds[0]=%s",
@@ -363,39 +354,70 @@ class TrajectoryDataset:
             room_pos = torch.where(room_pos < 0, inf, room_pos)
             room_neg = torch.where(room_neg < 0, inf, room_neg)
 
-        # Per-axis scale: limit by both forward and backward extent of the window.
-        # bbox_max >= 0 paired with room_pos; -bbox_min >= 0 paired with room_neg.
         eps = 0.01
         scale_fwd = room_pos / bbox_max.clamp(min=eps)
         scale_bwd = room_neg / (-bbox_min).clamp(min=eps)
-        # If the window does not move at all in a direction (bbox=0), that side
-        # imposes no constraint. clamp(min=eps) above already prevents the div-0
-        # case but artificially limits scale; replace with inf for the trivial
-        # cases where the window has zero excursion in that direction.
         scale_fwd = torch.where(bbox_max <= eps, torch.full_like(scale_fwd, float("inf")), scale_fwd)
         scale_bwd = torch.where((-bbox_min) <= eps, torch.full_like(scale_bwd, float("inf")), scale_bwd)
         scale_per_axis = torch.min(scale_fwd, scale_bwd)
         scale_factors = scale_per_axis.min(dim=1).values
-        scale_factors = scale_factors.clamp(min=self.min_scale_factor, max=2.0)
+        return scale_factors.clamp(min=self.min_scale_factor, max=2.0)
+
+    def sample_scaled(
+        self,
+        batch_size: int,
+        window_size: int,
+        start_pos: torch.Tensor,
+        map_bounds: Optional[torch.Tensor] = None,
+        lower_bounds: Optional[torch.Tensor] = None,
+        upper_bounds: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Sample random trajectory windows with scale-to-fit transformation.
+        """
+        assert window_size <= self.metadata.trajectory_length
+        if lower_bounds is None or upper_bounds is None:
+            assert map_bounds is not None, (
+                "map_bounds is required unless explicit lower_bounds and "
+                "upper_bounds are provided"
+            )
+
+        # Random trajectory indices
+        traj_indices = torch.randint(
+            0,
+            self.metadata.num_trajectories,
+            (batch_size,),
+            device=self.device,
+            generator=generator,
+        )
+
+        # Random start offsets
+        max_offset = self.metadata.trajectory_length - window_size
+        start_offsets = torch.randint(
+            0,
+            max_offset + 1,
+            (batch_size,),
+            device=self.device,
+            generator=generator,
+        )
         
-        # Extract velocity windows
-        velocities = torch.gather(
-            full_velocities,
-            dim=1,
-            index=window_indices.unsqueeze(-1).expand(-1, -1, self.metadata.action_dim)
+        velocities, positions_window = self.get_windows(
+            traj_indices, start_offsets, window_size
+        )
+        scale_factors = self.compute_scale_factors(
+            positions_window,
+            start_pos,
+            map_bounds=map_bounds,
+            lower_bounds=lower_bounds,
+            upper_bounds=upper_bounds,
         )
         
         # Scale velocities
         velocities_scaled = velocities.clone()
         velocities_scaled[..., :3] = velocities[..., :3] * scale_factors.view(-1, 1, 1)
         
-        # Get styles
-        style_indices = traj_indices % self.style_len
-        styles = {
-            'noise_freq': self.styles['noise_freq'][style_indices],
-            'smoothness': self.styles['smoothness'][style_indices],
-            'laziness': self.styles['laziness'][style_indices],
-        }
+        styles = self.get_styles(traj_indices)
         
         return velocities_scaled, scale_factors, styles
     
