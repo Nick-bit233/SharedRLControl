@@ -34,7 +34,7 @@ from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
 from isaacsim.core.utils.viewports import set_camera_view
 
 from src.core.trainning_utils import vec_to_body, vec_to_world
-from src.core.user_model_diverse import UserModelDiverse
+from src.simulated_users.user_model_diverse import UserModelDiverse
 from src.core.profiler import get_profiler
 
 import math

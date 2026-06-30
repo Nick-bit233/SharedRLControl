@@ -97,6 +97,7 @@ docker-compose.override.yml
 
 # Ignore checkpoint and model weights
 ros1/navigation_runner/cfg/ckpts/
+ros1/ckpts
 
 # Ignore Isaac Orbit symlink
 isaac-training/third_party/orbit/_isaac_sim
@@ -116,11 +117,13 @@ isaac-training/third_party/warp/_build/
 
 # Ignore test logs and files
 isaac-training/outputs/
-isaac-training/tests/
+isaac-training/tests/*
+!isaac-training/tests/test_offline_trajectory_playback.py
 isaac-training/figures/
 
 outputs/
 eval_videos/
+eval_outputs/
 
 shared_demos/ckpts/
 shared_demos/drift_analysis_results/

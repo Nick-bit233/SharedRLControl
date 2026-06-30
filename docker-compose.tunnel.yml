@@ -24,7 +24,8 @@ x-tunnel-common: &tunnel-common
     - ./ros1/navigation_runner/cfg:/root/catkin_ws/src/navigation_runner/cfg:rw
     - ./ros1/navigation_runner/launch:/root/catkin_ws/src/navigation_runner/launch:rw
     - ./ros1/navigation_runner/docs:/root/catkin_ws/src/navigation_runner/docs:rw
-    - ./isaac-training/data/trajectories_tunnel.h5:/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5:ro
+    - ./isaac-training/data:/root/catkin_ws/src/navigation_runner/datasets:ro
+    - ./ros1/ckpts:/root/catkin_ws/src/navigation_runner/ckpts:ro
 
     # slope_inspection IPC source. Override SLOPE_INSPECTION_HOST_PATH if needed.
     - ${SLOPE_INSPECTION_HOST_PATH:-../slope_inspection}:/root/slope_ws/src:rw
@@ -32,8 +33,7 @@ x-tunnel-common: &tunnel-common
     - slope_ws_devel:/root/slope_ws/devel
     - slope_ws_install:/root/slope_ws/install
 
-    # RL checkpoints and Gazebo assets
-    - ./isaac-training/outputs:/root/catkin_ws/src/navigation_runner/checkpoints:ro
+    # Gazebo assets
     - ./ros1/uav_simulator/worlds:/root/catkin_ws/src/uav_simulator/worlds:rw
 
     # Persistent experiment outputs
@@ -66,12 +66,12 @@ services:
       - ./ros1/navigation_runner/cfg:/root/catkin_ws/src/navigation_runner/cfg:rw
       - ./ros1/navigation_runner/launch:/root/catkin_ws/src/navigation_runner/launch:rw
       - ./ros1/navigation_runner/docs:/root/catkin_ws/src/navigation_runner/docs:rw
-      - ./isaac-training/data/trajectories_tunnel.h5:/root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5:ro
+      - ./isaac-training/data:/root/catkin_ws/src/navigation_runner/datasets:ro
+      - ./ros1/ckpts:/root/catkin_ws/src/navigation_runner/ckpts:ro
       - ${SLOPE_INSPECTION_HOST_PATH:-../slope_inspection}:/root/slope_ws/src:rw
       - slope_ws_build:/root/slope_ws/build
       - slope_ws_devel:/root/slope_ws/devel
       - slope_ws_install:/root/slope_ws/install
-      - ./isaac-training/outputs:/root/catkin_ws/src/navigation_runner/checkpoints:ro
       - ./ros1/uav_simulator/worlds:/root/catkin_ws/src/uav_simulator/worlds:rw
       - ./ros1/results:/root/results:rw
       - ./ros1/results:/root/catkin_ws/results:rw

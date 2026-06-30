@@ -4,6 +4,10 @@
 
 env_test_mode: False
 
+runtime:
+  # runtime.spec: safety_shield
+  spec: safety_shield
+
 # === Environment Configuration ===
 env:
   num_envs: 256
@@ -43,6 +47,7 @@ algo:
 max_iterations: 20010
 eval_interval: 500
 save_interval: 500
+init_checkpoint: null
 resume_checkpoint: null
 
 # === Curriculum (Phase 2: reg_coeff ramp, final stage only) ===

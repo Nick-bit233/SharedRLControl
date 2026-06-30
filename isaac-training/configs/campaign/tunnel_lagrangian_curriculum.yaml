@@ -1,0 +1,66 @@
+# @package _global_
+
+campaign:
+  name: tunnel_lagrangian_curriculum
+  mode: train_stages
+  checkpoint_policy: best
+  checkpoint_override: init_checkpoint
+  output_root: ./outputs/campaign/tunnel_lagrangian_curriculum
+  stages:
+    - name: stage1
+      overrides:
+        - experiment=tunnel_lagrangian
+        - env.num_obstacles=40
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,16.0]
+        - max_iterations=12010
+        - save_interval=500
+        - curriculum.enable=false
+        - algo.min_concentration=2.0
+        - algo.cost_limit=0.05
+        - algo.lambda_min=0.2
+        - algo.lambda_max=10.0
+        - algo.reg_coeff=0.0
+        - early_stopping.enable=true
+        - early_stopping.patience=5
+        - early_stopping.min_delta=0.10
+        - wandb.name=srlc_tunnel_lagrangian_stage1
+        - job_name=tunnel_lagrangian_stage1
+    - name: stage2
+      init_from_previous: true
+      overrides:
+        - experiment=tunnel_lagrangian
+        - env.num_obstacles=60
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,18.0]
+        - algo.feature_extractor.learning_rate=7e-5
+        - algo.actor.learning_rate=7e-5
+        - algo.critic.learning_rate=7e-5
+        - algo.min_concentration=2.0
+        - max_iterations=12010
+        - save_interval=500
+        - curriculum.enable=false
+        - early_stopping.enable=true
+        - early_stopping.patience=5
+        - early_stopping.min_delta=0.10
+        - wandb.name=srlc_tunnel_lagrangian_stage2
+        - job_name=tunnel_lagrangian_stage2
+    - name: stage3
+      init_from_previous: true
+      overrides:
+        - experiment=tunnel_lagrangian
+        - env.num_obstacles=80
+        - env.obstacle_width_range=[0.4,0.9]
+        - env.obstacle_height_range=[8.0,20.0]
+        - algo.feature_extractor.learning_rate=5e-5
+        - algo.actor.learning_rate=5e-5
+        - algo.critic.learning_rate=5e-5
+        - algo.min_concentration=2.0
+        - max_iterations=20010
+        - save_interval=1000
+        - curriculum.enable=false
+        - early_stopping.enable=true
+        - early_stopping.patience=8
+        - early_stopping.min_delta=0.10
+        - wandb.name=srlc_tunnel_lagrangian_stage3
+        - job_name=tunnel_lagrangian_stage3

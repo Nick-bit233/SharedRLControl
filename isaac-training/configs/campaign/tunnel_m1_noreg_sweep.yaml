@@ -1,0 +1,93 @@
+# @package _global_
+
+campaign:
+  name: tunnel_m1_noreg_sweep
+  mode: train_stages
+  checkpoint_policy: best
+  checkpoint_override: init_checkpoint
+  output_root: ./outputs/campaign/tunnel_m1_noreg_sweep
+  stages:
+    - name: reg_0
+      overrides:
+        - experiment=tunnel
+        - env.num_obstacles=50
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,20.0]
+        - algo.feature_extractor.learning_rate=5e-5
+        - algo.actor.learning_rate=5e-5
+        - algo.critic.learning_rate=5e-5
+        - algo.min_concentration=2.0
+        - algo.reg_coeff=0.0
+        - max_iterations=6010
+        - eval_interval=500
+        - save_interval=1000
+        - resume_checkpoint=null
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - wandb.name=tunnel_m1_reg_0
+        - wandb.group=tunnel_m1_noreg_sweep
+        - job_name=tunnel_m1_reg_0
+    - name: reg_0_001
+      overrides:
+        - experiment=tunnel
+        - env.num_obstacles=50
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,20.0]
+        - algo.feature_extractor.learning_rate=5e-5
+        - algo.actor.learning_rate=5e-5
+        - algo.critic.learning_rate=5e-5
+        - algo.min_concentration=2.0
+        - algo.reg_coeff=0.001
+        - max_iterations=6010
+        - eval_interval=500
+        - save_interval=1000
+        - resume_checkpoint=null
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - wandb.name=tunnel_m1_reg_0_001
+        - wandb.group=tunnel_m1_noreg_sweep
+        - job_name=tunnel_m1_reg_0_001
+    - name: reg_0_005
+      overrides:
+        - experiment=tunnel
+        - env.num_obstacles=50
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,20.0]
+        - algo.feature_extractor.learning_rate=5e-5
+        - algo.actor.learning_rate=5e-5
+        - algo.critic.learning_rate=5e-5
+        - algo.min_concentration=2.0
+        - algo.reg_coeff=0.005
+        - max_iterations=6010
+        - eval_interval=500
+        - save_interval=1000
+        - resume_checkpoint=null
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - wandb.name=tunnel_m1_reg_0_005
+        - wandb.group=tunnel_m1_noreg_sweep
+        - job_name=tunnel_m1_reg_0_005
+    - name: reg_0_01
+      overrides:
+        - experiment=tunnel
+        - env.num_obstacles=50
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,20.0]
+        - algo.feature_extractor.learning_rate=5e-5
+        - algo.actor.learning_rate=5e-5
+        - algo.critic.learning_rate=5e-5
+        - algo.min_concentration=2.0
+        - algo.reg_coeff=0.01
+        - max_iterations=6010
+        - eval_interval=500
+        - save_interval=1000
+        - resume_checkpoint=null
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - wandb.name=tunnel_m1_reg_0_01
+        - wandb.group=tunnel_m1_noreg_sweep
+        - job_name=tunnel_m1_reg_0_01

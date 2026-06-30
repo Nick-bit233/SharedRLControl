@@ -12,6 +12,9 @@ Usage: swap import in train.py:
     from src.algos.ppo_constrained_beta import ConstrainedResidualPPO_Beta as ConstrainedResidualPPO
 """
 
+from collections import OrderedDict
+from itertools import chain
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -296,6 +299,11 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         
         # Residual regularization coefficient
         self.reg_coeff = cfg.get("reg_coeff", 0.01)
+        risk_reg_cfg = cfg.get("risk_regularization", {})
+        self.use_risk_regularization = bool(risk_reg_cfg.get("enable", False))
+        self.risk_reg_g_safe = float(risk_reg_cfg.get("g_safe", 1.0))
+        self.risk_reg_g_danger = float(risk_reg_cfg.get("g_danger", 0.05))
+        self.risk_reg_power = float(risk_reg_cfg.get("power", 1.0))
         self.policy_mode = cfg.get("policy_mode", "residual")
         if self.policy_mode not in ("residual", "direct"):
             raise ValueError("algo.policy_mode must be either 'residual' or 'direct'")
@@ -309,6 +317,9 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
 
         # Check if lidar is present
         self.has_lidar = "lidar" in observation_spec["agents", "observation"]
+        self.has_critic_privileged = (
+            "critic_privileged" in observation_spec["agents", "observation"]
+        )
         
         modules = []
         cat_keys = []
@@ -417,9 +428,35 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             log_prob_key="sample_log_prob"
         ).to(self.device)
 
-        # Critic network (identical to TanhNormal version)
+        self.critic_feature_extractor = None
+        critic_in_key = "_feature"
+        if self.has_critic_privileged:
+            privileged_dim = observation_spec[
+                "agents", "observation", "critic_privileged"
+            ].shape[-1]
+            critic_input_dim = 256 + privileged_dim
+            self.critic_feature_extractor = TensorDictSequential(
+                CatTensors(
+                    in_keys=["_feature", ("agents", "observation", "critic_privileged")],
+                    out_key="_critic_inputs",
+                    del_keys=False,
+                ),
+                TensorDictModule(
+                    nn.LayerNorm(critic_input_dim, eps=NORM_EPS),
+                    in_keys=["_critic_inputs"],
+                    out_keys=["_critic_inputs_norm"],
+                ),
+                TensorDictModule(
+                    make_mlp([256]),
+                    ["_critic_inputs_norm"],
+                    ["_critic_feature"],
+                ),
+            ).to(self.device)
+            critic_in_key = "_critic_feature"
+
+        # Critic network (optional privileged branch; actor path stays unchanged)
         self.critic = TensorDictModule(
-            nn.LazyLinear(1), ["_feature"], ["state_value"] 
+            nn.LazyLinear(1), [critic_in_key], ["state_value"]
         ).to(self.device)
         self.value_norm = ValueNorm(1).to(self.device)
 
@@ -430,7 +467,10 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         # Optimizer
         self.feature_extractor_optim = torch.optim.Adam(self.feature_extractor.parameters(), lr=cfg.feature_extractor.learning_rate)
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor.learning_rate)
-        self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.actor.learning_rate)
+        critic_params = self.critic.parameters()
+        if self.critic_feature_extractor is not None:
+            critic_params = chain(self.critic_feature_extractor.parameters(), critic_params)
+        self.critic_optim = torch.optim.Adam(critic_params, lr=cfg.critic.learning_rate)
 
         # Dummy Input for lazy modules
         dummy_input = observation_spec.zero()
@@ -455,6 +495,8 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
 
         self.feature_extractor.apply(init_) 
         self.actor.apply(init_)
+        if self.critic_feature_extractor is not None:
+            self.critic_feature_extractor.apply(init_)
         self.critic.apply(init_)
 
         # Last-layer initialization:
@@ -466,6 +508,34 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
                 nn.init.constant_(module.bias, 0.)
 
         self.actor_net.module[-1].apply(init_beta_output)
+
+    @staticmethod
+    def _upgrade_legacy_state_dict_keys(state_dict):
+        """Map old residual Beta action-module keys to the current module name."""
+        legacy_prefix = "residual_action_module."
+        current_prefix = "action_parameter_module."
+        if not any(key.startswith(legacy_prefix) for key in state_dict):
+            return state_dict
+
+        upgraded = OrderedDict()
+        for key, value in state_dict.items():
+            if key.startswith(legacy_prefix):
+                new_key = current_prefix + key[len(legacy_prefix):]
+                if new_key not in state_dict:
+                    upgraded[new_key] = value
+                continue
+            upgraded[key] = value
+
+        if hasattr(state_dict, "_metadata"):
+            upgraded._metadata = state_dict._metadata
+        return upgraded
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        state_dict = self._upgrade_legacy_state_dict_keys(state_dict)
+        try:
+            return super().load_state_dict(state_dict, strict=strict, assign=assign)
+        except TypeError:
+            return super().load_state_dict(state_dict, strict=strict)
     
     def set_reg_coeff(self, value):
         """Set the residual regularization coefficient (for curriculum)."""
@@ -506,6 +576,7 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
                  raise ValueError("NaN detected in Input: Lidar")
 
         self.feature_extractor(tensordict)
+        self._apply_critic_features(tensordict)
         
         if torch.isnan(tensordict.get("_feature")).any():
             for name, param in self.feature_extractor.named_parameters():
@@ -541,7 +612,8 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         with profiler.timer("ppo/compute_gae"):
             next_tensordict = tensordict["next"]
             with torch.no_grad():
-                self.feature_extractor(next_tensordict) 
+                self.feature_extractor(next_tensordict)
+                self._apply_critic_features(next_tensordict)
                 next_values = self.critic(next_tensordict)["state_value"]
             rewards = tensordict["next", "agents", "reward"]
             dones = tensordict["next", "terminated"]
@@ -593,6 +665,7 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
         
         with profiler.timer("ppo/update/forward"):
             self.feature_extractor(minibatch)
+            self._apply_critic_features(minibatch)
             
             # NaN guard: if feature extractor outputs NaN, skip this minibatch
             features = minibatch.get("_feature")
@@ -628,13 +701,30 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             surr2 = advantage * ratio.clamp(1.-self.cfg.actor.clip_ratio, 1.+self.cfg.actor.clip_ratio)
             actor_loss = -torch.mean(torch.min(surr1, surr2)) * self.action_dim 
 
-            # 3. Regularization Loss — penalize residual deviation from human action.
-            # In direct no-residual mode, _mean_delta is a direct mean logit, not a
-            # residual, so reg_coeff is recorded for parity but has no loss effect.
-            if self.policy_mode == "residual":
-                reg_loss = minibatch["_mean_delta"].pow(2).sum(dim=-1).mean()
+            # 3. Regularization Loss — penalize deviation from human intent.
+            human_action = minibatch[("agents", "observation", "human_action")]
+            human_action_norm = human_action / self.action_limit
+            human_action_01 = ((human_action_norm + 1.0) / 2.0).clamp(0.01, 0.99)
+            reg_gate = torch.ones_like(human_action_01[..., 0])
+            modal_residual = torch.zeros_like(reg_gate)
+            if self.use_risk_regularization:
+                mode_01 = ((action_dist.mode + 1.0) / 2.0).clamp(0.01, 0.99)
+                modal_residual = (mode_01 - human_action_01).pow(2).sum(dim=-1)
+                pilot_risk = minibatch.get(("next", "agents", "pilot_risk_dyn_post"), None)
+                if pilot_risk is None:
+                    raise KeyError("risk_regularization requires next/agents/pilot_risk_dyn_post")
+                pilot_risk = pilot_risk.detach().squeeze(-1).clamp(0.0, 1.0)
+                reg_gate = self.risk_reg_g_danger + (
+                    self.risk_reg_g_safe - self.risk_reg_g_danger
+                ) * (1.0 - pilot_risk).clamp(0.0, 1.0).pow(self.risk_reg_power)
+                reg_loss = (reg_gate * modal_residual).mean()
+            elif self.policy_mode == "residual":
+                modal_residual = minibatch["_mean_delta"].pow(2).sum(dim=-1)
+                reg_loss = modal_residual.mean()
             else:
-                reg_loss = actor_loss.new_zeros(())
+                direct_mean_01 = torch.sigmoid(minibatch["_mean_delta"]).clamp(0.01, 0.99)
+                modal_residual = (direct_mean_01 - human_action_01).pow(2).sum(dim=-1)
+                reg_loss = modal_residual.mean()
 
             # 4. Policy Loss
             loss_pi = actor_loss + self.reg_coeff * reg_loss
@@ -667,7 +757,16 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
 
             feature_extractor_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.feature_extractor.parameters(), max_norm=5.)
             actor_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.actor.parameters(), max_norm=5.) 
-            critic_grad_norm = nn.utils.clip_grad.clip_grad_norm_(self.critic.parameters(), max_norm=5.)
+            critic_params_for_clip = self.critic.parameters()
+            if self.critic_feature_extractor is not None:
+                critic_grad_norm = nn.utils.clip_grad.clip_grad_norm_(
+                    chain(self.critic_feature_extractor.parameters(), critic_params_for_clip),
+                    max_norm=5.,
+                )
+            else:
+                critic_grad_norm = nn.utils.clip_grad.clip_grad_norm_(
+                    critic_params_for_clip, max_norm=5.
+                )
             
             self.feature_extractor_optim.step()
             self.actor_optim.step()
@@ -680,6 +779,8 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
                 "critic_loss": critic_loss,
                 "entropy": entropy_loss,
                 "reg_loss": reg_loss,
+                "reg_gate": reg_gate.mean(),
+                "modal_residual": modal_residual.mean(),
                 "actor_grad_norm": actor_grad_norm,
                 "critic_grad_norm": critic_grad_norm,
                 "explained_var": explained_var
@@ -687,9 +788,14 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
     
     def _has_nan_gradients(self):
         """Check if any parameter gradient contains NaN."""
-        for param_group in [self.feature_extractor.parameters(), 
-                           self.actor.parameters(), 
-                           self.critic.parameters()]:
+        param_groups = [
+            self.feature_extractor.parameters(),
+            self.actor.parameters(),
+            self.critic.parameters(),
+        ]
+        if self.critic_feature_extractor is not None:
+            param_groups.append(self.critic_feature_extractor.parameters())
+        for param_group in param_groups:
             for p in param_group:
                 if p.grad is not None and torch.isnan(p.grad).any():
                     return True
@@ -702,7 +808,13 @@ class ConstrainedResidualPPO_Beta(TensorDictModuleBase):
             "critic_loss": torch.tensor(float('nan')),
             "entropy": torch.tensor(float('nan')),
             "reg_loss": torch.tensor(float('nan')),
+            "reg_gate": torch.tensor(float('nan')),
+            "modal_residual": torch.tensor(float('nan')),
             "actor_grad_norm": torch.tensor(float('nan')),
             "critic_grad_norm": torch.tensor(float('nan')),
             "explained_var": torch.tensor(float('nan')),
         }, [])
+
+    def _apply_critic_features(self, tensordict):
+        if self.critic_feature_extractor is not None:
+            self.critic_feature_extractor(tensordict)

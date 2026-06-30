@@ -1,0 +1,27 @@
+# @package _global_
+
+defaults:
+  - /trajectory_gen
+  - _self_
+
+output_path: "${hydra:runtime.cwd}/data/user_inputs/intent_pilot_v1.h5"
+
+generator:
+  kind: intent_pilot
+  experiment: tunnel_intent
+  assistant_policy: zero
+  num_obstacles: 24
+  record_privileged: false
+
+backend: batched
+device: "cuda:0"
+num_trajectories: 100000
+trajectory_length: 4096
+action_dim: 3
+batch_size: 1024
+
+reference_map_bounds: [12.0, 6.0, 5.0]
+
+metadata:
+  env_family: tunnel
+  action_frame: body

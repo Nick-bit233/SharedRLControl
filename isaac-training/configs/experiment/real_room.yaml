@@ -1,0 +1,124 @@
+# @package _global_
+
+env_test_mode: False
+
+runtime:
+  # runtime.spec: tunnel
+  spec: tunnel
+
+env:
+  name: real_room
+  num_envs: 1024
+  max_episode_length: 500
+  num_obstacles: 8
+  env_spacing: 8.0
+  map_range: [3.0, 3.5, 2.5]  # [Isaac-y half, Isaac-x half, z max]
+  room_size: [7.0, 6.0, 2.5]  # top-view map radius: x=3.5m, y=3.0m
+  start_pos: [-3.0, 0.0, 1.2]
+  target_height: 1.2
+  success_x: 3.0
+  boundary_buffer:
+    x: 1.0
+    y: 1.0
+    z: 0.5
+  start_y_randomization: 0.0
+  platform_width: 0.0
+  enable_lidar: True
+  enable_task_reward: True
+  fixed_obstacles:
+    radius_range: [0.10, 0.15]
+    height_range: [1.8, 2.4]
+    include_origin: False
+    origin: [0.0, 0.0]
+    # Estimated from experiments/04_real_room_task/real_rom_map.jpg:
+    # image origin is the orange center mark; +x is right, +y is up.
+    centers:
+      - [0.05, 2.15]
+      - [1.62, 1.75]
+      - [2.50, 0.62]
+      - [-0.25, 0.00]
+      - [1.12, 0.0]
+      - [2.50, -0.62]
+      - [1.62, -1.75]
+      - [0.05, -2.15]
+  reward:
+    enable_following: True
+    enable_safety: True
+    enable_survival: True
+    enable_smoothness: True
+    safety_dist_scale: 0.45
+    safe_zone: 1.5
+    safety_weight: 3.0
+    collision_distance: 0.18
+    progress_weight: 0.15
+    success_bonus: 5.0
+    height_tolerance: 0.25
+    height_penalty_weight: 12.0
+    smoothness_weight: 0.4
+
+env_dyn:
+  num_obstacles: 0
+
+algo:
+  rnn:
+    enable: False
+  training_frame_num: 128
+  reg_coeff: 0.01
+  min_concentration: 2.0
+
+max_iterations: 10010
+eval_interval: 200
+save_interval: 200
+resume_checkpoint: null
+init_checkpoint: null
+
+curriculum:
+  enable: False
+  check_interval: 50
+  ema_alpha: 0.1
+  promotion_threshold: 0.85
+  demotion_threshold: 0.70
+  patience: 4
+  initial_reg_coeff: 0.01
+  max_reg_coeff: 0.05
+  reg_step: 0.005
+
+early_stopping:
+  enable: False
+  patience: 6
+  min_delta: 0.10
+
+user_model:
+  style:
+    frequency_base: 0.12
+    frequency_scale: 0.05
+    smoothness_base: 0.70
+    smoothness_scale: 0.25
+    laziness: 0.1
+  simple_mode: False
+  z_tilt_compensation: 0.0
+  forward_speed: 1.2
+  lateral_speed_limit: 0.45
+  boundary_aware_y: True
+  y_boundary_margin: 0.5
+  max_noise_freq: 0.20
+
+record_video: True
+global_view: True
+eval_visualization: True
+viewer:
+  eye: [0., -2., 2.]
+  lookat: [0., 0., 1.2]
+  resolution: [960, 720]
+
+hydra:
+  run:
+    dir: ./outputs/real_room/${now:%Y-%m-%d_%H-%M-%S}
+
+wandb:
+  project: SRLC
+  name: srlc_real_room
+  group: null
+  mode: online
+
+job_name: real_room

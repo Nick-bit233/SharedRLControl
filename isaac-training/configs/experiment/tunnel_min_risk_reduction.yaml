@@ -1,0 +1,153 @@
+# @package _global_
+
+env_test_mode: False
+
+runtime:
+  spec: tunnel_min_risk_reduction
+
+env:
+  num_envs: 1024
+  max_episode_length: 1500
+  num_obstacles: 50
+  obstacle_width_range: [0.4, 1.1]
+  obstacle_height_range: [8.0, 20.0]
+  env_spacing: 8.0
+  map_range: [6.0, 12.0, 5.0]
+  platform_width: 4.0
+  enable_lidar: True
+  enable_task_reward: True
+  reward:
+    enable_following: true
+    enable_safety: true
+    enable_survival: true
+    enable_smoothness: true
+    progress_weight: 0.0
+    safety_weight: 3.0
+    smoothness_weight: 0.5
+    height_penalty_weight: 10.0
+  dynamic_risk:
+    mode: full
+    estimator: simple_lidar
+    legacy_safety_scale: 0.0
+    model:
+      dt_risk: 0.05
+      T_horizon: 1.5
+      tau_delay: 0.2
+      tau_v: 0.4
+      a_max: 1.5
+      v_max: 2.0
+      r_uav: 0.3
+      margin_static: 0.15
+      margin_speed: 0.08
+      margin_time: 0.03
+      risk_temperature: 0.12
+    simple:
+      lidar_range: 4.0
+      d_safe: 0.5
+      distance_temperature: 0.10
+      cone_half_angle_deg: 25.0
+      angular_power: 2.0
+      ttc_safe: 1.0
+      ttc_temperature: 0.25
+      min_speed: 0.10
+      min_closing_speed: 0.15
+      closing_speed_temperature: 0.08
+      side_distance_trigger: 1.0
+      side_distance_temperature: 0.20
+      side_ttc_safe: 0.8
+      side_ttc_temperature: 0.30
+      hit_epsilon: 0.02
+    reward:
+      w_delta_rho: 0.0
+      w_worse: 1.5
+      w_abs: 0.4
+      w_delay: 0.3
+      alpha_f: 0.5
+      g_min: 0.35
+    metrics:
+      rho_safe: 0.2
+      rho_danger: 0.7
+      epsilon_delta: 0.05
+
+env_dyn:
+  num_obstacles: 0
+
+algo:
+  rnn:
+    enable: False
+  training_frame_num: 128
+  num_minibatches: 64
+  reg_coeff: 0.1
+  risk_regularization:
+    enable: true
+    g_safe: 1.0
+    g_danger: 0.05
+    power: 1.0
+
+max_iterations: 1003
+eval_interval: 0
+save_interval: 100
+init_checkpoint: null
+resume_checkpoint: null
+
+train_eval:
+  enable: false
+  interval: 100
+  checkpoint_scoring: false
+
+curriculum:
+  enable: False
+  check_interval: 50
+  ema_alpha: 0.1
+  promotion_threshold: 0.90
+  demotion_threshold: 0.70
+  patience: 3
+  initial_reg_coeff: 0.005
+  max_reg_coeff: 0.3
+  reg_step: 0.03
+
+early_stopping:
+  enable: False
+  patience: 5
+  min_delta: 0.10
+
+user_model:
+  offline_mode: true
+  dataset_path: ${hydra:runtime.cwd}/data/user_inputs/tunnel_perlin_bounded_v2.h5
+  sampling_mode: scaled
+  # Explicit v2 sampling bounds. These replace the legacy sample_scaled
+  # z convention [1.0, 2 * map_range_z] and keep training-time command
+  # scaling aligned with the bounded tunnel dataset.
+  sampling_bounds:
+    x: [-8.0, 12.0]
+    y: [-5.0, 5.0]
+    z: [2.5, 7.5]
+  # Expand only z during runtime scaling so near-failure low-altitude states can
+  # still receive bounded recovery commands instead of triggering outside-bound
+  # warnings immediately below z=2.5.
+  sampling_bounds_expansion:
+    x: 0.0
+    y: 0.0
+    z: 2.0
+  gpu_cache_reserve_gb: 2.0
+  min_scale_factor: 0.5
+  preload_data: true
+
+record_video: True
+global_view: True
+viewer:
+  eye: [0., 0., 3.]
+  lookat: [0., 0, 1.]
+  resolution: [960, 720]
+
+hydra:
+  run:
+    dir: ./outputs/tunnel_min_risk_reduction/${now:%Y-%m-%d_%H-%M-%S}
+
+wandb:
+  project: SRLC
+  name: srlc_tunnel_min_risk_reduction
+  group: null
+  mode: online
+
+job_name: tunnel_min_risk_reduction

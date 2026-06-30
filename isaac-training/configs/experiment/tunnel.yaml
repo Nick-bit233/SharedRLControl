@@ -3,15 +3,26 @@
 env_test_mode: False
 
 # === Environment Configuration ===
+runtime:
+  # runtime.spec: tunnel
+  spec: tunnel
+
 env:
   num_envs: 256
   max_episode_length: 1500
   num_obstacles: 50  # Reduced from 150 for initial training (increase after collision rate drops)
+  obstacle_width_range: [0.4, 1.1]
+  obstacle_height_range: [8.0, 20.0]
   env_spacing: 8.0
   map_range: [6.0, 12.0, 5.0]  # [x, y, z], half extents -> [y, x, z] in isaacsim coordinates
   platform_width: 4.0
   enable_lidar: True
   enable_task_reward: True
+  reward:
+    enable_following: true
+    enable_safety: true
+    enable_survival: true
+    enable_smoothness: true
 
 env_dyn:
   num_obstacles: 0
@@ -32,6 +43,7 @@ algo:
 max_iterations: 20010
 eval_interval: 1000
 save_interval: 1000
+init_checkpoint: null
 resume_checkpoint: null
 
 # === Curriculum (Phase 2: reg_coeff ramp, only used in final stage) ===
@@ -54,13 +66,19 @@ early_stopping:
 
 # === User Model ===
 user_model:
+  offline_mode: true
+  dataset_path: ${hydra:runtime.cwd}/data/trajectories_tunnel.h5
+  sampling_mode: scaled        # boundary-aware, keeps tunnel feasibility
+  gpu_cache_reserve_gb: 2.0
+  min_scale_factor: 0.5
+  preload_data: true
 
-  style:
-    frequency_base: 0.1  # base frequency for user command changes
-    frequency_scale: 0.3  # scale for randomizing frequency
+  # style:
+  #   frequency_base: 0.1  # base frequency for user command changes
+  #   frequency_scale: 0.3  # scale for randomizing frequency
 
-  simple_mode: False
-  z_tilt_compensation: 0.0
+  # simple_mode: False
+  # z_tilt_compensation: 0.0
 
 # === Visualization ===
 record_video: True

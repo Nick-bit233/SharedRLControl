@@ -1,0 +1,101 @@
+# @package _global_
+
+env_test_mode: False
+
+runtime:
+  # runtime.spec: tunnel_intent
+  spec: tunnel_intent
+
+# === Environment Configuration ===
+env:
+  num_envs: 256
+  max_episode_length: 1500
+  num_obstacles: 50  # Reduced from 150 for initial training (increase after collision rate drops)
+  obstacle_width_range: [0.4, 1.1]
+  obstacle_height_range: [8.0, 20.0]
+  env_spacing: 8.0
+  map_range: [6.0, 12.0, 5.0]  # [x, y, z], half extents -> [y, x, z] in isaacsim coordinates
+  platform_width: 4.0
+  enable_lidar: True
+  intent_safe_dist: 3.5
+  reward_weights:
+    intent_match: 2.5
+    safety: 4.0
+    minimal_intervention: 1.25
+    smoothness: 0.5
+    height: 10.0
+    survival: 0.2
+    crash: -10.0
+
+env_dyn:
+  num_obstacles: 0
+
+# === Algorithm Configuration ===
+algo:
+  rnn:
+    enable: False
+  training_frame_num: 128 # frames per batch
+  
+  # === Regularization ===
+  # Fixed residual regularization coefficient (replaces Lagrange mechanism).
+  # Small value: allows policy to produce large corrections for safety.
+  # Increase later via curriculum to enforce human-following.
+  reg_coeff: 0.01
+
+# === Training Loop ===
+max_iterations: 20010
+eval_interval: 1000
+save_interval: 1000
+init_checkpoint: null
+resume_checkpoint: null
+
+# === Curriculum (Phase 2: reg_coeff ramp, only used in final stage) ===
+curriculum:
+  enable: False
+  check_interval: 50
+  ema_alpha: 0.1
+  promotion_threshold: 0.90
+  demotion_threshold: 0.70
+  patience: 3
+  initial_reg_coeff: 0.01
+  max_reg_coeff: 0.3
+  reg_step: 0.03
+
+# === Early Stopping (restore best checkpoint on performance degradation) ===
+early_stopping:
+  enable: True
+  patience: 5       # consecutive eval drops before stopping
+  min_delta: 0.10   # success rate drop from best that counts as degradation
+
+# === User Model ===
+user_model:
+  kind: intent
+  intent:
+    tunnel_mode_prior: [0.80, 0.14, 0.03, 0.03]
+    alpha_range: [0.55, 1.0]
+    wrong_direction_prob_range: [0.0, 0.20]
+    tau_perc_range: [0.05, 0.20]
+    sigma_perc_range: [0.0, 0.20]
+    d_react_range: [1.1, 2.2]
+
+# === Visualization ===
+record_video: True
+global_view: True
+viewer:
+  eye: [0., 0., 3.]
+  lookat: [0., 0, 1.]
+  resolution: [960, 720]
+
+# === Logging ===
+hydra:
+  run:
+    dir: ./outputs/tunnel_intent/${now:%Y-%m-%d_%H-%M-%S}
+
+# === wandb Configuration ===
+wandb:
+  project: SRLC
+  name: srlc_tunnel_intent
+  group: null
+  mode: online
+
+job_name: tunnel_intent

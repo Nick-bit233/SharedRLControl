@@ -1,0 +1,92 @@
+# @package _global_
+
+campaign:
+  name: tunnel_ablation_safety_reg
+  mode: train_stages
+  checkpoint_policy: best
+  checkpoint_override: init_checkpoint
+  output_root: ./outputs/campaign/tunnel_ablation_safety_reg
+  stages:
+    - name: stage1
+      overrides:
+        - experiment=tunnel
+        - env.num_envs=1024
+        - env.num_obstacles=30
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,16.0]
+        - env.reward.enable_following=false
+        - env.reward.enable_safety=true
+        - env.reward.enable_survival=true
+        - env.reward.enable_smoothness=true
+        - algo.policy_mode=residual
+        - algo.reg_coeff=0.005
+        - algo.num_minibatches=64
+        - algo.feature_extractor.learning_rate=5e-5
+        - algo.actor.learning_rate=5e-5
+        - algo.critic.learning_rate=5e-5
+        - algo.min_concentration=2.0
+        - max_iterations=3003
+        - eval_interval=125
+        - save_interval=125
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - wandb.name=tunnel_ablation_safety_reg_stage1
+        - wandb.group=tunnel_ablation
+        - job_name=tunnel_ablation_safety_reg_stage1
+    - name: stage2
+      init_from_previous: true
+      overrides:
+        - experiment=tunnel
+        - env.num_envs=1024
+        - env.num_obstacles=50
+        - env.obstacle_width_range=[0.4,0.8]
+        - env.obstacle_height_range=[8.0,16.0]
+        - env.reward.enable_following=false
+        - env.reward.enable_safety=true
+        - env.reward.enable_survival=true
+        - env.reward.enable_smoothness=true
+        - algo.policy_mode=residual
+        - algo.reg_coeff=0.005
+        - algo.num_minibatches=64
+        - algo.feature_extractor.learning_rate=7e-5
+        - algo.actor.learning_rate=7e-5
+        - algo.critic.learning_rate=7e-5
+        - algo.min_concentration=2.0
+        - max_iterations=3003
+        - eval_interval=125
+        - save_interval=125
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - wandb.name=tunnel_ablation_safety_reg_stage2
+        - wandb.group=tunnel_ablation
+        - job_name=tunnel_ablation_safety_reg_stage2
+    - name: stage3
+      init_from_previous: true
+      overrides:
+        - experiment=tunnel
+        - env.num_envs=1024
+        - env.num_obstacles=80
+        - env.obstacle_width_range=[0.4,0.9]
+        - env.obstacle_height_range=[8.0,18.0]
+        - env.reward.enable_following=false
+        - env.reward.enable_safety=true
+        - env.reward.enable_survival=true
+        - env.reward.enable_smoothness=true
+        - algo.policy_mode=residual
+        - algo.reg_coeff=0.005
+        - algo.num_minibatches=64
+        - algo.feature_extractor.learning_rate=5e-5
+        - algo.actor.learning_rate=5e-5
+        - algo.critic.learning_rate=5e-5
+        - algo.min_concentration=2.0
+        - max_iterations=5003
+        - eval_interval=125
+        - save_interval=250
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - wandb.name=tunnel_ablation_safety_reg_stage3
+        - wandb.group=tunnel_ablation
+        - job_name=tunnel_ablation_safety_reg_stage3

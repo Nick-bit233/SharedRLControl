@@ -6,6 +6,7 @@ defaults:
   - /task/sim@_global_
   - /task/user_model@_global_
   - optional experiment: null
+  - optional campaign: null
 
 # Global Configurations
 headless: True
@@ -16,12 +17,43 @@ enable_yaw_control: false
 
 # Training Length (can be overridden by experiment configs)
 max_iterations: 1e6 # Total number of batches
-eval_interval: 1000
+eval_interval: 0
 save_interval: 1000
 
-# Evaluation Settings
+# Train-time evaluation is disabled by default. Use post-hoc eval from a fresh
+# process for model selection, or explicitly enable this block for legacy runs.
+train_eval:
+  enable: false
+  interval: 1000
+  checkpoint_scoring: false
+
+# Standalone evaluation settings used by experiments/eval.py.
 eval_visualization: true  
 record_video: false
+eval:
+  checkpoint: null
+  output_dir: ./eval_outputs
+  seed: 42
+  num_envs: 4
+  record_video: true
+  global_view: false
+  keep_num_envs: false
+  grid: null
+  trace:
+    enable: false
+    save_npz: true
+    plot: true
+    selection: diagnostic
+    env_ids: null
+    max_episodes: 6
+    risk_key: assist_risk_dyn_full
+    include_lidar_min_distance: true
+    plot_dir: plots
+
+early_stopping:
+  enable: false
+  patience: 5
+  min_delta: 0.10
 
 # Hydra Configuration associated with this
 hydra:

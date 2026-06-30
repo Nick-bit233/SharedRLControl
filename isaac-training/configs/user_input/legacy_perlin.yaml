@@ -1,0 +1,23 @@
+# @package _global_
+
+defaults:
+  - /trajectory_gen
+  - _self_
+
+output_path: "${hydra:runtime.cwd}/data/user_inputs/legacy_perlin_v1.h5"
+
+generator:
+  kind: legacy_perlin
+
+backend: batched
+device: "cuda:0"
+num_trajectories: 100000
+trajectory_length: 4096
+action_dim: 3
+batch_size: 1024
+
+reference_map_bounds: [20.0, 20.0, 5.0]
+
+metadata:
+  env_family: tunnel
+  action_frame: body

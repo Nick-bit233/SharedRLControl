@@ -1,0 +1,88 @@
+# @package _global_
+
+campaign:
+  name: tunnel_min_risk_reduction_three_stage
+  mode: train_stages
+  checkpoint_policy: final
+  checkpoint_override: init_checkpoint
+  output_root: ./outputs/campaign/tunnel_min_risk_reduction_three_stage
+  stages:
+    - name: stage1_bootstrap_obs30
+      overrides:
+        - experiment=tunnel_min_risk_reduction
+        - env.num_envs=1024
+        - env.num_obstacles=30
+        - algo.reg_coeff=0.05
+        - algo.risk_regularization.enable=true
+        - algo.risk_regularization.g_safe=1.0
+        - algo.risk_regularization.g_danger=0.03
+        - algo.risk_regularization.power=1.0
+        - algo.training_frame_num=128
+        - algo.entropy_loss_coefficient=1e-3
+        - algo.num_minibatches=64
+        - max_iterations=803
+        - eval_interval=0
+        - save_interval=200
+        - train_eval.enable=false
+        - train_eval.checkpoint_scoring=false
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - eval.record_video=false
+        - wandb.name=tunnel_min_risk_stage1_bootstrap_obs30
+        - wandb.group=tunnel_min_risk_three_stage
+        - job_name=tunnel_min_risk_stage1_bootstrap_obs30
+
+    - name: stage2_target_obs50
+      init_from_previous: true
+      overrides:
+        - experiment=tunnel_min_risk_reduction
+        - env.num_envs=1024
+        - env.num_obstacles=50
+        - algo.reg_coeff=0.10
+        - algo.risk_regularization.enable=true
+        - algo.risk_regularization.g_safe=1.0
+        - algo.risk_regularization.g_danger=0.025
+        - algo.risk_regularization.power=1.5
+        - algo.training_frame_num=128
+        - algo.entropy_loss_coefficient=1e-3
+        - algo.num_minibatches=64
+        - max_iterations=1203
+        - eval_interval=0
+        - save_interval=300
+        - train_eval.enable=false
+        - train_eval.checkpoint_scoring=false
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - eval.record_video=false
+        - wandb.name=tunnel_min_risk_stage2_target_obs50
+        - wandb.group=tunnel_min_risk_three_stage
+        - job_name=tunnel_min_risk_stage2_target_obs50
+
+    - name: stage3_stabilize_obs50
+      init_from_previous: true
+      overrides:
+        - experiment=tunnel_min_risk_reduction
+        - env.num_envs=1024
+        - env.num_obstacles=50
+        - algo.reg_coeff=0.20
+        - algo.risk_regularization.enable=true
+        - algo.risk_regularization.g_safe=1.0
+        - algo.risk_regularization.g_danger=0.025
+        - algo.risk_regularization.power=2.0
+        - algo.training_frame_num=256
+        - algo.entropy_loss_coefficient=5e-4
+        - algo.num_minibatches=64
+        - max_iterations=1203
+        - eval_interval=0
+        - save_interval=300
+        - train_eval.enable=false
+        - train_eval.checkpoint_scoring=false
+        - curriculum.enable=false
+        - early_stopping.enable=false
+        - record_video=false
+        - eval.record_video=false
+        - wandb.name=tunnel_min_risk_stage3_stabilize_obs50
+        - wandb.group=tunnel_min_risk_three_stage
+        - job_name=tunnel_min_risk_stage3_stabilize_obs50

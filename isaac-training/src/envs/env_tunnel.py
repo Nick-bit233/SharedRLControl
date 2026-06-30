@@ -32,9 +32,11 @@ from isaaclab.terrains.height_field import hf_terrains
 from isaaclab.terrains.height_field.utils import height_field_to_mesh
 
 from src.core.trainning_utils import vec_to_body, vec_to_world
-from src.core.user_model_tunnely import UserModelTunnel
+from src.simulated_users.user_model_tunnely import UserModelTunnel
 from src.core.profiler import get_profiler
 from src.datasets.trajectory_dataset import TrajectoryDataset
+from src.envs.dynamic_risk import compute_dynamic_command_risk
+from src.envs.simple_risk import compute_simple_lidar_command_risk
 
 @height_field_to_mesh
 def tunnel_obstacles_terrain(difficulty: float, cfg: HfDiscreteObstaclesTerrainCfg) -> np.ndarray:
@@ -80,6 +82,48 @@ class HfTunnelObstaclesTerrainCfg(HfDiscreteObstaclesTerrainCfg):
     function = tunnel_obstacles_terrain
 
 
+@height_field_to_mesh
+def real_room_obstacles_terrain(difficulty: float, cfg: HfDiscreteObstaclesTerrainCfg) -> np.ndarray:
+    """Deterministic flat room terrain with fixed cylindrical obstacle footprints."""
+    size_x, size_y = cfg.size
+    horizontal_scale = cfg.horizontal_scale
+    vertical_scale = cfg.vertical_scale
+    rows = int(size_x / horizontal_scale)
+    cols = int(size_y / horizontal_scale)
+    hf_raw = np.zeros((rows, cols), dtype=np.int16)
+
+    centers = getattr(cfg, "obstacle_centers", ())
+    radius_range = tuple(getattr(cfg, "obstacle_radius_range", (0.1, 0.15)))
+    height_range = tuple(getattr(cfg, "obstacle_height_range", (1.8, 2.4)))
+    if not centers:
+        return hf_raw
+
+    xs = np.arange(rows, dtype=np.float32) * horizontal_scale - size_x / 2.0
+    ys = np.arange(cols, dtype=np.float32) * horizontal_scale - size_y / 2.0
+    grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
+
+    radius_min, radius_max = radius_range
+    height_min, height_max = height_range
+    denom = max(len(centers) - 1, 1)
+    for idx, center in enumerate(centers):
+        cx, cy = float(center[0]), float(center[1])
+        ratio = float(idx % (denom + 1)) / denom
+        radius = radius_min + (radius_max - radius_min) * ratio
+        height = height_min + (height_max - height_min) * ratio
+        mask = (grid_x - cx) ** 2 + (grid_y - cy) ** 2 <= radius ** 2
+        hf_raw[mask] = np.maximum(hf_raw[mask], int(height / vertical_scale))
+
+    return hf_raw
+
+
+@configclass
+class HfRealRoomObstaclesTerrainCfg(HfDiscreteObstaclesTerrainCfg):
+    function = real_room_obstacles_terrain
+    obstacle_centers: tuple = ()
+    obstacle_radius_range: tuple = (0.1, 0.15)
+    obstacle_height_range: tuple = (1.5, 2.4)
+
+
 class EnvTunnelResidual(IsaacEnv):
 
     # In one step:
@@ -100,6 +144,10 @@ class EnvTunnelResidual(IsaacEnv):
 
         # Train task configuration
         self.enable_yaw_control = cfg.get("enable_yaw_control", False)
+        self.env_name = cfg.env.get("name", "tunnel")
+        self.is_real_room = self.env_name == "real_room"
+        self.room_size = list(cfg.env.get("room_size", [6.0, 5.0, 2.5]))
+        self.start_pos_cfg = list(cfg.env.get("start_pos", [-7.0, 0.0, 5.0]))
         if self.enable_yaw_control:
             self.human_action_dim = 4  # (vel_b[3] + yaw_rate[1])
         else:
@@ -141,6 +189,26 @@ class EnvTunnelResidual(IsaacEnv):
         # Backward-compatible alias used by older configs and analysis notes.
         self.enable_task_reward = self.enable_following_reward
 
+        risk_cfg = cfg.env.get("dynamic_risk", {})
+        self.dynamic_risk_mode = str(risk_cfg.get("mode", "off"))
+        self.dynamic_risk_estimator = str(risk_cfg.get("estimator", "legacy_rollout"))
+        self.enable_dynamic_risk = self.dynamic_risk_mode != "off"
+        self.enable_dynamic_risk_reward = self.dynamic_risk_mode in {
+            "hybrid_reward",
+            "dynamic_reward",
+            "full",
+        }
+        self.dynamic_risk_model_cfg = risk_cfg.get("model", {})
+        self.simple_risk_model_cfg = risk_cfg.get("simple", {})
+        self.dynamic_risk_reward_cfg = risk_cfg.get("reward", {})
+        self.dynamic_risk_metrics_cfg = risk_cfg.get("metrics", {})
+        self.legacy_safety_scale = float(
+            risk_cfg.get(
+                "legacy_safety_scale",
+                0.3 if self.dynamic_risk_mode == "hybrid_reward" else 0.0,
+            )
+        )
+
         # User Model Initialization
         # Check for offline mode configuration
         offline_mode = cfg.user_model.get("offline_mode", False)
@@ -172,6 +240,36 @@ class EnvTunnelResidual(IsaacEnv):
             self.prev_human_action = torch.zeros(self.num_envs, 3)
             self.intent_complete_counts = torch.zeros(self.num_envs, 1)
             self.height_range = torch.zeros(self.num_envs, 1, 2)
+            self.issue_position_w = torch.zeros(self.num_envs, 3)
+            self.issue_velocity_w = torch.zeros(self.num_envs, 3)
+            self.issue_human_action_b = torch.zeros(self.num_envs, 3)
+            self.issue_human_action_w = torch.zeros(self.num_envs, 3)
+            self.issue_action_w = torch.zeros(self.num_envs, 3)
+            self.issue_hold_command_w = torch.zeros(self.num_envs, 3)
+            num_lidar_rays = self.lidar_hbeams * self.lidar_vbeams
+            self.issue_ray_dirs_w = torch.zeros(self.num_envs, num_lidar_rays, 3)
+            self.issue_ray_dists = torch.full((self.num_envs, num_lidar_rays), self.lidar_range)
+            self.pilot_risk_dyn_post = torch.zeros(self.num_envs, 1)
+            self.assist_risk_dyn_post = torch.zeros(self.num_envs, 1)
+            self.assist_risk_dyn_full = torch.zeros(self.num_envs, 1)
+            self.delay_risk = torch.zeros(self.num_envs, 1)
+            self.risk_reduction_dyn = torch.zeros(self.num_envs, 1)
+            self.min_clearance_pilot = torch.full((self.num_envs, 1), self.lidar_range)
+            self.min_clearance_assist = torch.full((self.num_envs, 1), self.lidar_range)
+            self.assist_risk_proximity = torch.zeros(self.num_envs, 1)
+            self.assist_risk_velocity = torch.zeros(self.num_envs, 1)
+            self.assist_risk_command = torch.zeros(self.num_envs, 1)
+            self.pilot_risk_command = torch.zeros(self.num_envs, 1)
+            self.follow_gate = torch.ones(self.num_envs, 1)
+            self.modal_residual_norm = torch.zeros(self.num_envs, 1)
+            self.risk_worsening = torch.zeros(self.num_envs, 1)
+            self.intervention = torch.zeros(self.num_envs, 1)
+            self.unnecessary_intervention = torch.zeros(self.num_envs, 1)
+            self.unsafe_non_intervention = torch.zeros(self.num_envs, 1)
+            self.reward_risk_reduce = torch.zeros(self.num_envs, 1)
+            self.reward_risk_worse = torch.zeros(self.num_envs, 1)
+            self.reward_abs_risk = torch.zeros(self.num_envs, 1)
+            self.reward_delay_risk = torch.zeros(self.num_envs, 1)
             # Cumulative following error for early termination
             self.cumulative_error = torch.zeros(self.num_envs, 1)
             self.error_ema_alpha = 0.995  # Exponential moving average decay factor
@@ -189,12 +287,20 @@ class EnvTunnelResidual(IsaacEnv):
         self.viz_traj_agent = []
         self.viz_human_pos = None
 
+    def set_seed(self, seed: int):
+        result = super().set_seed(seed)
+        self.seed = int(seed)
+        if hasattr(self.user_model, "set_eval_seed"):
+            self.user_model.set_eval_seed(self.seed)
+        return result
+
     def _design_scene(self):
         # Init DRONE and CONTROLLER here, default prim path: /World/envs/envs_0
         self.drone, self.controller = MultirotorBase.make(
             self.cfg.drone.model_name, self.cfg.drone.controller_name, self.device
         )
-        drone_prim = self.drone.spawn(translations=[(-7.0, 0.0, 5.0)])[0]
+        initial_translation = tuple(self.start_pos_cfg) if self.is_real_room else (-7.0, 0.0, 5.0)
+        drone_prim = self.drone.spawn(translations=[initial_translation])[0]
 
         # lighting
         light = AssetBaseCfg(
@@ -217,18 +323,56 @@ class EnvTunnelResidual(IsaacEnv):
             restitution=0.0,
         )
 
-        # Terrain generation, as static obstacles
-        terrain_cfg = TerrainImporterCfg(
-            num_envs=self.num_envs,
-            env_spacing=0.0,
-            prim_path="/World/ground",
-            terrain_type="generator",
-            terrain_generator=TerrainGeneratorCfg(
+        if self.is_real_room:
+            fixed_cfg = self.cfg.env.get("fixed_obstacles", {})
+            centers = []
+            for center in fixed_cfg.get("centers", []):
+                centers.append(tuple(float(v) for v in center[:2]))
+            for group in fixed_cfg.get("group_centers", []):
+                for center in group:
+                    centers.append(tuple(float(v) for v in center[:2]))
+            if fixed_cfg.get("include_origin", True):
+                origin = fixed_cfg.get("origin", [0.0, 0.0])
+                centers.append(tuple(float(v) for v in origin[:2]))
+
+            radius_range = tuple(fixed_cfg.get("radius_range", [0.1, 0.15]))
+            height_range = tuple(fixed_cfg.get("height_range", [1.5, 2.4]))
+            terrain_size = (float(self.room_size[0]), float(self.room_size[1]))
+            sub_terrain_cfg = HfRealRoomObstaclesTerrainCfg(
+                size=terrain_size,
+                horizontal_scale=0.05,
+                vertical_scale=0.05,
+                border_width=0.0,
+                num_obstacles=len(centers),
+                obstacle_height_mode="choice",
+                obstacle_width_range=(radius_range[0] * 2.0, radius_range[1] * 2.0),
+                obstacle_height_range=height_range,
+                platform_width=0,
+                obstacle_centers=tuple(centers),
+                obstacle_radius_range=radius_range,
+            )
+            terrain_generator_cfg = TerrainGeneratorCfg(
                 seed=0,
-                size=(24.0, 12.0), 
+                size=terrain_size,
+                border_width=0.0,
+                num_rows=1,
+                num_cols=1,
+                horizontal_scale=0.05,
+                vertical_scale=0.05,
+                slope_threshold=0.75,
+                use_cache=False,
+                color_scheme="height",
+                curriculum=False,
+                difficulty_range=(0.0, 1.0),
+                sub_terrains={"obstacles": sub_terrain_cfg},
+            )
+        else:
+            terrain_generator_cfg = TerrainGeneratorCfg(
+                seed=0,
+                size=(24.0, 12.0),
                 border_width=5.0,
-                num_rows=1, 
-                num_cols=1, 
+                num_rows=1,
+                num_cols=1,
                 horizontal_scale=0.1,
                 vertical_scale=0.1,
                 slope_threshold=0.75,
@@ -249,8 +393,16 @@ class EnvTunnelResidual(IsaacEnv):
                         platform_width=0,
                     ),
                 },
-            ),
-            visual_material = None,
+            )
+
+        # Terrain generation, as static obstacles
+        terrain_cfg = TerrainImporterCfg(
+            num_envs=self.num_envs,
+            env_spacing=0.0,
+            prim_path="/World/ground",
+            terrain_type="generator",
+            terrain_generator=terrain_generator_cfg,
+            visual_material=None,
             max_init_terrain_level=None,
             collision_group=-1,
             debug_vis=False,
@@ -311,7 +463,12 @@ class EnvTunnelResidual(IsaacEnv):
         # Reward Spec
         self.reward_spec = Composite({
             "agents": Composite({
-                "reward": Unbounded((1,))
+                "reward": Unbounded((1,)),
+                "pilot_risk_dyn_post": Unbounded((1,)),
+                "assist_risk_dyn_post": Unbounded((1,)),
+                "assist_risk_dyn_full": Unbounded((1,)),
+                "delay_risk": Unbounded((1,)),
+                "risk_reduction_dyn": Unbounded((1,)),
             })
         }).expand(self.num_envs).to(self.device)
 
@@ -335,11 +492,33 @@ class EnvTunnelResidual(IsaacEnv):
             "debug_pos_world": Unbounded(3),
             "diag_reward": Unbounded(1),
             "diag_reward_task": Unbounded(1),
+            "diag_pilot_risk_dyn_post": Unbounded(1),
+            "diag_assist_risk_dyn_post": Unbounded(1),
+            "diag_assist_risk_dyn_full": Unbounded(1),
+            "diag_delay_risk": Unbounded(1),
+            "diag_risk_reduction_dyn": Unbounded(1),
+            "diag_min_clearance_pilot": Unbounded(1),
+            "diag_min_clearance_assist": Unbounded(1),
+            "diag_assist_risk_proximity": Unbounded(1),
+            "diag_assist_risk_velocity": Unbounded(1),
+            "diag_assist_risk_command": Unbounded(1),
+            "diag_pilot_risk_command": Unbounded(1),
+            "diag_follow_gate": Unbounded(1),
+            "diag_reward_risk_reduce": Unbounded(1),
+            "diag_reward_risk_worse": Unbounded(1),
+            "diag_reward_abs_risk": Unbounded(1),
+            "diag_reward_delay_risk": Unbounded(1),
+            "diag_risk_worsening_rate": Unbounded(1),
+            "diag_intervention_rate": Unbounded(1),
+            "diag_unnecessary_intervention_rate": Unbounded(1),
+            "diag_unsafe_non_intervention_rate": Unbounded(1),
+            "diag_modal_residual_norm": Unbounded(1),
             "diag_penalty_smooth": Unbounded(1),
             "diag_penalty_height": Unbounded(1),
             "terminated": Unbounded(1),
             "truncated": Unbounded(1),
             "success": Unbounded(1),
+            "out_of_bounds": Unbounded(1),
         }).expand(self.num_envs).to(self.device)
 
         info_spec = Composite({
@@ -359,7 +538,15 @@ class EnvTunnelResidual(IsaacEnv):
         sx, sy, sz = self.map_range  # half-extent in x, y, and z-max
         sx = sx * 0.8
         pos = torch.zeros(len(env_ids), 1, 3, device=self.device)
-        if (self.training):  # get random start position
+        if self.is_real_room:
+            start_pos = torch.as_tensor(self.start_pos_cfg, dtype=torch.float, device=self.device)
+            pos[:, 0, :] = start_pos
+            start_y_randomization = float(self.cfg.env.get("start_y_randomization", 0.0))
+            if self.training and start_y_randomization > 0.0:
+                pos[:, 0, 1] += (
+                    torch.rand(env_ids.size(0), dtype=torch.float, device=self.device) * 2.0 - 1.0
+                ) * start_y_randomization
+        elif (self.training):  # get random start position
             # generate random start positions (within the platform area near the center of the map)
 
             pos[:, 0, 0] = -7.0  # y = -7
@@ -393,6 +580,35 @@ class EnvTunnelResidual(IsaacEnv):
         self.agent_action[env_ids] = 0.
         self.prev_action_command[env_ids] = 0.
         self.prev_human_action[env_ids] = 0.
+        self.issue_position_w[env_ids] = 0.
+        self.issue_velocity_w[env_ids] = 0.
+        self.issue_human_action_b[env_ids] = 0.
+        self.issue_human_action_w[env_ids] = 0.
+        self.issue_action_w[env_ids] = 0.
+        self.issue_hold_command_w[env_ids] = 0.
+        self.issue_ray_dirs_w[env_ids] = 0.
+        self.issue_ray_dists[env_ids] = self.lidar_range
+        self.pilot_risk_dyn_post[env_ids] = 0.
+        self.assist_risk_dyn_post[env_ids] = 0.
+        self.assist_risk_dyn_full[env_ids] = 0.
+        self.delay_risk[env_ids] = 0.
+        self.risk_reduction_dyn[env_ids] = 0.
+        self.min_clearance_pilot[env_ids] = self.lidar_range
+        self.min_clearance_assist[env_ids] = self.lidar_range
+        self.assist_risk_proximity[env_ids] = 0.
+        self.assist_risk_velocity[env_ids] = 0.
+        self.assist_risk_command[env_ids] = 0.
+        self.pilot_risk_command[env_ids] = 0.
+        self.follow_gate[env_ids] = 1.
+        self.modal_residual_norm[env_ids] = 0.
+        self.risk_worsening[env_ids] = 0.
+        self.intervention[env_ids] = 0.
+        self.unnecessary_intervention[env_ids] = 0.
+        self.unsafe_non_intervention[env_ids] = 0.
+        self.reward_risk_reduce[env_ids] = 0.
+        self.reward_risk_worse[env_ids] = 0.
+        self.reward_abs_risk[env_ids] = 0.
+        self.reward_delay_risk[env_ids] = 0.
         # Reset cumulative following error
         self.cumulative_error[env_ids] = 0.
 
@@ -412,8 +628,15 @@ class EnvTunnelResidual(IsaacEnv):
         )
 
         # Set default height range for each env
-        self.height_range[env_ids, 0, 0] = 0.4 * sz    # min height
-        self.height_range[env_ids, 0, 1] = 1.6 * sz    # max height
+        if self.is_real_room:
+            reward_cfg = self.cfg.env.get("reward", {})
+            target_height = float(self.cfg.env.get("target_height", self.start_pos_cfg[2]))
+            height_tolerance = float(reward_cfg.get("height_tolerance", 0.25))
+            self.height_range[env_ids, 0, 0] = max(0.2, target_height - height_tolerance)
+            self.height_range[env_ids, 0, 1] = min(float(self.room_size[2]), target_height + height_tolerance)
+        else:
+            self.height_range[env_ids, 0, 0] = 0.4 * sz    # min height
+            self.height_range[env_ids, 0, 1] = 1.6 * sz    # max height
 
         # Reset visualization buffers if env 0 is reset
         if 0 in env_ids:
@@ -423,10 +646,164 @@ class EnvTunnelResidual(IsaacEnv):
             idx = (env_ids == 0).nonzero(as_tuple=True)[0].item()
             self.viz_human_pos = pos[idx, 0].clone()
 
+    def _cache_issue_time_inputs(self, tensordict: TensorDictBase) -> None:
+        if not self.enable_dynamic_risk:
+            return
+
+        obs_state = tensordict[("agents", "observation", "state")]
+        obs_human_action = tensordict[("agents", "observation", "human_action")]
+        if obs_state.ndim == 3 and obs_state.shape[1] == 1:
+            obs_state = obs_state.squeeze(1)
+        if obs_human_action.ndim == 3 and obs_human_action.shape[1] == 1:
+            obs_human_action = obs_human_action.squeeze(1)
+
+        issue_quat = obs_state[..., 6:10]
+        issue_vel_b = obs_state[..., :3]
+        issue_human_b = obs_human_action[..., :3]
+        try:
+            issue_root_state = tensordict[("info", "drone_state")]
+            if issue_root_state.ndim == 3 and issue_root_state.shape[1] == 1:
+                issue_root_state = issue_root_state.squeeze(1)
+            self.issue_position_w[:] = issue_root_state[..., :3]
+        except KeyError:
+            self.issue_position_w[:] = self.root_state[..., :3].squeeze(1)
+
+        self.issue_velocity_w[:] = vec_to_world(
+            issue_vel_b,
+            issue_quat,
+            orientation_only=True,
+            yaw_only=False,
+        )
+        self.issue_human_action_b[:] = issue_human_b
+        self.issue_human_action_w[:] = vec_to_world(
+            issue_human_b,
+            issue_quat,
+            orientation_only=True,
+            yaw_only=True,
+        )
+        self.issue_hold_command_w[:] = self.prev_action_command[..., :3]
+
+        if self.enable_lidar and self.lidar is not None:
+            ray_vecs_w = self.lidar.data.ray_hits_w - self.lidar.data.pos_w.unsqueeze(1)
+            ray_dists = ray_vecs_w.norm(dim=-1).clamp_max(self.lidar_range)
+            ray_dirs_w = ray_vecs_w / (ray_dists.unsqueeze(-1) + 1e-6)
+            self.issue_ray_dirs_w[:] = ray_dirs_w
+            self.issue_ray_dists[:] = ray_dists
+        else:
+            self.issue_ray_dirs_w[:] = 0.
+            self.issue_ray_dists[:] = self.lidar_range
+
+    def _compute_dynamic_risk_terms(self) -> None:
+        if not (self.enable_dynamic_risk and self.enable_lidar and self.lidar is not None):
+            self.pilot_risk_dyn_post.zero_()
+            self.assist_risk_dyn_post.zero_()
+            self.assist_risk_dyn_full.zero_()
+            self.delay_risk.zero_()
+            self.risk_reduction_dyn.zero_()
+            self.min_clearance_pilot.fill_(self.lidar_range)
+            self.min_clearance_assist.fill_(self.lidar_range)
+            self.assist_risk_proximity.zero_()
+            self.assist_risk_velocity.zero_()
+            self.assist_risk_command.zero_()
+            self.pilot_risk_command.zero_()
+            self.follow_gate.fill_(1.0)
+            return
+
+        if self.dynamic_risk_estimator == "simple_lidar":
+            pilot = compute_simple_lidar_command_risk(
+                position_w=self.issue_position_w,
+                velocity_w=self.issue_velocity_w,
+                command_w=self.issue_human_action_w,
+                ray_dirs_w=self.issue_ray_dirs_w,
+                ray_dists=self.issue_ray_dists,
+                height_range=self.height_range.squeeze(1),
+                params=self.simple_risk_model_cfg,
+            )
+            assist = compute_simple_lidar_command_risk(
+                position_w=self.issue_position_w,
+                velocity_w=self.issue_velocity_w,
+                command_w=self.issue_action_w,
+                ray_dirs_w=self.issue_ray_dirs_w,
+                ray_dists=self.issue_ray_dists,
+                height_range=self.height_range.squeeze(1),
+                params=self.simple_risk_model_cfg,
+            )
+            self.assist_risk_proximity[:] = assist["risk_proximity"]
+            self.assist_risk_velocity[:] = assist["risk_velocity"]
+            self.assist_risk_command[:] = assist["risk_command"]
+            self.pilot_risk_command[:] = pilot["risk_command"]
+        elif self.dynamic_risk_estimator == "legacy_rollout":
+            pilot = compute_dynamic_command_risk(
+                velocity_w=self.issue_velocity_w,
+                command_w=self.issue_human_action_w,
+                hold_command_w=self.issue_hold_command_w,
+                ray_dirs_w=self.issue_ray_dirs_w,
+                ray_dists=self.issue_ray_dists,
+                params=self.dynamic_risk_model_cfg,
+            )
+            assist = compute_dynamic_command_risk(
+                velocity_w=self.issue_velocity_w,
+                command_w=self.issue_action_w,
+                hold_command_w=self.issue_hold_command_w,
+                ray_dirs_w=self.issue_ray_dirs_w,
+                ray_dists=self.issue_ray_dists,
+                params=self.dynamic_risk_model_cfg,
+            )
+            self.assist_risk_proximity.zero_()
+            self.assist_risk_velocity.zero_()
+            self.assist_risk_command.zero_()
+            self.pilot_risk_command.zero_()
+        else:
+            raise ValueError(
+                "env.dynamic_risk.estimator must be 'simple_lidar' or 'legacy_rollout', "
+                f"got {self.dynamic_risk_estimator!r}"
+            )
+
+        self.pilot_risk_dyn_post[:] = pilot["rho_post"]
+        self.assist_risk_dyn_post[:] = assist["rho_post"]
+        self.assist_risk_dyn_full[:] = assist["rho_full"]
+        self.delay_risk[:] = assist["rho_delay"]
+        self.risk_reduction_dyn[:] = self.pilot_risk_dyn_post - self.assist_risk_dyn_post
+        self.min_clearance_pilot[:] = pilot["min_clearance"]
+        self.min_clearance_assist[:] = assist["min_clearance"]
+
+        alpha_f = float(self.dynamic_risk_reward_cfg.get("alpha_f", 0.5))
+        g_min = float(self.dynamic_risk_reward_cfg.get("g_min", 0.35))
+        self.follow_gate[:] = (1.0 - alpha_f * self.pilot_risk_dyn_post).clamp(g_min, 1.0)
+
+    def _update_dynamic_risk_stats(self) -> None:
+        step_count = self.progress_buf.unsqueeze(1).clamp_min(1).float()
+
+        def update_mean(key: str, value: torch.Tensor) -> None:
+            self.stats[key] = self.stats[key] + (value - self.stats[key]) / step_count
+
+        update_mean("diag_pilot_risk_dyn_post", self.pilot_risk_dyn_post)
+        update_mean("diag_assist_risk_dyn_post", self.assist_risk_dyn_post)
+        update_mean("diag_assist_risk_dyn_full", self.assist_risk_dyn_full)
+        update_mean("diag_delay_risk", self.delay_risk)
+        update_mean("diag_risk_reduction_dyn", self.risk_reduction_dyn)
+        update_mean("diag_min_clearance_pilot", self.min_clearance_pilot)
+        update_mean("diag_min_clearance_assist", self.min_clearance_assist)
+        update_mean("diag_assist_risk_proximity", self.assist_risk_proximity)
+        update_mean("diag_assist_risk_velocity", self.assist_risk_velocity)
+        update_mean("diag_assist_risk_command", self.assist_risk_command)
+        update_mean("diag_pilot_risk_command", self.pilot_risk_command)
+        update_mean("diag_follow_gate", self.follow_gate)
+        update_mean("diag_reward_risk_reduce", self.reward_risk_reduce)
+        update_mean("diag_reward_risk_worse", self.reward_risk_worse)
+        update_mean("diag_reward_abs_risk", self.reward_abs_risk)
+        update_mean("diag_reward_delay_risk", self.reward_delay_risk)
+        update_mean("diag_risk_worsening_rate", self.risk_worsening)
+        update_mean("diag_intervention_rate", self.intervention)
+        update_mean("diag_unnecessary_intervention_rate", self.unnecessary_intervention)
+        update_mean("diag_unsafe_non_intervention_rate", self.unsafe_non_intervention)
+        update_mean("diag_modal_residual_norm", self.modal_residual_norm)
+
     def _pre_sim_step(self, tensordict: TensorDictBase):
 
         # Store last step action command for smoothness reward
         self.prev_action_command[:] = self.agent_action.clone()
+        self._cache_issue_time_inputs(tensordict)
 
         # Get new action command from policy (world frame)
         action_command = tensordict[("agents", "action")] 
@@ -434,6 +811,8 @@ class EnvTunnelResidual(IsaacEnv):
         # Ensure actions shape is compatible
         if action_command.ndim == 3:
             action_command = action_command.squeeze(1)
+        if self.enable_dynamic_risk:
+            self.issue_action_w[:] = action_command[..., :3]
         self.agent_action[:] = action_command.clone()
         # 添加一个探针来记录原始的agent action command，看看是否是action_command本身的z值导致了高度不稳定
         self.agent_action_original[:] = action_command.clone()
@@ -557,11 +936,15 @@ class EnvTunnelResidual(IsaacEnv):
             orientation_only=True,
             yaw_only=True
         )
+        if self.enable_dynamic_risk_reward:
+            target_vel_w = self.issue_human_action_w.clone()
+        self._compute_dynamic_risk_terms()
         
         # a. Safety Penalty (Barrier Function)
         # Instead of a positive reward for being far, we apply a negative penalty for being close.
         # This decouples safety from the task when the agent is in safe space.
         # 只关注human_action输入方向（以及当前速度方向）上的障碍物，其他方向的障碍物降低权重
+        reward_params = self.cfg.env.get("reward", {})
         r_safety = 0.0
         if self.enable_lidar:
             # -------------------------------------------------------------------------
@@ -623,7 +1006,7 @@ class EnvTunnelResidual(IsaacEnv):
             # -------------------------------------------------------------------------
             # 融合指数惩罚
             # -------------------------------------------------------------------------
-            r_safety_dist_scale = 1.0  # Wider gradient reach (was 0.5)
+            r_safety_dist_scale = float(reward_params.get("safety_dist_scale", 1.0))  # Wider gradient reach (was 0.5)
             
             # 计算三个独立的指数障碍物惩罚项 (范围 0 到 1，越近越接近1)
             p_min = torch.exp(-min_dist_to_obs / r_safety_dist_scale)
@@ -636,7 +1019,7 @@ class EnvTunnelResidual(IsaacEnv):
             w_cmd = 0.4  # 主动寻死危险：指令导致撞墙
             
             # 安全区覆盖LiDAR 75%范围，让策略更早收到安全信号
-            safe_zone = 4.0  # was 3.0
+            safe_zone = float(reward_params.get("safe_zone", 4.0))  # was 3.0
             mask_min = (min_dist_to_obs < safe_zone).float()
             mask_vel = (dist_to_cur_vel_dir < safe_zone).float()
             mask_cmd = (dist_to_human_action_dir < safe_zone).float()
@@ -663,6 +1046,32 @@ class EnvTunnelResidual(IsaacEnv):
         # Combined Task Reward (calculated for diagnostics)
         reward_task = 1.0 * reward_speed_match + 0.5 * reward_direction
 
+        residual_norm = (self.issue_action_w - self.issue_human_action_w).norm(dim=-1, keepdim=True) / max(self.max_action_vel, 1e-6)
+        self.modal_residual_norm[:] = residual_norm
+        epsilon_delta = float(self.dynamic_risk_metrics_cfg.get("epsilon_delta", 0.05))
+        rho_safe = float(self.dynamic_risk_metrics_cfg.get("rho_safe", 0.2))
+        rho_danger = float(self.dynamic_risk_metrics_cfg.get("rho_danger", 0.7))
+        self.risk_worsening[:] = (self.assist_risk_dyn_post > self.pilot_risk_dyn_post).float()
+        self.intervention[:] = (residual_norm > epsilon_delta).float()
+        self.unnecessary_intervention[:] = (
+            (residual_norm > epsilon_delta) & (self.pilot_risk_dyn_post < rho_safe)
+        ).float()
+        self.unsafe_non_intervention[:] = (
+            (residual_norm <= epsilon_delta) & (self.pilot_risk_dyn_post > rho_danger)
+        ).float()
+
+        self.reward_risk_reduce.zero_()
+        self.reward_risk_worse.zero_()
+        self.reward_abs_risk.zero_()
+        self.reward_delay_risk.zero_()
+        if self.enable_dynamic_risk_reward and self.enable_safety_reward:
+            self.reward_risk_reduce[:] = float(self.dynamic_risk_reward_cfg.get("w_delta_rho", 0.5)) * self.risk_reduction_dyn
+            self.reward_risk_worse[:] = -float(self.dynamic_risk_reward_cfg.get("w_worse", 1.5)) * (
+                self.assist_risk_dyn_post - self.pilot_risk_dyn_post
+            ).clamp(min=0.0)
+            self.reward_abs_risk[:] = -float(self.dynamic_risk_reward_cfg.get("w_abs", 0.4)) * self.assist_risk_dyn_full
+            self.reward_delay_risk[:] = -float(self.dynamic_risk_reward_cfg.get("w_delay", 0.3)) * self.delay_risk
+
         # d. Smoothness Penalty
         action_diff = (self.agent_action - self.prev_action_command).norm(dim=-1, keepdim=True)
         penalty_action_smoothness = (action_diff / self.max_action_vel) ** 2
@@ -671,7 +1080,10 @@ class EnvTunnelResidual(IsaacEnv):
         # [Analysis]: If enable_task_reward is False, the agent acts as a pure "Safety Shield".
         # It has no incentive to follow velocity other than the Residual Regularization term in the loss.
         # This removes the conflict where deviating for safety penalizes task reward.
-        task_reward_term = reward_task if self.enable_following_reward else 0.0
+        if self.enable_following_reward:
+            task_reward_term = reward_task * self.follow_gate if self.enable_dynamic_risk_reward else reward_task
+        else:
+            task_reward_term = 0.0
 
         # Survival reward: positive reward per step alive
         # Reduced to prevent hovering from being optimal (was 0.5)
@@ -679,8 +1091,8 @@ class EnvTunnelResidual(IsaacEnv):
 
         # Forward progress reward: incentivize moving along tunnel length axis (pos[0])
         # pos[0] starts at -7.0, increases toward +12.0
-        # forward_vel = drone_vel_w[..., 0:1]  # velocity along tunnel length axis
-        # reward_progress = 0.1 * forward_vel.clamp(min=0.0)  # only reward forward motion
+        forward_vel = drone_vel_w[..., 0:1]  # velocity along tunnel length axis
+        reward_progress = float(reward_params.get("progress_weight", 0.0)) * forward_vel.clamp(min=0.0)
 
         # height penalty reward for flying unnessarily high or low
         h_min, h_max = self.height_range[..., 0], self.height_range[..., 1]
@@ -694,25 +1106,64 @@ class EnvTunnelResidual(IsaacEnv):
         height_excess_up = (z - (h_max + 0.2)).clamp(min=0.0)
         height_excess_down = ((h_min - 0.2) - z).clamp(min=0.0)
         penalty_height = height_excess_up ** 2 + height_excess_down ** 2
+
+        if self.dynamic_risk_mode == "hybrid_reward":
+            legacy_safety_scale = self.legacy_safety_scale  # Use default legacy safety reward weight
+        elif self.dynamic_risk_mode in {"dynamic_reward", "full"}:
+            legacy_safety_scale = 0.0  # Do not use the legacy safety reward
+        else:
+            legacy_safety_scale = 1.0  # Only legacy safety reward
+
+        dynamic_risk_reward = (
+            self.reward_risk_reduce
+            + self.reward_risk_worse
+            + self.reward_abs_risk
+            + self.reward_delay_risk
+        )
         
         self.reward = (
             task_reward_term
             + reward_survival
-            + 3.0 * r_safety  # Stronger safety signal (was 2.0)
-            - 10.0 * penalty_height  # Stronger height penalty (was -8.0 linear, now quadratic)
-            - (0.5 * penalty_action_smoothness if self.enable_smoothness_penalty else 0.0)
+            + reward_progress
+            + legacy_safety_scale * float(reward_params.get("safety_weight", 3.0)) * r_safety
+            + dynamic_risk_reward
+            - float(reward_params.get("height_penalty_weight", 10.0)) * penalty_height
+            - (float(reward_params.get("smoothness_weight", 0.5)) * penalty_action_smoothness if self.enable_smoothness_penalty else 0.0)
         )
         
         # Terminate Conditions & Terminal Penalty
-        below_bound = self.drone.pos[..., 2] < 0.2
-        above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0 
-        static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (1.0 - 0.3 / self.lidar_range)
+        if self.is_real_room:
+            boundary_cfg = self.cfg.env.get("boundary_buffer", {})
+            x_buffer = float(boundary_cfg.get("x", 1.0))
+            y_buffer = float(boundary_cfg.get("y", 1.0))
+            z_buffer = float(boundary_cfg.get("z", 0.5))
+            half_x = float(self.room_size[0]) / 2.0
+            half_y = float(self.room_size[1]) / 2.0
+            below_bound = self.drone.pos[..., 2] < 0.2
+            above_bound = self.drone.pos[..., 2] > float(self.room_size[2]) + z_buffer
+            x_lower_oob = self.drone.pos[..., 0] < -half_x - x_buffer
+            y_oob = self.drone.pos[..., 1].abs() > half_y + y_buffer
+            out_of_bounds = below_bound | above_bound | x_lower_oob | y_oob
+            success = self.drone.pos[..., 0] >= float(self.cfg.env.get("success_x", half_x))
+        else:
+            below_bound = self.drone.pos[..., 2] < 0.2
+            above_bound = self.drone.pos[..., 2] > self.map_range[2] * 2.0 + 1.0
+            out_of_bounds = below_bound | above_bound
+            # success if drone traverses the tunnel length (pos[0] is the tunnel length axis)
+            # Drone starts at pos[0] ≈ -7.0, tunnel ends at pos[0] ≈ +10.0
+            success = self.drone.pos[..., 0] > 10.0
+
+        collision_dist = float(reward_params.get("collision_distance", 0.3))
+        if self.enable_lidar:
+            static_collision = einops.reduce(self.lidar_scan, "n 1 w h -> n 1", "max") > (1.0 - collision_dist / self.lidar_range)
+        else:
+            static_collision = torch.zeros(self.num_envs, 1, dtype=torch.bool, device=self.device)
         collision = static_collision
-        # success if drone traverses the tunnel length (pos[0] is the tunnel length axis)
-        # Drone starts at pos[0] ≈ -7.0, tunnel ends at pos[0] ≈ +10.0
-        success = self.drone.pos[..., 0] > 10.0
+        success_bonus = float(reward_params.get("success_bonus", 0.0))
+        if success_bonus:
+            self.reward[success] += success_bonus
         
-        self.terminated = below_bound | above_bound | collision
+        self.terminated = out_of_bounds | collision
         timeout_truncate = (self.progress_buf >= self.max_episode_per_env).unsqueeze(-1)
         self.truncated = timeout_truncate | success
 
@@ -721,7 +1172,7 @@ class EnvTunnelResidual(IsaacEnv):
         # This ensures the Value Function learns to fear these states.
         crash_penalty = -10.0  # Reduced from -50 to lower return variance
         # Only apply to envs that just terminated due to crash (collision or out-of-bounds)
-        crashed_mask = ((collision | above_bound | below_bound) & ~self.truncated)
+        crashed_mask = ((collision | out_of_bounds) & ~self.truncated)
         self.reward[crashed_mask] += crash_penalty
 
         # update previous velocity for smoothness calculation in the next ieteration
@@ -739,8 +1190,9 @@ class EnvTunnelResidual(IsaacEnv):
             # set the camera to focus on the lidar position (which is the drone)
             camera_mode = getattr(self, '_camera_view_mode', 'follow')
             if camera_mode == 'global':
+                eye_height = 10.0 if self.is_real_room else 32.0
                 set_camera_view(
-                    eye=torch.tensor([-3.0, 0.0, 32.0]),  # global top-down view
+                    eye=torch.tensor([-3.0, 0.0, eye_height]),  # global top-down view
                     target=torch.tensor([0.0, 0.0, 0.0])                        
                 )
             else:
@@ -816,10 +1268,12 @@ class EnvTunnelResidual(IsaacEnv):
         self.stats["episode_len"][:] = self.progress_buf.unsqueeze(1)
         self.stats["above_bound"] = above_bound.float()
         self.stats["below_bound"] = below_bound.float()
+        self.stats["out_of_bounds"] = out_of_bounds.float()
     
         # === DIAGNOSTIC: Log internal reward components to stats ===
         self.stats["diag_reward"] = self.reward
         self.stats["diag_reward_task"] = reward_task
+        self._update_dynamic_risk_stats()
         self.stats["diag_penalty_smooth"] = penalty_action_smoothness
         self.stats["diag_penalty_height"] = penalty_height
         
@@ -831,12 +1285,15 @@ class EnvTunnelResidual(IsaacEnv):
         self.stats["debug_vec_world"] = drone_vel_w
         self.stats["debug_vec_policy"] = self.agent_action_original
         # Convert human action from body frame to world frame for consistent comparison
-        human_action_w = vec_to_world(
-            human_actions_local[:, :3],
-            drone_orientation_q,
-            orientation_only=True,
-            yaw_only=True
-        )
+        if self.enable_dynamic_risk:
+            human_action_w = target_vel_w
+        else:
+            human_action_w = vec_to_world(
+                human_actions_local[:, :3],
+                drone_orientation_q,
+                orientation_only=True,
+                yaw_only=True
+            )
         self.stats["debug_vec_target"] = human_action_w
         self.stats["debug_pos_world"] = drone_pos_w
         # [Debug Print] Check if drone is falling despite 0 command
@@ -870,7 +1327,12 @@ class EnvTunnelResidual(IsaacEnv):
         return TensorDict(
             {
                 "agents": {
-                    "reward": reward
+                    "reward": reward,
+                    "pilot_risk_dyn_post": self.pilot_risk_dyn_post.clone(),
+                    "assist_risk_dyn_post": self.assist_risk_dyn_post.clone(),
+                    "assist_risk_dyn_full": self.assist_risk_dyn_full.clone(),
+                    "delay_risk": self.delay_risk.clone(),
+                    "risk_reduction_dyn": self.risk_reduction_dyn.clone(),
                 },
                 "done": terminated | truncated,
                 "terminated": terminated,

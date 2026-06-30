@@ -1,6 +1,8 @@
 algo:
   # Distribution type: "tanh_normal" (default) or "beta"
   distribution: beta
+  # Policy head mode: residual for shared-control training, direct for no-residual ablations.
+  policy_mode: residual
   
   feature_extractor:
     learning_rate: 1e-4
