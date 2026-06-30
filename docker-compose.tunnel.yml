@@ -9,16 +9,13 @@ x-tunnel-common: &tunnel-common
   build:
     context: .
     dockerfile: Dockerfile.tunnel_comparison
-  image: tunnel_comparison:20260415-ipcfix
-  runtime: nvidia
+  image: tunnel_comparison:20260415-ipcfix-cpu
   network_mode: host
   shm_size: "2gb"
   pids_limit: 4096
   working_dir: /root/catkin_ws
   restart: "no"
   environment: &tunnel-common-env
-    NVIDIA_VISIBLE_DEVICES: all
-    NVIDIA_DRIVER_CAPABILITIES: all
     QT_X11_NO_MITSHM: "1"
     SLOPE_SOURCE_MOUNT: /root/slope_ws/src
   volumes: &tunnel-common-volumes

@@ -21,33 +21,47 @@ pcd_file: ""
 # RC human_action input produced by rc_input_node.py.
 human_action_source: "rc_topic"
 human_action_topic: "/srlc/human_action"
-assist_enable_topic: "/srlc/assist_enable"
 human_action_timeout: 0.3
+assist_input_deadzone_norm: 0.05
 keyboard_mode: false
 
 # PX4 control.
 control_freq: 20.0
 use_px4: true
-height_control: true
-takeoff_height: 5.0
-auto_arm: false
-auto_offboard: false
-hold_on_stop: true
+height_control: false
+lock_z_control: true
+takeoff_height: 0.8
+require_offboard: true
+real_auto_takeoff_on_offboard: true
+auto_arm_on_offboard: true
+post_takeoff_mode: "direct"
+post_takeoff_mode_delay: 2.0
+takeoff_reached_tolerance: 0.1
+on_offboard_loss: "stream_hold"
+hold_on_stop: false
+enable_external_stop: false
+external_stop_topic: "/experiment_control/stop"
 estop_hold_mode: "AUTO.LOITER"
 estop_fallback_mode: "POSCTL"
 hold_verify_timeout: 1.0
 odom_timeout: 0.3
+# Current nokov_uav publishes odometry directly on /nokov/local_position/odom.
+# Do not use /mavros/local_position/odom for SRLC state in real deployment.
+odom_topic: "/nokov/local_position/odom"
+setpoint_raw_topic: "/mavros/setpoint_raw/local"
 
 # Conservative real-flight command limits.
 max_xy_speed_real: 1.0
-max_z_speed_real: 0.4
+max_z_speed_real: 0.3
 min_altitude: 0.5
-max_altitude: 5.5
-geofence_x: []
-geofence_y: []
+max_altitude: 5.0
+geofence_x: [-3.0, 3.0]
+geofence_y: [-3.0, 3.0]
 
 # Safety.
 use_safety_shield: false
+enable_safety_stop: true
+enable_collision_detection: true
 safety_min_dist: 0.5
 collision_dist: 0.2
 safety_start_takeoff_delta: 0.3

@@ -52,6 +52,7 @@ class Obstacle(NamedTuple):
 SPAWN_X = -8.0
 SPAWN_Y = 0.0
 SPAWN_PROTECT_RADIUS = 3.0  # no obstacles within this radius of spawn
+WALL_THICKNESS = 0.3
 
 
 def _in_protection_zone(cx: float, cy: float, half_size: float) -> bool:
@@ -426,16 +427,21 @@ def generate_tunnel_map(
     ceiling = np.column_stack([xx.ravel(), yy.ravel(), np.full(xx.size, z_max)])
     points.append(ceiling)
 
-    # Side walls (Y = ±y_half)
+    # Side walls: PCD points represent the ideal inner collision faces
+    # (Y=±y_half).  The Gazebo wall boxes are shifted outward by half their
+    # thickness so the navigable tunnel width remains 2*y_half.
     xs_wall = np.arange(-x_half, x_half, resolution)
     zs_wall = np.arange(0, z_max, resolution)
     xw, zw = np.meshgrid(xs_wall, zs_wall)
-    wall_left = np.column_stack([xw.ravel(), np.full(xw.size, -y_half), zw.ravel()])
-    wall_right = np.column_stack([xw.ravel(), np.full(xw.size, y_half), zw.ravel()])
+    wall_left_y = -y_half
+    wall_right_y = y_half
+    wall_left = np.column_stack([xw.ravel(), np.full(xw.size, wall_left_y), zw.ravel()])
+    wall_right = np.column_stack([xw.ravel(), np.full(xw.size, wall_right_y), zw.ravel()])
     points.append(wall_left)
     points.append(wall_right)
 
-    # Back wall at X ≈ -x_half + 2 (behind spawn zone)
+    # Back wall: PCD points represent the ideal front-facing collision face;
+    # the Gazebo box center is shifted backward by half the wall thickness.
     back_wall_x = -x_half + 2.0
     ys_bw = np.arange(-y_half, y_half, resolution)
     zs_bw = np.arange(0, z_max, resolution)
@@ -549,7 +555,7 @@ def write_gazebo_world(
       - Cylinder and cuboid obstacles at the same positions as the PCD
       - No ceiling (better Gazebo visibility; lidar_sim handles ceiling via PCD)
     """
-    wall_thickness = 0.3
+    wall_thickness = WALL_THICKNESS
 
     lines = []
     lines.append("""<?xml version="1.0" ?>
@@ -606,11 +612,14 @@ def write_gazebo_world(
     wall_len_y = y_half * 2
     wall_h = z_max
 
-    # Side walls (Y = ±y_half)
+    # Side wall boxes are centered outside the ideal tunnel so their inner
+    # collision faces stay at Y=±y_half.
+    wall_half_thickness = wall_thickness / 2.0
     for sign, name in [(-1, 'wall_left'), (1, 'wall_right')]:
-        y_pos = sign * y_half
+        y_inner = sign * y_half
+        y_pos = sign * (y_half + wall_half_thickness)
         lines.append(f"""
-    <!-- {name} at Y={y_pos:.1f} -->
+    <!-- {name}: inner face at Y={y_inner:.1f}, center at Y={y_pos:.1f} -->
     <model name='{name}'>
       <static>1</static>
       <pose>0 {y_pos:.4f} {wall_h/2:.4f} 0 0 0</pose>
@@ -626,10 +635,12 @@ def write_gazebo_world(
     </model>
 """)
 
-    # Back wall at X ≈ -x_half + 2.0
-    back_wall_x = -x_half + 2.0
+    # Back wall box is centered behind the ideal boundary so its front
+    # collision face stays at X≈-x_half+2.0.
+    back_wall_inner_x = -x_half + 2.0
+    back_wall_x = back_wall_inner_x - wall_half_thickness
     lines.append(f"""
-    <!-- back_wall at X={back_wall_x:.1f} -->
+    <!-- back_wall: inner face at X={back_wall_inner_x:.1f}, center at X={back_wall_x:.1f} -->
     <model name='back_wall'>
       <static>1</static>
       <pose>{back_wall_x:.4f} 0 {wall_h/2:.4f} 0 0 0</pose>
@@ -722,6 +733,20 @@ def write_metadata(
             "protect_radius": float(SPAWN_PROTECT_RADIUS),
         },
         "obstacle_zone_x_min": float(obstacle_zone_x_min),
+        "walls": {
+            "thickness": float(WALL_THICKNESS),
+            "pcd_surface": "inner_collision_face",
+            "side_wall_centers_y": [
+                -float(y_half) - WALL_THICKNESS / 2.0,
+                float(y_half) + WALL_THICKNESS / 2.0,
+            ],
+            "side_wall_inner_faces_y": [
+                -float(y_half),
+                float(y_half),
+            ],
+            "back_wall_center_x": -float(x_half) + 2.0 - WALL_THICKNESS / 2.0,
+            "back_wall_inner_face_x": -float(x_half) + 2.0,
+        },
         "sampling": sampling_stats or {},
         "obstacles": [
             {

@@ -6,11 +6,18 @@ near the drone's position. Applies FOV filtering and angle-bin occlusion
 to simulate realistic LiDAR output for IPC's ROG-Map.
 """
 
+import os
+import sys
+
 import numpy as np
 import rospy
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 from tunnel_deployment.pcd_io import read_pcd_xyz
 

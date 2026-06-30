@@ -84,9 +84,10 @@ def _parse_header(blob: bytes) -> PcdHeader:
 
 def _numpy_dtype(header: PcdHeader) -> np.dtype:
     dtype_fields = []
-    for name, size, typ, count in zip(
+    seen: dict[str, int] = {}
+    for idx, (name, size, typ, count) in enumerate(zip(
         header.fields, header.size, header.type, header.count
-    ):
+    )):
         typ = typ.upper()
         if typ == "F" and size == 4:
             base = "<f4"
@@ -107,10 +108,17 @@ def _numpy_dtype(header: PcdHeader) -> np.dtype:
         else:
             raise ValueError(f"Unsupported PCD field type: {name} {typ}{size}")
 
-        if count == 1:
-            dtype_fields.append((name, base))
+        dtype_name = name
+        if dtype_name in seen:
+            seen[dtype_name] += 1
+            dtype_name = f"{dtype_name}__{idx}"
         else:
-            dtype_fields.append((name, base, (count,)))
+            seen[dtype_name] = 0
+
+        if count == 1:
+            dtype_fields.append((dtype_name, base))
+        else:
+            dtype_fields.append((dtype_name, base, (count,)))
     return np.dtype(dtype_fields)
 
 
@@ -167,6 +175,40 @@ def voxel_downsample(points: np.ndarray, voxel_size: float) -> np.ndarray:
     _, keep = np.unique(voxels, axis=0, return_index=True)
     keep.sort()
     return points[keep]
+
+
+def inflate_voxel_points(
+    points: np.ndarray,
+    radius: float,
+    resolution: float,
+    crop_min: Sequence[float] | None = None,
+    crop_max: Sequence[float] | None = None,
+) -> np.ndarray:
+    """Inflate occupied point voxels by a metric radius and return voxel centers."""
+    if radius <= 0:
+        return points
+    if resolution <= 0:
+        raise ValueError("Inflation resolution must be positive")
+    if len(points) == 0:
+        return points
+
+    base_voxels = np.floor(points / float(resolution)).astype(np.int64)
+    base_voxels = np.unique(base_voxels, axis=0)
+
+    cell_radius = int(np.ceil(radius / resolution))
+    offsets = []
+    for ix in range(-cell_radius, cell_radius + 1):
+        for iy in range(-cell_radius, cell_radius + 1):
+            for iz in range(-cell_radius, cell_radius + 1):
+                offset = np.array([ix, iy, iz], dtype=np.float32) * float(resolution)
+                if float(np.linalg.norm(offset)) <= radius + 1e-6:
+                    offsets.append((ix, iy, iz))
+    offset_arr = np.asarray(offsets, dtype=np.int64)
+
+    inflated = (base_voxels[:, None, :] + offset_arr[None, :, :]).reshape(-1, 3)
+    inflated = np.unique(inflated, axis=0)
+    centers = (inflated.astype(np.float32) + 0.5) * float(resolution)
+    return crop_points(centers, crop_min=crop_min, crop_max=crop_max)
 
 
 def crop_points(

@@ -28,7 +28,7 @@ find_package(catkin REQUIRED COMPONENTS
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
 ## See http://ros.org/doc/api/catkin/html/user_guide/setup_dot_py.html
-# catkin_python_setup()
+catkin_python_setup()
 
 ################################################
 ## Declare ROS messages, services and actions ##
@@ -176,13 +176,18 @@ catkin_install_python(PROGRAMS
   scripts/tunnel_navigation.py
   scripts/map_lidar_node.py
   scripts/rc_input_node.py
+  scripts/srlc_fake_rc_node.py
   scripts/rc_sim_node.py
+  scripts/srlc_alignment_viz_node.py
   scripts/lidar_sim_node.py
+  scripts/naive_replay_node.py
   scripts/pcd_map_publisher.py
   scripts/imu_bridge_node.py
   scripts/cmd_bridge_node.py
   scripts/mavros_fake_node.py
   scripts/flight_recorder.py
+  scripts/srlc_dry_run_recorder.py
+  scripts/srlc_dry_run_smoke_check.py
   scripts/run_comparison.py
   scripts/batch_tunnel_experiments.py
   scripts/run_tunnel_batch_containers.py
@@ -191,6 +196,7 @@ catkin_install_python(PROGRAMS
   scripts/run_iteration2_targeted.py
   scripts/run_iteration3_targeted.py
   scripts/tunnel_deployment/merge_real_pcd_maps.py
+  scripts/tunnel_deployment/crop_real_pcd_map.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

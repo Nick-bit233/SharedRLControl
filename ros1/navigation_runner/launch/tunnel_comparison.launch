@@ -1,11 +1,11 @@
 <launch>
     <!-- ============================================================ -->
-    <!-- Tunnel Comparison: unified launcher for RL vs IPC            -->
+    <!-- Tunnel Comparison: unified launcher for RL/IPC/naive baselines -->
     <!-- Usage: roslaunch navigation_runner tunnel_comparison.launch   -->
-    <!--        method:=rl   (or method:=ipc)  gui:=true             -->
+    <!--        method:=rl   (or method:=ipc/naive_raw/naive_safe) gui:=true -->
     <!-- ============================================================ -->
 
-    <arg name="method" default="rl" doc="rl or ipc"/>
+    <arg name="method" default="rl" doc="rl, ipc, naive_raw, or naive_safe"/>
     <arg name="gui" default="false" doc="Show Gazebo GUI (requires X11 display)"/>
     <arg name="keyboard" default="false" doc="Keyboard teleop mode (RL only)"/>
     <arg name="tunnel_map"
@@ -43,9 +43,9 @@
     <arg name="replay_loop" default="true"/>
     <arg name="output_dir" default="/root/results"/>
     <arg name="goal_x" default="12.0"/>
-    <arg name="collision_dist" default="0.05"/>
-    <arg name="safety_min_dist" default="0.2"/>
-    <arg name="safety_mode" default="hold"/>
+    <arg name="collision_dist" default="0.20"/>
+    <arg name="safety_min_dist" default="0.35"/>
+    <arg name="safety_mode" default="recover"/>
     <arg name="safety_recover_speed" default="0.35"/>
     <arg name="safety_recover_forward_speed" default="0.15"/>
     <arg name="safety_recover_centerline_gain" default="0.4"/>
@@ -202,6 +202,52 @@
         </include>
     </group>
 
+    <!-- ===== Naive Replay Modes ===== -->
+    <group if="$(eval method == 'naive_raw' or method == 'naive_safe')">
+        <node pkg="navigation_runner" type="naive_replay_node.py"
+              name="naive_replay" output="screen">
+            <rosparam file="$(find navigation_runner)/cfg/tunnel/tunnel_nav_param.yaml"/>
+            <param name="method" value="$(arg method)"/>
+            <param name="enable_safety" value="$(eval arg('method') == 'naive_safe')"/>
+            <param name="pcd_file" value="$(arg tunnel_map)"/>
+            <param name="device" value="$(arg device)"/>
+            <param name="user_model_simple" value="$(arg user_model_simple)"/>
+            <param name="user_model_profile" value="$(arg user_model_profile)"/>
+            <param name="user_model_speed" value="$(arg user_model_speed)"/>
+            <param name="user_model_freq_base" value="$(arg user_model_freq_base)"/>
+            <param name="user_model_freq_scale" value="$(arg user_model_freq_scale)"/>
+            <param name="user_model_vx_bias" value="$(arg user_model_vx_bias)"/>
+            <param name="user_model_vx_amp" value="$(arg user_model_vx_amp)"/>
+            <param name="user_model_vy_amp" value="$(arg user_model_vy_amp)"/>
+            <param name="user_model_vz_amp" value="$(arg user_model_vz_amp)"/>
+            <param name="user_model_smoothness_base" value="$(arg user_model_smoothness_base)"/>
+            <param name="user_model_smoothness_scale" value="$(arg user_model_smoothness_scale)"/>
+            <param name="user_model_laziness" value="$(arg user_model_laziness)"/>
+            <param name="user_model_seed" value="$(arg user_model_seed)"/>
+            <param name="user_model_rate" value="$(arg user_model_rate)"/>
+            <param name="input_source" value="$(arg input_source)"/>
+            <param name="replay_dataset_path" value="$(arg replay_dataset_path)"/>
+            <param name="replay_dataset_format" value="$(arg replay_dataset_format)"/>
+            <param name="replay_sampling_mode" value="$(arg replay_sampling_mode)"/>
+            <param name="replay_trajectory_index" value="$(arg replay_trajectory_index)"/>
+            <param name="replay_start_offset" value="$(arg replay_start_offset)"/>
+            <param name="replay_loop" value="$(arg replay_loop)"/>
+            <param name="takeoff_height" value="$(arg takeoff_height)"/>
+            <param name="collision_dist" value="$(arg collision_dist)"/>
+            <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
+            <param name="safety_mode" value="$(arg safety_mode)"/>
+            <param name="safety_recover_speed" value="$(arg safety_recover_speed)"/>
+            <param name="safety_recover_forward_speed" value="$(arg safety_recover_forward_speed)"/>
+            <param name="safety_recover_centerline_gain" value="$(arg safety_recover_centerline_gain)"/>
+            <param name="gazebo_z_mode" value="$(arg gazebo_z_mode)"/>
+            <param name="gazebo_policy_z_max" value="$(arg gazebo_policy_z_max)"/>
+            <param name="gazebo_z_blend_alpha" value="$(arg gazebo_z_blend_alpha)"/>
+            <param name="gazebo_policy_z_takeoff_gate" value="$(arg gazebo_policy_z_takeoff_gate)"/>
+            <param name="gazebo_policy_z_gate_tolerance" value="$(arg gazebo_policy_z_gate_tolerance)"/>
+            <param name="policy_takeoff_gate_tolerance" value="$(arg policy_takeoff_gate_tolerance)"/>
+        </node>
+    </group>
+
     <!-- ===== Shared: Flight Recorder ===== -->
     <group if="$(arg record)">
         <node pkg="navigation_runner" type="flight_recorder.py"
@@ -213,7 +259,7 @@
             <param name="rate" value="50"/>
             <param name="goal_x" value="$(arg goal_x)"/>
             <param name="collision_dist" value="$(arg collision_dist)"/>
-            <param name="collision_topic" value="$(eval '/tunnel_nav/collision' if arg('method') == 'rl' else '')"/>
+            <param name="collision_topic" value="$(eval '/tunnel_nav/collision' if arg('method') == 'rl' else ('/naive_replay/collision' if arg('method') == 'naive_safe' else ''))"/>
             <param name="pcd_file" value="$(arg tunnel_map)"/>
             <param name="auto_terminate" value="$(arg auto_terminate)"/>
             <param name="shutdown_on_complete" value="$(arg shutdown_on_complete)"/>

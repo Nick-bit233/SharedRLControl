@@ -1,5 +1,6 @@
 # PCD-map LiDAR generation for real PX4 SRLC deployment.
-odom_topic: "/mavros/local_position/odom"
+# Real football-drone deployment uses nokov odometry directly.
+odom_topic: "/nokov/local_position/odom"
 range_image_topic: "/srlc/lidar/range_image"
 raycast_points_topic: "/srlc/lidar/raycast_points"
 min_distance_topic: "/srlc/lidar/min_distance"

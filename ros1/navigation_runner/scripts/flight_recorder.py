@@ -4,6 +4,7 @@
 import json
 import math
 import os
+import sys
 import time
 
 import numpy as np
@@ -11,6 +12,10 @@ import rospy
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 from tunnel_deployment.pcd_io import read_pcd_xyz
 
@@ -37,7 +42,7 @@ class FlightRecorder:
         self.trial_id = rospy.get_param('~trial_id', 0)
         self.auto_start = rospy.get_param('~auto_start', True)
         self.goal_x = rospy.get_param('~goal_x', 15.0)
-        self.collision_dist = rospy.get_param('~collision_dist', 0.05)
+        self.collision_dist = rospy.get_param('~collision_dist', 0.20)
         self.collision_topic = str(rospy.get_param('~collision_topic', '')).strip()
         self.pcd_file = rospy.get_param('~pcd_file', '')
         self.auto_terminate = rospy.get_param('~auto_terminate', True)

@@ -15,6 +15,8 @@ import time
 from datetime import datetime
 
 DEFAULT_CHECKPOINT = "$(find navigation_runner)/cfg/ckpts/checkpoint_tunnel_M3_21500.pt"
+ALLOWED_METHODS = ("rl", "ipc", "naive_raw", "naive_safe")
+NAIVE_METHODS = {"naive_raw", "naive_safe"}
 
 FATAL_LOG_MARKERS = (
     "Call to publish() on an invalid Publisher",
@@ -57,7 +59,7 @@ def parse_args():
     parser.add_argument("--runs-per-batch", type=int, default=None,
                         help="Paired RL/IPC runs per batch (default: 5)")
     parser.add_argument("--methods", default=None,
-                        help="Comma-separated method order, e.g. rl,ipc (default: rl,ipc)")
+                        help="Comma-separated method order, e.g. rl,ipc,naive_raw,naive_safe (default: rl,ipc)")
     parser.add_argument("--master-seed", type=int, default=None,
                         help="Master RNG seed for map/user-model seeds (default: 42)")
     parser.add_argument("--output-dir", default=None,
@@ -83,11 +85,11 @@ def parse_args():
     parser.add_argument("--inter-run-delay", type=float, default=2.0,
                         help="Delay between sequential runs")
     parser.add_argument("--goal-x", type=float, default=10.0)
-    parser.add_argument("--collision-dist", type=float, default=0.05)
+    parser.add_argument("--collision-dist", type=float, default=0.20)
     parser.add_argument("--safety-min-dist", type=float, default=None,
-                        help="RL safety stop distance passed to tunnel_navigation.py (default: 0.2)")
+                        help="RL safety stop distance passed to tunnel_navigation.py (default: 0.35)")
     parser.add_argument("--safety-mode", default=None, choices=("hold", "recover"),
-                        help="RL safety intervention mode: hold or recover (default: hold)")
+                        help="RL safety intervention mode: hold or recover (default: recover)")
     parser.add_argument("--safety-recover-speed", type=float, default=None,
                         help="Max horizontal escape speed for safety_mode=recover")
     parser.add_argument("--safety-recover-forward-speed", type=float, default=None,
@@ -300,9 +302,9 @@ def apply_default_args(args):
     if args.master_seed is None:
         args.master_seed = 42
     if args.safety_min_dist is None:
-        args.safety_min_dist = 0.2
+        args.safety_min_dist = 0.35
     if args.safety_mode is None:
-        args.safety_mode = "hold"
+        args.safety_mode = "recover"
     if args.safety_recover_speed is None:
         args.safety_recover_speed = 0.35
     if args.safety_recover_forward_speed is None:
@@ -339,6 +341,36 @@ def apply_default_args(args):
         args.min_bottleneck_width = 0.4
     if args.max_resample_attempts is None:
         args.max_resample_attempts = 2000
+
+
+def normalize_methods(methods_arg):
+    methods = [m.strip().lower() for m in str(methods_arg).split(",") if m.strip()]
+    if not methods:
+        raise ValueError("--methods must contain at least one method")
+
+    unknown = [method for method in methods if method not in ALLOWED_METHODS]
+    if unknown:
+        raise ValueError(
+            f"Unknown method(s): {','.join(unknown)}. "
+            f"Allowed methods: {','.join(ALLOWED_METHODS)}"
+        )
+
+    duplicates = sorted({method for method in methods if methods.count(method) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate method(s) in --methods: {','.join(duplicates)}")
+    return methods
+
+
+def validate_method_config(args):
+    methods = normalize_methods(args.methods)
+    args.methods = ",".join(methods)
+
+    if any(method in NAIVE_METHODS for method in methods) and args.input_source != "offline":
+        raise ValueError(
+            "naive_raw/naive_safe are dataset replay baselines and require "
+            "--input-source offline with --replay-dataset-path"
+        )
+    return methods
 
 
 def apply_resume_config(args, output_root):
@@ -392,8 +424,8 @@ def apply_resume_config(args, output_root):
         raise ValueError(
             f"--methods {requested_methods} does not match existing methods {config_methods}"
         )
-    config_safety_min_dist = float(config.get("safety_min_dist", 0.2))
-    config_safety_mode = str(config.get("safety_mode", "hold"))
+    config_safety_min_dist = float(config.get("safety_min_dist", 0.35))
+    config_safety_mode = str(config.get("safety_mode", "recover"))
     config_safety_recover_speed = float(config.get("safety_recover_speed", 0.35))
     config_safety_recover_forward_speed = float(
         config.get("safety_recover_forward_speed", 0.15)
@@ -1104,7 +1136,8 @@ def run_batch(args, output_root):
             )
     else:
         seed_plan = generate_seed_plan(args)
-    methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    methods = normalize_methods(args.methods)
+    args.methods = ",".join(methods)
     execution_plan, selected_batch_indices = select_seed_plan(args, seed_plan)
     cleanup_experiment_processes("batch start")
     existing_manifest = load_existing_manifest(output_root)
@@ -1376,6 +1409,7 @@ def main():
     if args.user_model_simple:
         args.user_model_profile = "simple"
     args.device = resolve_device(args.device)
+    validate_method_config(args)
     validate_offline_replay_config(args)
     manifest = run_batch(args, output_root)
     maybe_run_analysis(args, output_root)

@@ -5,6 +5,9 @@
 `docker exec tunnel_debug ...` 或默认挂载宿主 X11 显示器；手动可视化调试时再显式启动
 `tunnel_debug`。
 
+新主机从零配置 Docker、Python、镜像和 `navigation_runner` 编译环境时，先参考
+`navigation_runner/docs/BATCH_CONTAINER_HOST_SETUP.md`。
+
 ## 方式一：宿主机长时间批量实验（推荐）
 
 以下命令会为每个 batch 启动一个一次性 `tunnel_batch` 容器，默认不挂载宿主显示器，
@@ -32,62 +35,91 @@ python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --require-connectivity \
      --gazebo-z-mode policy_clamped \
      --gazebo-policy-z-max 0.50 \
-     --safety-min-dist 0.20 \
+     --safety-min-dist 0.35 \
      --launch-timeout 100 \
      --run-retries 1
 ```
 
 use other checkpoints (with same actor net structure)
-- M3
+- 最终实验配置（master seed，地图生成参数不再改变）
+
+主要模型
 ```python
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
      --checkpoint /root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_M3_21500.pt \
-     --num-batches 64 \
-     --output-dir /root/results/batch_compare_models_04m3 \
+     --num-batches 100 \
+     --output-dir /root/results/batch_1000_for_report_04m3ours_seed5716 \
      --methods rl \
-     --master-seed 325 \
+     --master-seed 5716 \
      --runs-per-batch 10 \
      --input-source offline \
      --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
      --replay-start-offset 0 \
      --map-sampling-mode constrained \
-     --min-obstacle-spacing 0.6 \
+     --min-obstacle-spacing 1.0 \
      --local-density-window 3.0 \
      --max-obstacles-per-window 3 \
      --max-local-area-fraction 0.35 \
      --require-connectivity \
      --gazebo-z-mode policy_clamped \
      --gazebo-policy-z-max 0.50 \
-     --safety-min-dist 0.20 \
+     --safety-min-dist 0.35 \
      --launch-timeout 100 \
      --run-retries 1
 ```
-- A6-stage2
-```pythonreplay_pt_04sA6s2_h5_mapconstrained_seed5716
+- ipc
+
+````python
 python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
      --run \
-     --checkpoint /root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_safetyconstrained_A6_stage2_best.pt \
-     --num-batches 64 \
-     --output-dir /root/results/batch_compare_models_04sA6 \
-     --methods rl \
-     --master-seed 325 \
+     --num-batches 100 \
+     --output-dir /root/results/batch_1k_REPORT_ipc_seed5716 \
+     --methods ipc \
+     --master-seed 5716 \
      --runs-per-batch 10 \
      --input-source offline \
      --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
      --replay-start-offset 0 \
      --map-sampling-mode constrained \
-     --min-obstacle-spacing 0.6 \
+     --min-obstacle-spacing 1.0 \
      --local-density-window 3.0 \
      --max-obstacles-per-window 3 \
      --max-local-area-fraction 0.35 \
      --require-connectivity \
      --gazebo-z-mode policy_clamped \
      --gazebo-policy-z-max 0.50 \
-     --safety-min-dist 0.20 \
+     --safety-min-dist 0.35 \
      --launch-timeout 100 \
      --run-retries 1
 ```
+
+- 零安全基线
+
+````python
+python3 ros1/navigation_runner/scripts/run_tunnel_batch_containers.py \
+     --run \
+     --num-batches 100 \
+     --output-dir /root/results/batch_1k_REPORT_naive_baseline_seed5716 \
+     --methods naive_raw,naive_safe \
+     --master-seed 5716 \
+     --runs-per-batch 10 \
+     --input-source offline \
+     --replay-dataset-path /root/catkin_ws/src/navigation_runner/cfg/ckpts/trajectories_tunnel.h5 \
+     --replay-start-offset 0 \
+     --map-sampling-mode constrained \
+     --min-obstacle-spacing 1.0 \
+     --local-density-window 3.0 \
+     --max-obstacles-per-window 3 \
+     --max-local-area-fraction 0.35 \
+     --require-connectivity \
+     --gazebo-z-mode policy_clamped \
+     --gazebo-policy-z-max 0.50 \
+     --safety-min-dist 0.35 \
+     --launch-timeout 100 \
+     --run-retries 1
+```
+
 
 [TODO] use other checkpoints with no residual (for ablation)
 
@@ -215,8 +247,8 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
 1. 新增 launch：
 
    roslaunch navigation_runner tunnel_real_px4.launch \
-        checkpoint:=/path/to/checkpoint_tunnel_M3_21500.pt \
-        pcd_file:=/path/to/pre_scanned_map.pcd \
+        checkpoint:=/root/catkin_ws/src/navigation_runner/cfg/ckpts/checkpoint_tunnel_M3_21500.pt \
+        pcd_file:=/root/catkin_ws/src/navigation_runner/cfg/real_maps/merged/real_map_merged_ascii.pcd \
         start_mavros:=false
 
 2. 默认假设：
@@ -238,3 +270,12 @@ python3 /root/catkin_ws/src/navigation_runner/scripts/analyze_results.py \
    - `cfg/tunnel/rc_input_real_px4.yaml` 中 RC 通道、方向、deadband、reset/estop/assist 开关
    - `cfg/tunnel/map_lidar_real_px4.yaml` 中 `map_origin_xyz` 与 `map_yaw_deg`
    - 真机限速、限高、geofence 与 `safety_min_dist`
+
+
+## 转换pcd地图
+python3 ros1/navigation_runner/scripts/tunnel_deployment/merge_real_pcd_maps.py \
+ --inputs ros1/real_maps/room601/0517.pcd \
+ --output ros1/real_maps/room601/0517_crop_xyz_0p05_ascii.pcd \
+ --crop-min -3.5 -3.0 0.0 \
+ --crop-max 3.5 3.0 3.0 \
+ --voxel-size 0.0

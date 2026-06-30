@@ -2,11 +2,16 @@
 """Publish a static PCD map as PointCloud2 for RViz."""
 
 import os
+import sys
 
 import numpy as np
 import rospy
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 from tunnel_deployment.pcd_io import read_pcd_xyz, voxel_downsample
 
