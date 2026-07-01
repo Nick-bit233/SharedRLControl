@@ -101,7 +101,17 @@ docker run --rm -it \
   tunnel_comparison:20260415-ipcfix-cpu \
   bash
 ```
-
+<!-- docker run --rm -it \
+  --net=host \
+  --ipc=host \
+  --shm-size=2g \
+  -e ROS_MASTER_URI=http://127.0.0.1:11311 \
+  -e ROS_IP=192.168.31.144 \
+  -e ROS_HOSTNAME=192.168.31.144 \
+  -v /path/to/SharedRLControl:/root/SharedRLControl \
+  tunnel_comparison:20260415-ipcfix-cpu \
+  bash -->
+  
 如果在同一个容器内启动所有节点，也可以把 ROS master 固定为本机回环：
 
 ```bash
