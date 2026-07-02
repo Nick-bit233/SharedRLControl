@@ -32,19 +32,39 @@ docker compose -f docker-compose.real.yml build real_runtime
 
 ## Run
 
+By default, `docker compose up` only starts an idle container. It does not run
+`roslaunch` automatically.
+
 ```bash
 cd SharedRLControl/ros1_real
 docker compose -f docker-compose.real.yml up real_runtime
 ```
 
-Useful overrides:
+Enter the container and launch manually:
 
 ```bash
-START_MAVROS=false START_NOKOV=false SRLC_RVIZ=false SRLC_RECORD=false \
+docker compose -f docker-compose.real.yml exec real_runtime bash
+```
+
+Inside that shell, ROS is already sourced by `/root/.bashrc`; run any launch
+variant manually, for example:
+
+```bash
+roslaunch srlc_real real_px4.launch \
+  start_mavros:=false start_nokov:=false record:=false rviz:=false \
+  post_takeoff_mode:=assist takeoff_height:=1.0
+```
+
+To automatically run a specific launch command when the container starts, set
+`SRLC_CONTAINER_COMMAND` explicitly:
+
+```bash
+SRLC_CONTAINER_COMMAND='roslaunch srlc_real real_px4.launch start_mavros:=false start_nokov:=false record:=false rviz:=false' \
 docker compose -f docker-compose.real.yml up real_runtime
 ```
 
 ```bash
+SRLC_CONTAINER_COMMAND='roslaunch srlc_real real_px4.launch' \
 SRLC_POST_TAKEOFF_MODE=assist SRLC_TAKEOFF_HEIGHT=1.2 \
 PX4_FCU_URL='udp://:14540@192.168.31.155:14557' \
 NOKOV_SERVER=192.168.31.193 NOKOV_TRACKER=soccer \

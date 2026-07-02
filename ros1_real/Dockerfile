@@ -29,8 +29,16 @@ WORKDIR /root/catkin_ws
 COPY src ./src
 RUN . /opt/ros/noetic/setup.sh && catkin_make -DCATKIN_ENABLE_TESTING=OFF
 
+RUN printf '%s\n' \
+    'source /opt/ros/noetic/setup.bash' \
+    '[ -f /root/catkin_ws/devel/setup.bash ] && source /root/catkin_ws/devel/setup.bash' \
+    ': "${ROS_MASTER_URI:=http://127.0.0.1:11311}"' \
+    ': "${ROS_IP:=127.0.0.1}"' \
+    'export ROS_MASTER_URI ROS_IP' \
+    >> /root/.bashrc
+
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["roslaunch", "srlc_real", "real_px4.launch"]
+CMD ["sleep", "infinity"]
