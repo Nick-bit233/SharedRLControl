@@ -1,0 +1,46 @@
+services:
+  real_runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: srlc_ros1_real:noetic
+    network_mode: host
+    ipc: host
+    shm_size: 2gb
+    stdin_open: true
+    tty: true
+    environment:
+      DISPLAY: ${DISPLAY:-}
+      QT_X11_NO_MITSHM: "1"
+      ROS_MASTER_URI: ${ROS_MASTER_URI:-http://127.0.0.1:11311}
+      ROS_IP: ${ROS_IP:-}
+      ROS_HOSTNAME: ${ROS_HOSTNAME:-}
+      START_MAVROS: ${START_MAVROS:-true}
+      START_NOKOV: ${START_NOKOV:-true}
+      PX4_FCU_URL: ${PX4_FCU_URL:-udp://:14540@192.168.31.155:14557}
+      PX4_GCS_URL: ${PX4_GCS_URL:-}
+      NOKOV_SERVER: ${NOKOV_SERVER:-192.168.31.193}
+      NOKOV_PORT: ${NOKOV_PORT:-3883}
+      NOKOV_TRACKER: ${NOKOV_TRACKER:-soccer}
+      SRLC_CHECKPOINT: ${SRLC_CHECKPOINT:-/root/real_assets/ckpts/checkpoint_minrisk_0610.pt}
+      SRLC_PCD_FILE: ${SRLC_PCD_FILE:-/root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50.pcd}
+      SRLC_DEVICE: ${SRLC_DEVICE:-cpu}
+      SRLC_POST_TAKEOFF_MODE: ${SRLC_POST_TAKEOFF_MODE:-direct}
+      SRLC_TAKEOFF_HEIGHT: ${SRLC_TAKEOFF_HEIGHT:-1.2}
+      SRLC_MAP_YAW_DEG: ${SRLC_MAP_YAW_DEG:-0.0}
+      SRLC_MAP_ORIGIN_X: ${SRLC_MAP_ORIGIN_X:-0.0}
+      SRLC_MAP_ORIGIN_Y: ${SRLC_MAP_ORIGIN_Y:-0.0}
+      SRLC_MAP_ORIGIN_Z: ${SRLC_MAP_ORIGIN_Z:-0.0}
+      SRLC_RECORD: ${SRLC_RECORD:-true}
+      SRLC_RVIZ: ${SRLC_RVIZ:-false}
+      SRLC_OUTPUT_DIR: ${SRLC_OUTPUT_DIR:-/root/real_outputs}
+      SRLC_RUN_ID: ${SRLC_RUN_ID:-real_px4_nokov}
+      SRLC_MAX_XY_SPEED: ${SRLC_MAX_XY_SPEED:-0.5}
+      SRLC_MAX_Z_SPEED: ${SRLC_MAX_Z_SPEED:-0.3}
+      SRLC_SAFETY_MIN_DIST: ${SRLC_SAFETY_MIN_DIST:-0.25}
+      SRLC_COLLISION_DIST: ${SRLC_COLLISION_DIST:-0.15}
+    volumes:
+      - ${SRLC_CKPT_HOST_DIR:-../ros1/ckpts}:/root/real_assets/ckpts:ro
+      - ${SRLC_MAP_HOST_DIR:-../ros1/real_maps}:/root/real_assets/maps:ro
+      - ${SRLC_OUTPUT_HOST_DIR:-./results}:/root/real_outputs:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>srlc_real</name>
+  <version>0.1.0</version>
+  <description>ROS1 Noetic real-flight runtime for SRLC PX4/Nokov deployment.</description>
+
+  <maintainer email="haoming@todo.todo">haoming</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
+
+  <export>
+  </export>
+</package>

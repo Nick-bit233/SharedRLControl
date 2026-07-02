@@ -1,0 +1,12 @@
+{
+  "summary": {
+    "run_id": "real_px4_nokov",
+    "samples": 0,
+    "min_distance": Infinity,
+    "min_front_distance": Infinity,
+    "max_abs_setpoint_xy": 0.0,
+    "latest_status": "",
+    "data_file": "real_px4_nokov_20260702_040229.npz"
+  },
+  "samples": []
+}

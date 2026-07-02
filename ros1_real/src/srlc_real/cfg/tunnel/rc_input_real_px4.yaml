@@ -1,0 +1,39 @@
+# MAVROS RC bridge for real PX4 SRLC deployment.
+# Mode selection is handled by tunnel_navigation.py; this node only converts
+# RC stick axes to /srlc/human_action.
+# Hardware RC/failsafe handles emergency signal cut; SRLC does not publish
+# /experiment_control/stop in this profile.
+rc_topic: "/mavros/rc/in"
+human_action_topic: "/srlc/human_action"
+stop_topic: "/experiment_control/stop"
+status_topic: "/srlc/rc_status"
+
+# Channels are 1-based by default, matching RC transmitter labels.
+channel_base: 1
+forward_channel: 2
+lateral_channel: 1
+vertical_channel: 3
+estop_channel: 0
+reset_channel: 0
+
+pwm_min: 1000.0
+pwm_mid: 1500.0
+pwm_max: 2000.0
+deadband: 0.05
+switch_threshold: 1700.0
+
+# Calibrate these on the real transmitter before flight.
+forward_reverse: false
+lateral_reverse: false
+vertical_reverse: false
+estop_high_is_stop: true
+reset_high_is_reset: true
+
+max_forward_speed: 1.0
+max_lateral_speed: 1.0
+max_vertical_speed: 0.4
+timeout_sec: 0.3
+publish_rate: 30.0
+enable_stop_output: false
+stop_on_timeout: false
+latch_stop: false

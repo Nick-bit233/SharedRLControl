@@ -1,0 +1,57 @@
+# Real PX4 SRLC policy deployment parameters.
+
+# Policy.
+checkpoint_path: ""
+action_limit: 2.0
+policy_mode: "residual"
+device: "cpu"
+deterministic: true
+policy_debug: false
+
+# LiDAR topic input produced by map_lidar_node.py.
+lidar_range_image_topic: "/srlc/lidar/range_image"
+lidar_min_distance_topic: "/srlc/lidar/min_distance"
+lidar_timeout: 0.3
+lidar_range: 4.0
+lidar_vbeams: 4
+lidar_hres: 10.0
+
+# RC human_action input produced by rc_input_node.py.
+human_action_topic: "/srlc/human_action"
+human_action_timeout: 0.3
+assist_input_deadzone_norm: 0.05
+
+# PX4 control.
+control_freq: 20.0
+height_control: false
+lock_z_control: true
+takeoff_height: 1.2
+require_offboard: true
+real_auto_takeoff_on_offboard: true
+auto_arm_on_offboard: true
+post_takeoff_mode: "direct"
+post_takeoff_mode_delay: 2.0
+takeoff_reached_tolerance: 0.1
+on_offboard_loss: "stream_hold"
+hold_on_stop: false
+estop_hold_mode: "AUTO.LOITER"
+estop_fallback_mode: "POSCTL"
+hold_verify_timeout: 1.0
+odom_timeout: 0.3
+odom_topic: "/nokov/local_position/odom"
+setpoint_raw_topic: "/mavros/setpoint_raw/local"
+
+# Conservative real-flight command limits.
+max_xy_speed_real: 0.5
+max_z_speed_real: 0.3
+min_altitude: 0.5
+max_altitude: 3.0
+geofence_x: [-3.0, 3.0]
+geofence_y: [-3.0, 3.0]
+
+# Safety.
+enable_safety_stop: true
+enable_collision_detection: true
+safety_min_dist: 0.25
+collision_dist: 0.15
+safety_start_takeoff_delta: 0.3

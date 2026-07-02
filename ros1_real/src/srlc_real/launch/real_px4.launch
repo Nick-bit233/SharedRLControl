@@ -1,0 +1,168 @@
+<launch>
+    <arg name="checkpoint" default="$(optenv SRLC_CHECKPOINT /root/real_assets/ckpts/checkpoint_minrisk_0610.pt)"/>
+    <arg name="pcd_file" default="$(optenv SRLC_PCD_FILE /root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50.pcd)"/>
+    <arg name="device" default="$(optenv SRLC_DEVICE cpu)"/>
+    <arg name="rviz" default="$(optenv SRLC_RVIZ false)"/>
+    <arg name="record" default="$(optenv SRLC_RECORD true)"/>
+    <arg name="output_dir" default="$(optenv SRLC_OUTPUT_DIR /root/real_outputs)"/>
+    <arg name="run_id" default="$(optenv SRLC_RUN_ID real_px4_nokov)"/>
+
+    <arg name="start_mavros" default="$(optenv START_MAVROS true)"/>
+    <arg name="fcu_url" default="$(optenv PX4_FCU_URL udp://:14540@192.168.31.155:14557)"/>
+    <arg name="gcs_url" default="$(optenv PX4_GCS_URL)"/>
+
+    <arg name="start_nokov" default="$(optenv START_NOKOV true)"/>
+    <arg name="nokov_server" default="$(optenv NOKOV_SERVER 192.168.31.193)"/>
+    <arg name="nokov_port" default="$(optenv NOKOV_PORT 3883)"/>
+    <arg name="nokov_tracker" default="$(optenv NOKOV_TRACKER soccer)"/>
+
+    <arg name="map_yaw_deg" default="$(optenv SRLC_MAP_YAW_DEG 0.0)"/>
+    <arg name="map_origin_x" default="$(optenv SRLC_MAP_ORIGIN_X 0.0)"/>
+    <arg name="map_origin_y" default="$(optenv SRLC_MAP_ORIGIN_Y 0.0)"/>
+    <arg name="map_origin_z" default="$(optenv SRLC_MAP_ORIGIN_Z 0.0)"/>
+
+    <arg name="takeoff_height" default="$(optenv SRLC_TAKEOFF_HEIGHT 1.2)"/>
+    <arg name="post_takeoff_mode" default="$(optenv SRLC_POST_TAKEOFF_MODE direct)"/>
+    <arg name="post_takeoff_mode_delay" default="$(optenv SRLC_POST_TAKEOFF_MODE_DELAY 2.0)"/>
+    <arg name="takeoff_reached_tolerance" default="$(optenv SRLC_TAKEOFF_REACHED_TOLERANCE 0.1)"/>
+    <arg name="lock_z_control" default="$(optenv SRLC_LOCK_Z_CONTROL true)"/>
+    <arg name="require_offboard" default="$(optenv SRLC_REQUIRE_OFFBOARD true)"/>
+    <arg name="real_auto_takeoff_on_offboard" default="$(optenv SRLC_AUTO_TAKEOFF true)"/>
+    <arg name="auto_arm_on_offboard" default="$(optenv SRLC_AUTO_ARM true)"/>
+    <arg name="hold_on_stop" default="$(optenv SRLC_HOLD_ON_STOP false)"/>
+    <arg name="estop_hold_mode" default="$(optenv SRLC_ESTOP_HOLD_MODE AUTO.LOITER)"/>
+
+    <arg name="forward_reverse" default="$(optenv SRLC_RC_FORWARD_REVERSE false)"/>
+    <arg name="lateral_reverse" default="$(optenv SRLC_RC_LATERAL_REVERSE true)"/>
+    <arg name="max_xy_speed_real" default="$(optenv SRLC_MAX_XY_SPEED 0.5)"/>
+    <arg name="max_z_speed_real" default="$(optenv SRLC_MAX_Z_SPEED 0.3)"/>
+    <arg name="safety_min_dist" default="$(optenv SRLC_SAFETY_MIN_DIST 0.25)"/>
+    <arg name="collision_dist" default="$(optenv SRLC_COLLISION_DIST 0.15)"/>
+    <arg name="assist_input_deadzone_norm" default="$(optenv SRLC_ASSIST_INPUT_DEADZONE_NORM 0.05)"/>
+    <arg name="geofence_x_min" default="$(optenv SRLC_GEOFENCE_X_MIN -3.0)"/>
+    <arg name="geofence_x_max" default="$(optenv SRLC_GEOFENCE_X_MAX 3.0)"/>
+    <arg name="geofence_y_min" default="$(optenv SRLC_GEOFENCE_Y_MIN -3.0)"/>
+    <arg name="geofence_y_max" default="$(optenv SRLC_GEOFENCE_Y_MAX 3.0)"/>
+    <arg name="min_altitude" default="$(optenv SRLC_MIN_ALTITUDE 0.5)"/>
+    <arg name="max_altitude" default="$(optenv SRLC_MAX_ALTITUDE 3.0)"/>
+
+    <arg name="odom_topic" default="/nokov/local_position/odom"/>
+    <arg name="rc_topic" default="/mavros/rc/in"/>
+    <arg name="setpoint_raw_topic" default="/mavros/setpoint_raw/local"/>
+    <arg name="map_cloud_topic" default="/real_map/cloud"/>
+    <arg name="map_cloud_voxel_size" default="0.1"/>
+    <arg name="map_cloud_max_points" default="300000"/>
+
+    <group if="$(arg start_mavros)">
+        <include file="$(find mavros)/launch/px4.launch">
+            <arg name="fcu_url" value="$(arg fcu_url)"/>
+            <arg name="gcs_url" value="$(arg gcs_url)"/>
+        </include>
+    </group>
+
+    <group if="$(arg start_nokov)">
+        <node pkg="vrpn_client_ros" type="vrpn_client_node" name="vrpn_client_node" output="screen">
+            <rosparam subst_value="true">
+server: $(arg nokov_server)
+port: $(arg nokov_port)
+update_frequency: 100.0
+frame_id: world
+use_server_time: false
+broadcast_tf: true
+refresh_tracker_frequency: 0.0
+trackers:
+  - $(arg nokov_tracker)
+            </rosparam>
+        </node>
+
+        <node pkg="nokov_uav" type="nokov_node" name="nokov_node" output="screen">
+            <param name="tracker_name" value="$(arg nokov_tracker)"/>
+        </node>
+    </group>
+
+    <node pkg="srlc_real" type="map_lidar_node.py"
+          name="map_lidar_node" output="screen" required="true">
+        <rosparam file="$(find srlc_real)/cfg/tunnel/map_lidar_real_px4.yaml"/>
+        <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
+        <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+    </node>
+
+    <node pkg="srlc_real" type="pcd_map_publisher.py"
+          name="real_map_publisher" output="screen">
+        <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="frame_id" value="map"/>
+        <param name="topic" value="$(arg map_cloud_topic)"/>
+        <param name="voxel_size" value="$(arg map_cloud_voxel_size)"/>
+        <param name="max_points" value="$(arg map_cloud_max_points)"/>
+        <param name="publish_rate" value="0.2"/>
+        <param name="latch" value="true"/>
+    </node>
+
+    <node pkg="srlc_real" type="srlc_alignment_viz_node.py"
+          name="srlc_alignment_viz_node" output="screen">
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
+        <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+        <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>
+        <rosparam param="geofence_y" subst_value="true">[$(arg geofence_y_min), $(arg geofence_y_max)]</rosparam>
+        <param name="min_altitude" value="$(arg min_altitude)"/>
+        <param name="max_altitude" value="$(arg max_altitude)"/>
+    </node>
+
+    <node pkg="srlc_real" type="rc_input_node.py"
+          name="rc_input_node" output="screen" required="true">
+        <rosparam file="$(find srlc_real)/cfg/tunnel/rc_input_real_px4.yaml"/>
+        <param name="rc_topic" value="$(arg rc_topic)"/>
+        <param name="forward_reverse" value="$(arg forward_reverse)"/>
+        <param name="lateral_reverse" value="$(arg lateral_reverse)"/>
+    </node>
+
+    <node pkg="srlc_real" type="real_navigation_node.py"
+          name="srlc_real_navigator" output="screen" required="true">
+        <rosparam file="$(find srlc_real)/cfg/tunnel/real_nav_px4.yaml"/>
+        <param name="checkpoint_path" value="$(arg checkpoint)"/>
+        <param name="device" value="$(arg device)"/>
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
+        <param name="takeoff_height" value="$(arg takeoff_height)"/>
+        <param name="lock_z_control" value="$(arg lock_z_control)"/>
+        <param name="require_offboard" value="$(arg require_offboard)"/>
+        <param name="real_auto_takeoff_on_offboard" value="$(arg real_auto_takeoff_on_offboard)"/>
+        <param name="auto_arm_on_offboard" value="$(arg auto_arm_on_offboard)"/>
+        <param name="post_takeoff_mode" value="$(arg post_takeoff_mode)"/>
+        <param name="post_takeoff_mode_delay" value="$(arg post_takeoff_mode_delay)"/>
+        <param name="takeoff_reached_tolerance" value="$(arg takeoff_reached_tolerance)"/>
+        <param name="hold_on_stop" value="$(arg hold_on_stop)"/>
+        <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
+        <param name="estop_hold_mode" value="$(arg estop_hold_mode)"/>
+        <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
+        <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
+        <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
+        <param name="collision_dist" value="$(arg collision_dist)"/>
+        <param name="min_altitude" value="$(arg min_altitude)"/>
+        <param name="max_altitude" value="$(arg max_altitude)"/>
+        <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>
+        <rosparam param="geofence_y" subst_value="true">[$(arg geofence_y_min), $(arg geofence_y_max)]</rosparam>
+    </node>
+
+    <group if="$(arg record)">
+        <node pkg="srlc_real" type="srlc_real_recorder.py"
+              name="srlc_real_recorder" output="screen">
+            <param name="output_dir" value="$(arg output_dir)"/>
+            <param name="run_id" value="$(arg run_id)"/>
+            <param name="odom_topic" value="$(arg odom_topic)"/>
+            <param name="rc_topic" value="$(arg rc_topic)"/>
+            <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
+            <param name="lidar_range" value="4.0"/>
+            <param name="lidar_hbeams" value="36"/>
+            <param name="lidar_vbeams" value="4"/>
+        </node>
+    </group>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="srlc_real_rviz"
+              args="-d $(find srlc_real)/cfg/real_map/real_map.rviz"/>
+    </group>
+</launch>
