@@ -1,6 +1,6 @@
 <launch>
     <arg name="checkpoint" default="$(optenv SRLC_CHECKPOINT /root/real_assets/ckpts/checkpoint_minrisk_0610.pt)"/>
-    <arg name="pcd_file" default="$(optenv SRLC_PCD_FILE /root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50.pcd)"/>
+    <arg name="pcd_file" default="$(optenv SRLC_PCD_FILE /root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50_floor_level_z0.pcd)"/>
     <arg name="device" default="$(optenv SRLC_DEVICE cpu)"/>
     <arg name="rviz" default="$(optenv SRLC_RVIZ false)"/>
     <arg name="record" default="$(optenv SRLC_RECORD true)"/>
