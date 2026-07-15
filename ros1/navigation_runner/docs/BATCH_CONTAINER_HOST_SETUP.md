@@ -119,7 +119,6 @@ docker save tunnel_comparison:20260415-ipcfix-cpu | gzip > tunnel_comparison_202
 
 ```bash
 gunzip -c tunnel_comparison_20260415-ipcfix_cpu.tar.gz | docker load
-docker images | grep tunnel_comparison
 ```
 
 如果导入后需要校验压缩包完整性：

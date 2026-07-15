@@ -32,12 +32,8 @@ services:
       SRLC_MAP_ORIGIN_Z: ${SRLC_MAP_ORIGIN_Z:-0.0}
       SRLC_RECORD: ${SRLC_RECORD:-true}
       SRLC_RVIZ: ${SRLC_RVIZ:-false}
-      SRLC_OUTPUT_DIR: ${SRLC_OUTPUT_DIR:-/root/real_outputs}
-      SRLC_RUN_ID: ${SRLC_RUN_ID:-real_px4_nokov}
-      SRLC_MAX_XY_SPEED: ${SRLC_MAX_XY_SPEED:-0.5}
-      SRLC_MAX_Z_SPEED: ${SRLC_MAX_Z_SPEED:-0.3}
-      SRLC_SAFETY_MIN_DIST: ${SRLC_SAFETY_MIN_DIST:-0.25}
-      SRLC_COLLISION_DIST: ${SRLC_COLLISION_DIST:-0.15}
+      SRLC_OUTPUT_DIR: .
+      .0SRLC_COLLISION_DIST: ${SRLC_COLLISION_DIST:-0.15}
     volumes:
       - ${SRLC_CKPT_HOST_DIR:-../ros1/ckpts}:/root/real_assets/ckpts:ro
       - ${SRLC_MAP_HOST_DIR:-../ros1/real_maps}:/root/real_assets/maps:ro
