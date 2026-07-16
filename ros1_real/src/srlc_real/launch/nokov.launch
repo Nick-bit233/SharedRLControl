@@ -1,0 +1,25 @@
+<launch>
+    <arg name="server" default="$(optenv NOKOV_SERVER 192.168.31.192)"/>
+    <arg name="port" default="$(optenv NOKOV_PORT 3883)"/>
+    <arg name="tracker" default="$(optenv NOKOV_TRACKER uav_soccer)"/>
+
+    <node pkg="vrpn_client_ros" type="vrpn_client_node"
+          name="vrpn_client_node" output="screen">
+        <rosparam subst_value="true">
+server: $(arg server)
+port: $(arg port)
+update_frequency: 100.0
+frame_id: world
+use_server_time: false
+broadcast_tf: true
+refresh_tracker_frequency: 0.0
+trackers:
+  - $(arg tracker)
+        </rosparam>
+    </node>
+
+    <node pkg="nokov_uav" type="nokov_node"
+          name="nokov_node" output="screen">
+        <param name="tracker_name" value="$(arg tracker)"/>
+    </node>
+</launch>

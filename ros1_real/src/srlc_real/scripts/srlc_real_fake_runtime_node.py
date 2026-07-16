@@ -8,6 +8,7 @@ from geometry_msgs.msg import PoseStamped, Quaternion
 from mavros_msgs.msg import PositionTarget, RCIn, State
 from mavros_msgs.srv import CommandBool, CommandBoolResponse
 from mavros_msgs.srv import CommandLong, CommandLongResponse
+from mavros_msgs.srv import MessageInterval, MessageIntervalResponse
 from mavros_msgs.srv import SetMode, SetModeResponse
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu
@@ -78,6 +79,7 @@ class FakeRealRuntime:
         self.pose_pub = rospy.Publisher("/mavros/local_position/pose", PoseStamped, queue_size=10)
         self.vision_pose_pub = rospy.Publisher("/mavros/vision_pose/pose", PoseStamped, queue_size=10)
         self.imu_pub = rospy.Publisher("/nokov/imu/data", Imu, queue_size=10)
+        self.mavros_imu_pub = rospy.Publisher("/mavros/imu/data", Imu, queue_size=10)
 
         self.raw_setpoint_sub = rospy.Subscriber(
             "/mavros/setpoint_raw/local", PositionTarget, self._raw_setpoint_cb, queue_size=1
@@ -85,6 +87,9 @@ class FakeRealRuntime:
         self.set_mode_srv = rospy.Service("/mavros/set_mode", SetMode, self._set_mode_cb)
         self.arming_srv = rospy.Service("/mavros/cmd/arming", CommandBool, self._arming_cb)
         self.command_srv = rospy.Service("/mavros/cmd/command", CommandLong, self._command_cb)
+        self.message_interval_srv = rospy.Service(
+            "/mavros/set_message_interval", MessageInterval, self._message_interval_cb
+        )
 
         self.state_timer = rospy.Timer(rospy.Duration(1.0 / self.state_rate), self._state_timer_cb)
         self.odom_timer = rospy.Timer(rospy.Duration(1.0 / self.odom_rate), self._odom_timer_cb)
@@ -115,6 +120,14 @@ class FakeRealRuntime:
     def _command_cb(self, req):
         rospy.loginfo("[SRLC Fake] CommandLong command=%d", req.command)
         return CommandLongResponse(success=True, result=0)
+
+    def _message_interval_cb(self, req):
+        rospy.loginfo(
+            "[SRLC Fake] MessageInterval id=%d rate=%.1fHz",
+            req.message_id,
+            req.message_rate,
+        )
+        return MessageIntervalResponse(success=True)
 
     def _raw_setpoint_cb(self, msg):
         cmd = [0.0, 0.0, 0.0]
@@ -183,6 +196,7 @@ class FakeRealRuntime:
         imu.header = odom.header
         imu.orientation = odom.pose.pose.orientation
         self.imu_pub.publish(imu)
+        self.mavros_imu_pub.publish(imu)
 
     def _apply_position_hold_targets(self):
         if self.target_position[0] is not None and self.target_position[1] is not None:

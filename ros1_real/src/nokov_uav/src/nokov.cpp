@@ -80,7 +80,7 @@ int main(int argc, char** argv){
     ros::NodeHandle nh;
     ros::NodeHandle pnh("~");
     std::string tracker_name;
-    pnh.param<std::string>("tracker_name", tracker_name, "soccer");
+    pnh.param<std::string>("tracker_name", tracker_name, "uav_soccer");
     pnh.param<double>("vision_z_offset", vision_z_offset, -0.15);
 
     const std::string tracker_ns = "/vrpn_client_node/" + tracker_name;

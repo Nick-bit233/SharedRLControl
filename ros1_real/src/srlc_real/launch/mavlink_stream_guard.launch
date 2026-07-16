@@ -1,0 +1,18 @@
+<launch>
+    <arg name="local_position_rate_hz" default="$(optenv MAVLINK_LOCAL_POSITION_RATE_HZ 30.0)"/>
+    <arg name="attitude_rate_hz" default="$(optenv MAVLINK_ATTITUDE_RATE_HZ 20.0)"/>
+    <arg name="verify_timeout_sec" default="$(optenv MAVLINK_STREAM_VERIFY_TIMEOUT_SEC 3.0)"/>
+    <arg name="stale_timeout_sec" default="$(optenv MAVLINK_STREAM_STALE_TIMEOUT_SEC 2.0)"/>
+    <arg name="retry_interval_sec" default="$(optenv MAVLINK_STREAM_RETRY_INTERVAL_SEC 2.0)"/>
+    <arg name="max_attempts" default="$(optenv MAVLINK_STREAM_MAX_ATTEMPTS 3)"/>
+
+    <node pkg="srlc_real" type="mavlink_stream_guard_node.py"
+          name="mavlink_stream_guard" output="screen">
+        <param name="local_position_rate_hz" value="$(arg local_position_rate_hz)"/>
+        <param name="attitude_rate_hz" value="$(arg attitude_rate_hz)"/>
+        <param name="verify_timeout_sec" value="$(arg verify_timeout_sec)"/>
+        <param name="stale_timeout_sec" value="$(arg stale_timeout_sec)"/>
+        <param name="retry_interval_sec" value="$(arg retry_interval_sec)"/>
+        <param name="max_attempts" value="$(arg max_attempts)"/>
+    </node>
+</launch>

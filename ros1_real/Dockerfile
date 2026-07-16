@@ -18,6 +18,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-noetic-vrpn \
     && rm -rf /var/lib/apt/lists/*
 
+# Keep rebuilds functionally aligned with the diagnostic tooling installed in
+# the validated real-flight container.  Use explicit package names so future
+# ros-noetic-mavros* additions are not pulled in accidentally.
+RUN apt-get update && apt-get install -y \
+    net-tools \
+    ros-noetic-desktop-full \
+    ros-noetic-mavros-dbgsym \
+    ros-noetic-mavros-extras-dbgsym \
+    ros-noetic-mavros-msgs \
+    ros-noetic-rqt \
+    ros-noetic-rqt-common-plugins \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN /opt/ros/noetic/lib/mavros/install_geographiclib_datasets.sh
 
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \

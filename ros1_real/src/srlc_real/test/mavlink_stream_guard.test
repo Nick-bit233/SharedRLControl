@@ -1,0 +1,15 @@
+<launch>
+    <node pkg="srlc_real" type="mavlink_stream_guard_node.py"
+          name="mavlink_stream_guard" output="screen" required="true">
+        <param name="verify_timeout_sec" value="1.0"/>
+        <param name="stale_timeout_sec" value="0.5"/>
+        <param name="retry_interval_sec" value="0.2"/>
+        <param name="max_attempts" value="3"/>
+        <param name="check_period_sec" value="0.05"/>
+        <param name="service_wait_timeout_sec" value="0.02"/>
+    </node>
+
+    <test test-name="mavlink_stream_guard_ros"
+          pkg="srlc_real" type="test_mavlink_stream_guard_ros.py"
+          time-limit="15.0"/>
+</launch>

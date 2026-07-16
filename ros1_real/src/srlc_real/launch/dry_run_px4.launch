@@ -9,6 +9,7 @@
     <arg name="record" default="true"/>
     <arg name="output_dir" default="$(optenv SRLC_OUTPUT_DIR /root/real_outputs)"/>
     <arg name="run_id" default="dry_run_px4_fixed_rc"/>
+    <arg name="start_stream_guard" default="true"/>
 
     <arg name="post_takeoff_mode" default="direct"/>
     <arg name="takeoff_height" default="1.2"/>
@@ -66,6 +67,10 @@
         <param name="fake_vertical_speed" value="$(arg fake_vertical_speed)"/>
         <param name="motion_after" value="$(arg motion_after)"/>
     </node>
+
+    <group if="$(arg start_stream_guard)">
+        <include file="$(find srlc_real)/launch/mavlink_stream_guard.launch"/>
+    </group>
 
     <node pkg="srlc_real" type="map_lidar_node.py"
           name="map_lidar_node" output="screen" required="true">

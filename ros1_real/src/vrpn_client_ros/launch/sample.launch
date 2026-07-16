@@ -1,5 +1,6 @@
 <launch>
- <arg name="server" default="192.168.31.193"/>
+<!-- nokov windows pc ip -->
+ <arg name="server" default="192.168.31.192"/>
 
   <!-- <node name="rviz" pkg="rviz" type="rviz" output="screen"
     args="-d $(find vrpn_client_ros)/config/nokov.rviz"> 

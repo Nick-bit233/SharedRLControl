@@ -6,15 +6,7 @@
     <arg name="record" default="$(optenv SRLC_RECORD true)"/>
     <arg name="output_dir" default="$(optenv SRLC_OUTPUT_DIR /root/real_outputs)"/>
     <arg name="run_id" default="$(optenv SRLC_RUN_ID real_px4_nokov)"/>
-
-    <arg name="start_mavros" default="$(optenv START_MAVROS true)"/>
-    <arg name="fcu_url" default="$(optenv PX4_FCU_URL udp://:14540@192.168.31.155:14557)"/>
-    <arg name="gcs_url" default="$(optenv PX4_GCS_URL)"/>
-
-    <arg name="start_nokov" default="$(optenv START_NOKOV true)"/>
-    <arg name="nokov_server" default="$(optenv NOKOV_SERVER 192.168.31.193)"/>
-    <arg name="nokov_port" default="$(optenv NOKOV_PORT 3883)"/>
-    <arg name="nokov_tracker" default="$(optenv NOKOV_TRACKER soccer)"/>
+    <arg name="start_stream_guard" default="$(optenv START_MAVLINK_STREAM_GUARD true)"/>
 
     <arg name="map_yaw_deg" default="$(optenv SRLC_MAP_YAW_DEG 0.0)"/>
     <arg name="map_origin_x" default="$(optenv SRLC_MAP_ORIGIN_X 0.0)"/>
@@ -53,31 +45,8 @@
     <arg name="map_cloud_voxel_size" default="0.1"/>
     <arg name="map_cloud_max_points" default="300000"/>
 
-    <group if="$(arg start_mavros)">
-        <include file="$(find mavros)/launch/px4.launch">
-            <arg name="fcu_url" value="$(arg fcu_url)"/>
-            <arg name="gcs_url" value="$(arg gcs_url)"/>
-        </include>
-    </group>
-
-    <group if="$(arg start_nokov)">
-        <node pkg="vrpn_client_ros" type="vrpn_client_node" name="vrpn_client_node" output="screen">
-            <rosparam subst_value="true">
-server: $(arg nokov_server)
-port: $(arg nokov_port)
-update_frequency: 100.0
-frame_id: world
-use_server_time: false
-broadcast_tf: true
-refresh_tracker_frequency: 0.0
-trackers:
-  - $(arg nokov_tracker)
-            </rosparam>
-        </node>
-
-        <node pkg="nokov_uav" type="nokov_node" name="nokov_node" output="screen">
-            <param name="tracker_name" value="$(arg nokov_tracker)"/>
-        </node>
+    <group if="$(arg start_stream_guard)">
+        <include file="$(find srlc_real)/launch/mavlink_stream_guard.launch"/>
     </group>
 
     <node pkg="srlc_real" type="map_lidar_node.py"

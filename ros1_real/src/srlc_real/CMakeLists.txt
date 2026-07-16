@@ -13,6 +13,14 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_python_setup()
 
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  catkin_add_nosetests(test/test_mavlink_stream_guard_core.py)
+  catkin_add_nosetests(test/test_launch_contracts.py)
+  add_rostest(test/fake_runtime_stream_guard.test)
+  add_rostest(test/mavlink_stream_guard.test)
+endif()
+
 catkin_package(
   CATKIN_DEPENDS
     geometry_msgs
@@ -25,6 +33,7 @@ catkin_package(
 )
 
 catkin_install_python(PROGRAMS
+  scripts/mavlink_stream_guard_node.py
   scripts/real_navigation_node.py
   scripts/map_lidar_node.py
   scripts/pcd_map_publisher.py

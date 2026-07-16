@@ -1,491 +1,248 @@
-1. 容器状态与默认配置
+# SRLC ROS1 Noetic Real-PX4 Runtime
 
-宿主机进入容器：
+This workspace contains the Dockerized ROS1 Noetic runtime used for real PX4
+and Nokov experiments. MAVROS, Nokov, the MAVLink stream guard, and the SRLC
+navigation stack have separate launch entry points so they can be started and
+stopped independently during bench tests.
 
-docker exec -it ros1_real-real_runtime-1 bash
+## Default deployment
 
-容器内工作区：
+The Compose service uses host networking and these defaults:
 
-source /opt/ros/noetic/setup.bash
-source /root/catkin_ws/devel/setup.bash
-
-rospack find srlc_real
-rospack find mavros
-rospack find nokov_uav
-rospack find vrpn_client_ros
-
-当前默认环境：
-
-PX4_FCU_URL=udp://:14540@192.168.31.201:14557
-NOKOV_SERVER=192.168.31.193
+```text
+PX4_FCU_URL=udp://:14551@192.168.31.201:14550
+PX4_GCS_URL=
+NOKOV_SERVER=192.168.31.192
 NOKOV_PORT=3883
-NOKOV_TRACKER=uav_soccer (make this name same as the xingying software mark!)
-SRLC_CHECKPOINT=/root/real_assets/ckpts/checkpoint_minrisk_0610.pt
-SRLC_PCD_FILE=/root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50_floor_level_z0.pcd
-SRLC_POST_TAKEOFF_MODE=direct
-SRLC_TAKEOFF_HEIGHT=1.2
-SRLC_MAX_XY_SPEED=0.5
-SRLC_MAX_Z_SPEED=0.3
-SRLC_SAFETY_MIN_DIST=0.25
-SRLC_COLLISION_DIST=0.15
+NOKOV_TRACKER=uav_soccer
+MAVLINK_LOCAL_POSITION_RATE_HZ=30.0
+MAVLINK_ATTITUDE_RATE_HZ=20.0
 SRLC_OUTPUT_DIR=/root/real_outputs
+```
 
-宿主机挂载关系：
+`PX4_GCS_URL` is empty by default so QGroundControl cannot overwrite stream
+rates through the MAVROS GCS bridge. Enable it explicitly only when required.
 
-ros1/ckpts      -> /root/real_assets/ckpts:ro
-ros1/real_maps  -> /root/real_assets/maps:ro
-ros1_real/results -> /root/real_outputs:rw
+Compose mounts:
 
-2. 启动真机链路
+- `${SRLC_CKPT_HOST_DIR:-../ros1/ckpts}` at `/root/real_assets/ckpts:ro`
+- `${SRLC_MAP_HOST_DIR:-../ros1/real_maps}` at `/root/real_assets/maps:ro`
+- `${SRLC_OUTPUT_HOST_DIR:-./results}` at `/root/real_outputs:rw`
 
-先确认 launch 会启动哪些节点：
+## Build and enter the container
 
-roslaunch --nodes srlc_real real_px4.launch
+The source tree is copied into the image at build time. Rebuild after changing
+anything under `src/`, the Dockerfile, or Compose configuration:
 
-默认会启动：
-
-/mavros
-/vrpn_client_node
-/nokov_node
-/map_lidar_node
-/real_map_publisher
-/srlc_alignment_viz_node
-/rc_input_node
-/srlc_real_navigator
-/srlc_real_recorder
-
-正式启动 direct 模式：
-
-roslaunch srlc_real real_px4.launch \
-post_takeoff_mode:=direct \
-takeoff_height:=1.2 \
-rviz:=true \
-record:=true
-
-启动 assist/RL 模式：
-
-roslaunch srlc_real real_px4.launch \
-post_takeoff_mode:=assist \
-takeoff_height:=1.2 \
-rviz:=false \
-record:=true
-
-如果现场已经单独启动了 MAVROS 或 NOKOV，避免重复启动：
-
-roslaunch srlc_real real_px4.launch \
-start_mavros:=false \
-start_nokov:=false \
-post_takeoff_mode:=direct
-
-注意：该 launch 不会主动切 PX4 到 OFFBOARD，但一旦飞手切入 OFFBOARD，节点会自动请求 arm，并按起飞前 Nokov 位置锁定 x/y、按 当前 z +
-takeoff_height 起飞。
-
-手切 OFFBOARD: sa:up, sb:down(position mode), sc:up->down, sd:up(emergency stop)
-
-3. 飞行前检查
-
-MAVROS：
-
-rostopic echo -n 1 /mavros/state
-rostopic hz /mavros/rc/in
-rostopic echo -n 1 /mavros/rc/in
-rostopic info /mavros/setpoint_raw/local
-
-期望：
-
-/mavros/state.connected = True
-/mavros/rc/in 有稳定输出
-/mavros/setpoint_raw/local 有 MAVROS subscriber
-
-NOKOV：
-
-rostopic hz /vrpn_client_node/soccer/pose
-rostopic hz /nokov/local_position/odom
-rostopic echo -n 1 /nokov/local_position/odom
-rostopic hz /nokov/imu/data
-
-SRLC 输入输出：
-
-rostopic hz /srlc/lidar/range_image
-rostopic echo -n 1 /srlc/lidar/min_distance
-rostopic echo /srlc/rc_status
-rostopic echo /tunnel_nav/lifecycle_state
-rostopic echo /tunnel_nav/status
-rostopic echo /tunnel_nav/control_mode
-rostopic echo /tunnel_nav/policy_active
-rostopic echo /mavros/setpoint_raw/local
-
-未切 OFFBOARD 前应看到：
-
-/tunnel_nav/lifecycle_state: WAIT_OFFBOARD
-/tunnel_nav/policy_active: False
-/tunnel_nav/status: PX4_NOT_OFFBOARD 或 WAIT_OFFBOARD
-setpoint 速度为 0 或锁高 hold
-
-切入 OFFBOARD 后，正常状态流转：
-
-WAIT_ARMED -> TAKEOFF_CLIMB -> TAKEOFF_SETTLE -> ACTIVE
-
-direct 模式下，摇杆超过死区后：
-
-/tunnel_nav/status 包含 DIRECT
-/tunnel_nav/policy_active = False
-/mavros/setpoint_raw/local 跟随 RC 速度输入
-
-assist 模式下，摇杆超过死区且 LiDAR/odom/RC 都正常后：
-
-/tunnel_nav/status 包含 ASSIST
-/tunnel_nav/policy_active = True
-/tunnel_nav/policy_cmd 有策略输出
-
-4. 地图与坐标对齐
-
-当前 PCD 地图由 SRLC_PCD_FILE 指定。启动时可覆盖：
-
-roslaunch srlc_real real_px4.launch \
-pcd_file:=/root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50.pcd \
-map_origin_x:=0.0 \
-map_origin_y:=0.0 \
-map_origin_z:=0.0 \
-map_yaw_deg:=0.0
-
-RViz 调试：
-
-roslaunch srlc_real real_px4.launch rviz:=true
-
-重点看这些 topic：
-
-/real_map/cloud
-/srlc/alignment/odom_map
-/srlc/alignment/markers
-/srlc/lidar/raycast_points
-/srlc/lidar/min_distance
-
-验收标准：无人机 marker 与 PCD 中真实起飞位置重合，前进方向与实验方向一致，/srlc/lidar/min_distance 随位置变化合理。
-
-5. 常见故障定位
-
-MAVROS_NOT_CONNECTED：
-
-rostopic echo -n 1 /mavros/state
-echo $PX4_FCU_URL
-
-检查 PX4 地址、端口、同网段和 MAVLink 输出。
-
-PX4_NOT_OFFBOARD：这是未切外部控制前的正常状态，由飞手/地面站切 OFFBOARD。
-
-NO_ODOM 或 ODOM_TIMEOUT：
-
-rostopic hz /vrpn_client_node/uav_soccer/pose
-rostopic hz /nokov/local_position/odom
-rosparam get /nokov_node/tracker_name
-
-检查 NOKOV_SERVER、NOKOV_TRACKER=uav_soccer 和动捕刚体名是否一致。
-
-NO_RC_ACTION 或 RC_ACTION_TIMEOUT：
-
-rostopic hz /mavros/rc/in
-rostopic echo /srlc/rc_status
-
-默认 RC 映射：前后通道 2，左右通道 1，上下通道 3；当前 launch 默认 lateral_reverse=true。
-
-NO_LIDAR：
-
-rostopic hz /srlc/lidar/range_image
-rostopic echo -n 1 /srlc/lidar/min_distance
-rosparam get /map_lidar_node/pcd_file
-rosparam get /map_lidar_node/odom_topic
-
-通常是没有 Nokov odom、PCD 路径错误或地图坐标没对齐。
-
-GEOFENCE_X/Y 或高度限制：默认边界是 x,y ∈ [-3,3]m，高度 0.5-3.0m。可启动时覆盖：
-
-roslaunch srlc_real real_px4.launch \
-geofence_x_min:=-2.0 geofence_x_max:=2.0 \
-geofence_y_min:=-2.0 geofence_y_max:=2.0 \
-min_altitude:=0.5 max_altitude:=3.0
-
-6. 记录与结果
-
-默认记录到容器：
-
-ls -lh /root/real_outputs
-python3 -m json.tool /root/real_outputs/<run_id>_*.json | sed -n '1,120p'
-
-宿主机对应目录：
-
-/home/nickbit/uav/SharedRLControl/ros1_real/results
-
-如果 JSON 里 samples=0，说明 recorder 启动后没有收到 odom，或者 launch 很快退出。
-
-7. 重新部署
-
-ros1_real 源码是构建时复制进镜像的，修改 ros1_real/src/... 后需要重建镜像：
-
+```bash
 cd /home/nickbit/uav/SharedRLControl/ros1_real
 docker compose -f docker-compose.real.yml down
-docker compose -f docker-compose.real.yml build real_runtime
+docker compose -f docker-compose.real.yml build --no-cache real_runtime
 docker compose -f docker-compose.real.yml up -d real_runtime
-
-8. manual start nokov and mavros (in one same LAN)
-
-1) copy soccer.launch(get this file from outside) to mavros shared path: /opt/ros/noetic/share/mavros, and edit to set uav ip:
-```
-<!-- example launch script for PX4 based FCU's -->
-
-<arg name="fcu_url" default="udp://:14551@[soccer uav ip]:14550" />
-```
-2) set nokov launch file ip, edit /root/catkin_ws/src/vrpn_client_ros/launch/sample.launch:
-```
-<!-- nokov windows pc ip-->
-<arg name="server" default="192.168.31.192"/>
-```
-
-- launch mavros to check
-roslaunch mavros soccer.launch 
-
-```expect output contains:
-[INFO] [1784102769.456215552]: udp0: Remote address: 192.168.31.201:14550
-[INFO] [1784102769.456285297]: IMU: High resolution IMU detected!
-[INFO] [1784102769.625696941]: CON: Got HEARTBEAT, connected. FCU: PX4 Autopilot
-[INFO] [1784102769.626885056]: IMU: High resolution IMU detected!
-[INFO] [1784102769.630408151]: RC_CHANNELS message detected!
-```
-
-- launch vrpn_client to check
-roslaunch vrpn_client_ros sample.launch
-
-```expect output contains:
-[INFO] [1784086131.606283490]: Connecting to VRPN server at 192.168.31.192:3883
-[INFO] [1784086131.610848964]: nokov_node using VRPN tracker namespace /vrpn_client_node/uav_soccer
-[INFO] [1784086131.794409608]: Connection established
-[INFO] [1784086132.796018950]: Found new sender: soccer_red
-[INFO] [1784086132.796163112]: Creating new tracker soccer_red
-```
-
-
-
-# SRLC ROS1 Real PX4 Runtime
-
-`ros1_real` is the ROS1 Noetic workspace for real PX4/Nokov SRLC experiments.
-The existing `../ros1` workspace remains the Gazebo/simulation/batch-test entry.
-
-## Layout
-
-- `src/srlc_real`: real-flight ROS package.
-- `src/nokov_uav`: Nokov to MAVROS vision/odom/IMU bridge.
-- `src/vrpn_client_ros`: local VRPN client source used by Nokov.
-- `Dockerfile` and `docker-compose.real.yml`: single-container real runtime.
-
-## Default Assets
-
-Compose mounts these host directories:
-
-- `${SRLC_CKPT_HOST_DIR:-../ros1/ckpts}` to `/root/real_assets/ckpts:ro`
-- `${SRLC_MAP_HOST_DIR:-../ros1/real_maps}` to `/root/real_assets/maps:ro`
-- `${SRLC_OUTPUT_HOST_DIR:-./results}` to `/root/real_outputs:rw`
-
-Default files:
-
-- `/root/real_assets/ckpts/checkpoint_minrisk_0610.pt`
-- `/root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50.pcd`
-
-## Build
-
-```bash
-cd SharedRLControl/ros1_real
-docker compose -f docker-compose.real.yml build real_runtime
-```
-
-## Run
-
-By default, `docker compose up` only starts an idle container. It does not run
-`roslaunch` automatically.
-
-```bash
-cd SharedRLControl/ros1_real
-docker compose -f docker-compose.real.yml u
-# SRLC ROS1 Real PX4 Runtime
-
-`ros1_real` is the ROS1 Noetic workspace for real PX4/Nokov SRLC experiments.
-The existing `../ros1` workspace remains the Gazebo/simulation/batch-test entry.
-
-## Layout
-
-- `src/srlc_real`: real-flight ROS package.
-- `src/nokov_uav`: Nokov to MAVROS vision/odom/IMU bridge.
-- `src/vrpn_client_ros`: local VRPN client source used by Nokov.
-- `Dockerfile` and `docker-compose.real.yml`: single-container real runtime.
-
-## Default Assets
-
-Compose mounts these host directories:
-
-- `${SRLC_CKPT_HOST_DIR:-../ros1/ckpts}` to `/root/real_assets/ckpts:ro`
-- `${SRLC_MAP_HOST_DIR:-../ros1/real_maps}` to `/root/real_assets/maps:ro`
-- `${SRLC_OUTPUT_HOST_DIR:-./results}` to `/root/real_outputs:rw`
-
-Default files:
-
-- `/root/real_assets/ckpts/checkpoint_minrisk_0610.pt`
-- `/root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50.pcd`
-
-## Build
-
-```bash
-cd SharedRLControl/ros1_real
-docker compose -f docker-compose.real.yml build real_runtime
-```
-
-## Run
-
-By default, `docker compose up` only starts an idle container. It does not run
-GEOFENCE_X/Y 或高度限制：默认边界是 x,y ∈ [-3,3]m，高度 0.5-3.0m。可启动时覆盖：
-
-roslaunch srlc_real real_px4.launch \
-geofence_x_min:=-2.0 geofence_x_max:=2.0 \
-geofence_y_min:=-2.0 geofence_y_max:=2.0 \
-min_altitude:=0.5 max_altitude:=3.0
-
-6. 记录与结果
-
-默认记录到容器：
-
-ls -lh /root/real_outputs
-python3 -m json.tool /root/real_outputs/<run_id>_*.json | sed -n '1,120p'
-
-宿主机对应目录：
-
-/home/nickbit/uav/SharedRLControl/ros1_real/results
-
-如果 JSON 里 samples=0，说明 recorder 启动后没有收到 odom，或者 launch 很快退出。
-
-7. 重新部署
-
-ros1_real 源码是构建时复制进镜像的，修改 ros1_real/src/... 后需要重建镜像：
-
-cd /home/nickbit/uav/SharedRLControl/ros1_real
-docker compose -f docker-compose.real.yml down
-docker compose -f docker-compose.real.yml build real_runtime
-docker compose -f docker-compose.real.yml up -d real_runtime
-p real_runtime
-```
-
-Enter the container and launch manually:
-
-```bash
 docker compose -f docker-compose.real.yml exec real_runtime bash
 ```
 
-Inside that shell, ROS is already sourced by `/root/.bashrc`; run any launch
-variant manually, for example:
+The default container command is `sleep infinity`; no flight process starts
+until an operator runs a launch command.
+
+The image intentionally includes the diagnostic packages installed in the
+validated test container: ROS Noetic desktop-full, RQt/common plugins, MAVROS
+debug symbols, and `net-tools`.
+
+## Independent launch entry points
+
+The project-owned launch files replace all hand edits under `/opt/ros`:
+
+```bash
+# MAVROS only
+roslaunch srlc_real mavros_px4.launch
+
+# VRPN client and Nokov bridge only
+roslaunch srlc_real nokov.launch
+
+# Critical MAVLink stream recovery only
+roslaunch srlc_real mavlink_stream_guard.launch
+
+# SRLC map/navigation/recorder stack; includes the guard, not MAVROS or Nokov
+roslaunch srlc_real real_px4.launch
+```
+
+Do not copy `soccer.launch` into the MAVROS package and do not edit
+`/opt/ros/noetic/share/mavros/launch/px4.launch`. Connection settings belong
+to `srlc_real/mavros_px4.launch` and Compose environment variables.
+
+### Link-only bench-test order
+
+With propellers removed:
+
+1. Start `roscore` in one shell.
+2. Start `mavlink_stream_guard.launch`; it remains `DISCONNECTED` without an FCU.
+3. Start `mavros_px4.launch` and power the FCU.
+4. Start `nokov.launch`.
+5. Inspect the guard and target topics.
+
+```bash
+rostopic echo -n 1 /srlc/mavlink_stream_guard/status
+rostopic echo -n 1 /mavros/state
+rostopic hz /mavros/local_position/pose
+rostopic hz /mavros/imu/data
+rostopic hz /vrpn_client_node/uav_soccer/pose
+rostopic hz /mavros/vision_pose/pose
+```
+
+Expected rates after recovery:
+
+- `/mavros/local_position/pose`: 25-35 Hz
+- `/mavros/imu/data`: 15-25 Hz
+- `/mavros/vision_pose/pose`: greater than 30 Hz while Nokov is healthy
+
+The guard publishes one of:
+
+```text
+DISCONNECTED
+WAITING_SERVICE
+REQUESTING
+VERIFYING
+HEALTHY
+FAILED
+```
+
+On each FCU connection it requests MAVLink `LOCAL_POSITION_NED` (ID 32) at
+30 Hz and `ATTITUDE` (ID 30) at 20 Hz. It verifies that new local-pose and IMU
+messages arrive, retries at most three times, and stops sending requests after
+`FAILED` until the FCU reconnects or the guard restarts. It never changes PX4
+mode, arm state, EKF parameters, or setpoints.
+
+To attach QGroundControl through MAVROS for a deliberate test:
+
+```bash
+PX4_GCS_URL=udp://@localhost:14550 roslaunch srlc_real mavros_px4.launch
+```
+
+Recheck stream rates after attaching it.
+
+## Starting the complete SRLC stack
+
+Start MAVROS and Nokov independently first. Then launch the navigation stack:
 
 ```bash
 roslaunch srlc_real real_px4.launch \
-  pcd_file:=/root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50_floor_level_z0.pcd \
-  start_mavros:=false start_nokov:=false record:=false rviz:=true \
-  post_takeoff_mode:=direct takeoff_height:=1.0
+  post_takeoff_mode:=direct \
+  takeoff_height:=1.2 \
+  rviz:=true \
+  record:=true
 ```
 
-To automatically run a specific launch command when the container starts, set
-`SRLC_CONTAINER_COMMAND` explicitly:
+`real_px4.launch` starts its own guard by default. If a standalone guard is
+already running, avoid duplicate node names with:
 
 ```bash
-SRLC_CONTAINER_COMMAND='roslaunch srlc_real real_px4.launch start_mavros:=false start_nokov:=false record:=false rviz:=false' \
-docker compose -f docker-compose.real.yml up real_runtime
+roslaunch srlc_real real_px4.launch start_stream_guard:=false
 ```
+
+### Safety warning
+
+The existing flight behavior is unchanged: `SRLC_AUTO_ARM` and
+`SRLC_AUTO_TAKEOFF` still default to true once the required OFFBOARD conditions
+are met. Bench tests must explicitly disable both:
 
 ```bash
-SRLC_CONTAINER_COMMAND='roslaunch srlc_real real_px4.launch' \
-SRLC_POST_TAKEOFF_MODE=assist SRLC_TAKEOFF_HEIGHT=1.2 \
-PX4_FCU_URL='udp://:14540@192.168.31.155:14557' \
-NOKOV_SERVER=192.168.31.193 NOKOV_TRACKER=soccer \
-docker compose -f docker-compose.real.yml up real_runtime
+SRLC_AUTO_ARM=false SRLC_AUTO_TAKEOFF=false \
+roslaunch srlc_real real_px4.launch record:=false rviz:=false
 ```
 
-ROS XMLRPC defaults to `ROS_MASTER_URI=http://127.0.0.1:11311` and
-`ROS_IP=127.0.0.1` so the container can contact its own `roslaunch` server on
-any host. For remote ROS tools on another machine, override `ROS_IP` with the
-host LAN address that those machines can reach.
+The SRLC launch does not itself switch PX4 into OFFBOARD. Once the pilot or GCS
+selects OFFBOARD, the configured navigation behavior applies.
 
-## Main Topics
+## Main data paths
 
-Inputs:
+External vision pose:
+
+```text
+/vrpn_client_node/uav_soccer/pose
+  -> /mavros/vision_pose/pose
+  -> PX4 estimator
+```
+
+Local estimate returned by PX4:
+
+```text
+PX4 LOCAL_POSITION_NED
+  -> /mavros/local_position/pose
+  -> /mavros/local_position/odom
+```
+
+Other important topics:
 
 - `/nokov/local_position/odom`
 - `/nokov/imu/data`
 - `/mavros/state`
 - `/mavros/rc/in`
-
-Outputs:
-
 - `/mavros/setpoint_raw/local`
-- `/srlc/human_action`
-- `/srlc/rc_status`
 - `/srlc/lidar/range_image`
 - `/srlc/lidar/min_distance`
-- `/srlc/lidar/raycast_points`
-- `/real_map/cloud`
 - `/tunnel_nav/status`
 - `/tunnel_nav/lifecycle_state`
-- `/tunnel_nav/control_mode`
-- `/tunnel_nav/policy_cmd`
-- `/tunnel_nav/policy_active`
 
-## Preflight Checks
+`HEALTHY` confirms stream delivery, not estimator correctness. Before flight,
+also check that position and quaternion values are finite and that PX4 estimator
+status reports valid attitude, horizontal/vertical velocity, and position.
 
-Inside the container:
+## Non-hardware smoke test
 
-```bash
-rospack find srlc_real nokov_uav vrpn_client_ros mavros
-rostopic hz /nokov/local_position/odom
-rostopic echo -n1 /mavros/state
-rostopic info /mavros/setpoint_raw/local
-rostopic hz /srlc/lidar/range_image
-rostopic echo -n1 /srlc/lidar/min_distance
-```
-
-## Non-Hardware Smoke Test
-
-`dry_run_px4.launch` runs the real SRLC stack without the aircraft or Nokov
-hardware. It starts a fake MAVROS/PX4 runtime, publishes fixed `/mavros/rc/in`,
-simulates `/nokov/local_position/odom`, and feeds the normal map LiDAR,
-RC bridge, navigator, recorder, and optional RViz.
-
-Example: after fake takeoff, publish forward RC input equivalent to `vx=1.0`
-and verify that `/mavros/setpoint_raw/local` and fake odom move forward:
+`dry_run_px4.launch` starts a fake MAVROS/PX4 runtime, including the message
+interval service and the topics required by the stream guard:
 
 ```bash
-docker exec -it ros1_real-real_runtime-1 bash
-source /opt/ros/noetic/setup.bash
-source /root/catkin_ws/devel/setup.bash
-
 roslaunch srlc_real dry_run_px4.launch \
-  rviz:=true \
-  record:=true \
+  rviz:=false \
+  record:=false \
   post_takeoff_mode:=direct \
   fake_forward_speed:=1.0 \
-  motion_after:=4.0 \
-  max_xy_speed_real:=1.0
+  motion_after:=4.0
 ```
 
-Useful checks in another container shell:
+Useful checks:
 
 ```bash
+rostopic echo -n 1 /srlc/mavlink_stream_guard/status
 rostopic echo /tunnel_nav/lifecycle_state
 rostopic echo /tunnel_nav/status
-rostopic echo /srlc/rc_status
-rostopic echo /srlc/human_action
 rostopic echo /mavros/setpoint_raw/local
 rostopic echo /nokov/local_position/odom
-rostopic hz /srlc/lidar/range_image
 ```
 
-Expected after takeoff and `motion_after`:
+## Verification after rebuilding
 
-- `/tunnel_nav/lifecycle_state` is `ACTIVE`.
-- `/tunnel_nav/status` contains `DIRECT`.
-- `/srlc/rc_status` reports `vx=1.00`.
-- `/srlc/human_action.twist.linear.x` is `1.0`.
-- `/mavros/setpoint_raw/local.velocity.x` is `1.0`.
-- `/nokov/local_position/odom.twist.twist.linear.x` is `1.0`.
+Inside the rebuilt container:
+
+```bash
+rospack find srlc_real
+rospack find nokov_uav
+rospack find vrpn_client_ros
+rospack find mavros
+dpkg-query -W ros-noetic-desktop-full ros-noetic-rqt \
+  ros-noetic-rqt-common-plugins ros-noetic-mavros-dbgsym \
+  ros-noetic-mavros-extras-dbgsym net-tools
+dpkg -V ros-noetic-mavros
+catkin_make -DCATKIN_ENABLE_TESTING=ON run_tests_srlc_real
+catkin_test_results /root/catkin_ws/build/test_results
+```
+
+`dpkg -V ros-noetic-mavros` must print no modified package-owned files. The
+project no longer requires `/opt/ros/noetic/share/mavros/soccer.launch`.
+
+## Troubleshooting
+
+- `DISCONNECTED`: check FCU power, `PX4_FCU_URL`, UDP ports, and LAN routing.
+- `WAITING_SERVICE`: MAVROS is absent or `/mavros/set_message_interval` is unavailable.
+- `VERIFYING`: requests succeeded but fresh pose/IMU data have not both arrived.
+- `FAILED`: inspect MAVROS diagnostics and restart/reconnect only after fixing the link.
+- No vision pose: check `nokov_node`, `NOKOV_SERVER`, `NOKOV_TRACKER`, and
+  `/vrpn_client_node/uav_soccer/pose`.
+- No local position with guard `HEALTHY`: inspect PX4 EKF status rather than
+  repeatedly changing message intervals.
+
+For real-flight acceptance, test MAVROS restart, FCU power-cycle recovery, and
+a ten-minute soak with zero MAVROS dropped packets, buffer overruns, and parse
+errors before reinstalling propellers.
