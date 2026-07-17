@@ -7,6 +7,8 @@ LiDAR beam.
 """
 
 import math
+from dataclasses import dataclass
+
 import numpy as np
 
 try:
@@ -19,6 +21,102 @@ try:
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
+
+
+@dataclass(frozen=True)
+class RaycastResult:
+    """Raw voxel-ray intersections in training beam order."""
+
+    entry_distances: np.ndarray
+    directions_world: np.ndarray
+    hit_mask: np.ndarray
+    points: np.ndarray
+
+    @property
+    def distances(self):
+        """Compatibility alias for callers that do not need the entry qualifier."""
+        return self.entry_distances
+
+    @property
+    def directions(self):
+        """Compatibility alias; directions are always fixed in the world frame."""
+        return self.directions_world
+
+
+def box_radial_boundaries(directions_world, rotation_world_from_body,
+                          half_extents):
+    """Return the body-box boundary distance along world-frame unit rays.
+
+    ``rotation_world_from_body`` is the full vehicle attitude. Directions are
+    inverse-rotated into the body frame before intersecting the centered box.
+    Components that are zero do not constrain the radial intersection.
+    """
+    directions = np.asarray(directions_world, dtype=np.float64)
+    rotation = np.asarray(rotation_world_from_body, dtype=np.float64)
+    extents = np.asarray(half_extents, dtype=np.float64)
+    if directions.ndim != 2 or directions.shape[1] != 3:
+        raise ValueError("directions_world must have shape (N, 3)")
+    if rotation.shape != (3, 3) or not np.isfinite(rotation).all():
+        raise ValueError("rotation_world_from_body must be a finite 3x3 matrix")
+    if extents.shape != (3,) or not np.isfinite(extents).all():
+        raise ValueError("half_extents must contain three finite values")
+    if np.any(extents < 0.0):
+        raise ValueError("half_extents must be non-negative")
+    if not np.isfinite(directions).all():
+        raise ValueError("directions_world must be finite")
+    norms = np.linalg.norm(directions, axis=1)
+    if np.any(norms <= 0.0) or not np.allclose(norms, 1.0, rtol=0.0, atol=1e-7):
+        raise ValueError("directions_world must contain unit directions")
+
+    directions_body = directions @ rotation
+    components = np.abs(directions_body)
+    ratios = np.full(components.shape, np.inf, dtype=np.float64)
+    np.divide(
+        extents.reshape(1, 3),
+        components,
+        out=ratios,
+        where=components > 1e-12,
+    )
+    return np.min(ratios, axis=1)
+
+
+def policy_surface_distances(raw_entry_distances, directions_world, hit_mask,
+                             rotation_world_from_body, half_extents,
+                             max_range=4.0):
+    """Convert raw voxel entries to distances from the policy vehicle box.
+
+    Only real hits are shortened by the radial body-box boundary. Misses stay
+    exactly at ``max_range`` so the observation contract is unchanged.
+    """
+    raw_distances = np.asarray(raw_entry_distances, dtype=np.float64)
+    hits = np.asarray(hit_mask, dtype=bool)
+    if raw_distances.ndim != 1:
+        raise ValueError("raw_entry_distances must have shape (N,)")
+    if hits.shape != raw_distances.shape:
+        raise ValueError("hit_mask must match raw_entry_distances")
+    if not np.isfinite(raw_distances).all() or np.any(raw_distances < 0.0):
+        raise ValueError("raw_entry_distances must be finite and non-negative")
+    max_range = float(max_range)
+    if not math.isfinite(max_range) or max_range <= 0.0:
+        raise ValueError("max_range must be a positive finite value")
+
+    boundaries = box_radial_boundaries(
+        directions_world,
+        rotation_world_from_body,
+        half_extents,
+    )
+    if boundaries.shape != raw_distances.shape:
+        raise ValueError("directions_world must match raw_entry_distances")
+
+    policy_distances = np.full(raw_distances.shape, max_range, dtype=np.float64)
+    policy_distances[hits] = np.maximum(
+        0.0,
+        raw_distances[hits] - boundaries[hits],
+    )
+    return policy_distances
+
+
+policy_clearance_distances = policy_surface_distances
 
 
 def minimum_raycast_distance(hit_points, position, max_range):
@@ -56,11 +154,21 @@ class PcdRaycaster:
     resolution : float
         Voxel size in metres (should match occupancy map resolution).
     inflate : tuple[float, float, float]
-        Robot half-size for inflation in (x, y, z) metres.
+        Optional occupancy inflation in (x, y, z) metres. Raw occupancy is the
+        default; pass non-zero values only for compatibility uses.
     """
 
     def __init__(self, pcd_path: str, resolution: float = 0.1,
-                 inflate: tuple = (0.15, 0.15, 0.05)):
+                 inflate: tuple = (0.0, 0.0, 0.0)):
+        resolution = float(resolution)
+        if not math.isfinite(resolution) or resolution <= 0.0:
+            raise ValueError("resolution must be a positive finite value")
+        inflate_values = np.asarray(inflate, dtype=np.float64)
+        if inflate_values.shape != (3,):
+            raise ValueError("inflate must contain three values")
+        if not np.isfinite(inflate_values).all() or np.any(inflate_values < 0.0):
+            raise ValueError("inflate values must be finite and non-negative")
+
         self.res = resolution
         self.inv_res = 1.0 / resolution
 
@@ -72,10 +180,8 @@ class PcdRaycaster:
         self._tree = cKDTree(self.points) if HAS_SCIPY else None
 
         # Build voxel set (inflated)
-        inflate_cells = (
-            max(1, int(math.ceil(inflate[0] / resolution))),
-            max(1, int(math.ceil(inflate[1] / resolution))),
-            max(1, int(math.ceil(inflate[2] / resolution))),
+        inflate_cells = tuple(
+            int(math.ceil(value / resolution)) for value in inflate_values
         )
         self._occupied = set()
         for pt in points:
@@ -89,7 +195,7 @@ class PcdRaycaster:
 
         print(f"[PcdRaycaster] Loaded {len(points)} points, "
               f"{len(self._occupied)} occupied voxels (res={resolution}m, "
-              f"inflate={inflate})")
+              f"inflate={tuple(float(value) for value in inflate_values)})")
         if self._tree is None:
             print("[PcdRaycaster] scipy unavailable; nearest-distance queries "
                   "will use vectorized NumPy fallback")
@@ -99,9 +205,9 @@ class PcdRaycaster:
         """Load ASCII or binary PCD file -> Nx3 float array."""
         return read_pcd_xyz(filepath)
 
-    def raycast(self, position, yaw, range_m, vfov_min_deg, vfov_max_deg,
-                vbeams, hres_deg):
-        """Perform raycasting matching the C++ getRayCast API.
+    def raycast_raw(self, position, yaw, range_m, vfov_min_deg, vfov_max_deg,
+                    vbeams, hres_deg):
+        """Return exact raw voxel entries and per-beam metadata.
 
         Parameters
         ----------
@@ -112,13 +218,28 @@ class PcdRaycaster:
         vbeams : int — number of vertical beams
         hres_deg : float — horizontal angular resolution in degrees
 
-        Returns
-        -------
-        hit_points : np.ndarray, shape (n_hbeams * vbeams, 3)
-            Ordered as [h0v0, h0v1, ..., h0v3, h1v0, ...] matching C++.
+        Beam directions are fixed in the world frame, so ``yaw`` is retained
+        only for API compatibility. Results are ordered
+        ``[h0v0, h0v1, ..., h1v0, ...]`` exactly as the training input.
         """
+        del yaw
+        origin = np.asarray(position, dtype=np.float64)
+        if origin.shape != (3,) or not np.isfinite(origin).all():
+            raise ValueError("position must contain three finite values")
+        range_m = float(range_m)
+        if not math.isfinite(range_m) or range_m <= 0.0:
+            raise ValueError("range_m must be a positive finite value")
+        vbeams = int(vbeams)
+        hres_deg = float(hres_deg)
+        if vbeams <= 0:
+            raise ValueError("vbeams must be positive")
+        if not math.isfinite(hres_deg) or hres_deg <= 0.0:
+            raise ValueError("hres_deg must be a positive finite value")
+
         hres = math.radians(hres_deg)
         n_hbeams = int(360.0 / hres_deg)
+        if n_hbeams <= 0:
+            raise ValueError("hres_deg must produce at least one horizontal beam")
         vfov_min = math.radians(vfov_min_deg)
         vfov_max = math.radians(vfov_max_deg)
         if vbeams > 1:
@@ -126,12 +247,10 @@ class PcdRaycaster:
         else:
             vres = 0.0
 
-        sx, sy, sz = float(position[0]), float(position[1]), float(position[2])
         n_total = n_hbeams * vbeams
-        result = np.empty((n_total, 3), dtype=np.float32)
-
-        step = self.res  # march step size
-        n_steps = int(math.ceil(range_m / step))
+        directions = np.empty((n_total, 3), dtype=np.float64)
+        distances = np.full(n_total, range_m, dtype=np.float64)
+        hit_mask = np.zeros(n_total, dtype=bool)
 
         # IsaacLab BpearlPatternCfg with ray_alignment="yaw":
         #   h = arange(-180, 180, hres) then directions are NEGATED
@@ -160,30 +279,66 @@ class PcdRaycaster:
                 dx /= norm
                 dy /= norm
                 dz /= norm
-
-                # March along ray
-                hit = False
-                for i in range(1, n_steps + 1):
-                    px = sx + step * dx * i
-                    py = sy + step * dy * i
-                    pz = sz + step * dz * i
-                    vx = int(math.floor(px * self.inv_res))
-                    vy = int(math.floor(py * self.inv_res))
-                    vz = int(math.floor(pz * self.inv_res))
-                    if (vx, vy, vz) in self._occupied:
-                        result[idx] = [px, py, pz]
-                        hit = True
-                        break
-                if not hit:
-                    # No hit → return max-range point (matches C++)
-                    result[idx] = [
-                        sx + range_m * dx,
-                        sy + range_m * dy,
-                        sz + range_m * dz,
-                    ]
+                direction = np.array([dx, dy, dz], dtype=np.float64)
+                directions[idx] = direction
+                entry_distance = self._dda_entry_distance(origin, direction, range_m)
+                if entry_distance is not None:
+                    distances[idx] = entry_distance
+                    hit_mask[idx] = True
                 idx += 1
 
-        return result
+        points = origin.reshape(1, 3) + distances.reshape(-1, 1) * directions
+        return RaycastResult(
+            entry_distances=distances,
+            directions_world=directions,
+            hit_mask=hit_mask,
+            points=points,
+        )
+
+    def _dda_entry_distance(self, origin, direction, max_range):
+        """Return the exact entry parameter of the first occupied voxel."""
+        voxel = np.floor(origin * self.inv_res).astype(np.int64)
+        if tuple(voxel) in self._occupied:
+            return 0.0
+
+        step = np.sign(direction).astype(np.int64)
+        t_max = np.full(3, np.inf, dtype=np.float64)
+        t_delta = np.full(3, np.inf, dtype=np.float64)
+        for axis in range(3):
+            component = direction[axis]
+            if component > 0.0:
+                boundary = (voxel[axis] + 1) * self.res
+            elif component < 0.0:
+                boundary = voxel[axis] * self.res
+            else:
+                continue
+            t_max[axis] = (boundary - origin[axis]) / component
+            t_delta[axis] = self.res / abs(component)
+
+        while True:
+            entry_distance = float(np.min(t_max))
+            if not math.isfinite(entry_distance) or entry_distance > max_range:
+                return None
+
+            tolerance = 1e-12 * max(1.0, abs(entry_distance))
+            crossed_axes = np.abs(t_max - entry_distance) <= tolerance
+            voxel[crossed_axes] += step[crossed_axes]
+            t_max[crossed_axes] += t_delta[crossed_axes]
+            if tuple(voxel) in self._occupied:
+                return max(0.0, entry_distance)
+
+    def raycast(self, position, yaw, range_m, vfov_min_deg, vfov_max_deg,
+                vbeams, hres_deg):
+        """Return hit/max-range points using the legacy array-only API."""
+        return self.raycast_raw(
+            position,
+            yaw,
+            range_m,
+            vfov_min_deg,
+            vfov_max_deg,
+            vbeams,
+            hres_deg,
+        ).points
 
     def nearest_point(self, position):
         """Return the nearest PCD point and its Euclidean distance."""
