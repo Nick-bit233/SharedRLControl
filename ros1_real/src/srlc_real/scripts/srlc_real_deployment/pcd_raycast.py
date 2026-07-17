@@ -21,6 +21,31 @@ except ImportError:
     HAS_SCIPY = False
 
 
+def minimum_raycast_distance(hit_points, position, max_range):
+    """Return the nearest finite hit from the current raycast frame.
+
+    Unlike a nearest-neighbour query over the full PCD, this measurement only
+    considers surfaces intersected by configured LiDAR rays.  That prevents a
+    floor point directly below a landed vehicle from masquerading as a
+    horizontal collision.
+    """
+    points = np.asarray(hit_points, dtype=np.float32)
+    origin = np.asarray(position, dtype=np.float32)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("hit_points must have shape (N, 3)")
+    if origin.shape != (3,):
+        raise ValueError("position must have shape (3,)")
+    sensor_range = float(max_range)
+    if sensor_range <= 0.0:
+        raise ValueError("max_range must be positive")
+
+    distances = np.linalg.norm(points - origin.reshape(1, 3), axis=-1)
+    finite = distances[np.isfinite(distances)]
+    if finite.size == 0:
+        return sensor_range
+    return float(np.clip(np.min(finite), 0.0, sensor_range))
+
+
 class PcdRaycaster:
     """Voxel-based raycaster built from a static PCD file.
 

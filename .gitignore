@@ -133,6 +133,7 @@ tunnel_test/logs/
 # Ignore ros1 navigation runner logs and results
 ros1/results/
 ros1_real/results/
+ros1_real/results_v2/
 
 # paper works
 PAPER_PLAN.md

@@ -13,16 +13,27 @@
     <arg name="map_origin_y" default="$(optenv SRLC_MAP_ORIGIN_Y 0.0)"/>
     <arg name="map_origin_z" default="$(optenv SRLC_MAP_ORIGIN_Z 0.0)"/>
 
-    <arg name="takeoff_height" default="$(optenv SRLC_TAKEOFF_HEIGHT 1.2)"/>
-    <arg name="post_takeoff_mode" default="$(optenv SRLC_POST_TAKEOFF_MODE direct)"/>
-    <arg name="post_takeoff_mode_delay" default="$(optenv SRLC_POST_TAKEOFF_MODE_DELAY 2.0)"/>
-    <arg name="takeoff_reached_tolerance" default="$(optenv SRLC_TAKEOFF_REACHED_TOLERANCE 0.1)"/>
+    <arg name="takeoff_height" default="$(optenv SRLC_TAKEOFF_HEIGHT 1.0)"/>
+    <arg name="post_takeoff_mode" default="$(optenv SRLC_POST_TAKEOFF_MODE assist)"/>
+    <arg name="takeoff_lower_margin" default="$(optenv SRLC_TAKEOFF_LOWER_MARGIN 0.2)"/>
+    <arg name="takeoff_upper_margin" default="$(optenv SRLC_TAKEOFF_UPPER_MARGIN 0.2)"/>
+    <arg name="takeoff_max_abs_vz" default="$(optenv SRLC_TAKEOFF_MAX_ABS_VZ 0.25)"/>
+    <arg name="takeoff_confirm_duration" default="$(optenv SRLC_TAKEOFF_CONFIRM_DURATION 0.5)"/>
+    <arg name="takeoff_timeout" default="$(optenv SRLC_TAKEOFF_TIMEOUT 15.0)"/>
+    <arg name="takeoff_max_overshoot" default="$(optenv SRLC_TAKEOFF_MAX_OVERSHOOT 0.5)"/>
+    <arg name="takeoff_max_xy_drift" default="$(optenv SRLC_TAKEOFF_MAX_XY_DRIFT 0.5)"/>
+    <arg name="takeoff_max_climb_speed" default="$(optenv SRLC_TAKEOFF_MAX_CLIMB_SPEED 0.4)"/>
+    <arg name="takeoff_max_vertical_accel" default="$(optenv SRLC_TAKEOFF_MAX_VERTICAL_ACCEL 0.5)"/>
+    <arg name="takeoff_max_tracking_error" default="$(optenv SRLC_TAKEOFF_MAX_TRACKING_ERROR 0.25)"/>
+    <arg name="input_recovery_grace" default="$(optenv SRLC_INPUT_RECOVERY_GRACE 1.0)"/>
+    <arg name="fault_response" default="$(optenv SRLC_FAULT_RESPONSE auto_land)"/>
+    <arg name="fault_land_mode" default="$(optenv SRLC_FAULT_LAND_MODE AUTO.LAND)"/>
+    <arg name="fault_land_confirm_timeout" default="$(optenv SRLC_FAULT_LAND_CONFIRM_TIMEOUT 2.0)"/>
+    <arg name="fault_land_retry_interval" default="$(optenv SRLC_FAULT_LAND_RETRY_INTERVAL 0.5)"/>
+    <arg name="fault_land_max_attempts" default="$(optenv SRLC_FAULT_LAND_MAX_ATTEMPTS 3)"/>
     <arg name="lock_z_control" default="$(optenv SRLC_LOCK_Z_CONTROL true)"/>
     <arg name="require_offboard" default="$(optenv SRLC_REQUIRE_OFFBOARD true)"/>
     <arg name="real_auto_takeoff_on_offboard" default="$(optenv SRLC_AUTO_TAKEOFF true)"/>
-    <arg name="auto_arm_on_offboard" default="$(optenv SRLC_AUTO_ARM true)"/>
-    <arg name="hold_on_stop" default="$(optenv SRLC_HOLD_ON_STOP false)"/>
-    <arg name="estop_hold_mode" default="$(optenv SRLC_ESTOP_HOLD_MODE AUTO.LOITER)"/>
 
     <arg name="forward_reverse" default="$(optenv SRLC_RC_FORWARD_REVERSE false)"/>
     <arg name="lateral_reverse" default="$(optenv SRLC_RC_LATERAL_REVERSE true)"/>
@@ -30,6 +41,7 @@
     <arg name="max_z_speed_real" default="$(optenv SRLC_MAX_Z_SPEED 0.3)"/>
     <arg name="safety_min_dist" default="$(optenv SRLC_SAFETY_MIN_DIST 0.25)"/>
     <arg name="collision_dist" default="$(optenv SRLC_COLLISION_DIST 0.15)"/>
+    <arg name="safety_activation_height" default="$(optenv SRLC_SAFETY_ACTIVATION_HEIGHT 0.3)"/>
     <arg name="assist_input_deadzone_norm" default="$(optenv SRLC_ASSIST_INPUT_DEADZONE_NORM 0.05)"/>
     <arg name="geofence_x_min" default="$(optenv SRLC_GEOFENCE_X_MIN -3.0)"/>
     <arg name="geofence_x_max" default="$(optenv SRLC_GEOFENCE_X_MAX 3.0)"/>
@@ -39,6 +51,8 @@
     <arg name="max_altitude" default="$(optenv SRLC_MAX_ALTITUDE 3.0)"/>
 
     <arg name="odom_topic" default="/nokov/local_position/odom"/>
+    <arg name="px4_local_odom_topic" default="$(optenv SRLC_PX4_LOCAL_ODOM_TOPIC /mavros/local_position/odom)"/>
+    <arg name="px4_local_velocity_topic" default="$(optenv SRLC_PX4_LOCAL_VELOCITY_TOPIC /mavros/local_position/velocity_local)"/>
     <arg name="rc_topic" default="/mavros/rc/in"/>
     <arg name="setpoint_raw_topic" default="/mavros/setpoint_raw/local"/>
     <arg name="map_cloud_topic" default="/real_map/cloud"/>
@@ -94,22 +108,36 @@
         <param name="checkpoint_path" value="$(arg checkpoint)"/>
         <param name="device" value="$(arg device)"/>
         <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="px4_local_odom_topic" value="$(arg px4_local_odom_topic)"/>
+        <param name="px4_local_velocity_topic" value="$(arg px4_local_velocity_topic)"/>
         <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
         <param name="takeoff_height" value="$(arg takeoff_height)"/>
         <param name="lock_z_control" value="$(arg lock_z_control)"/>
         <param name="require_offboard" value="$(arg require_offboard)"/>
         <param name="real_auto_takeoff_on_offboard" value="$(arg real_auto_takeoff_on_offboard)"/>
-        <param name="auto_arm_on_offboard" value="$(arg auto_arm_on_offboard)"/>
         <param name="post_takeoff_mode" value="$(arg post_takeoff_mode)"/>
-        <param name="post_takeoff_mode_delay" value="$(arg post_takeoff_mode_delay)"/>
-        <param name="takeoff_reached_tolerance" value="$(arg takeoff_reached_tolerance)"/>
-        <param name="hold_on_stop" value="$(arg hold_on_stop)"/>
+        <param name="takeoff_lower_margin" value="$(arg takeoff_lower_margin)"/>
+        <param name="takeoff_upper_margin" value="$(arg takeoff_upper_margin)"/>
+        <param name="takeoff_max_abs_vz" value="$(arg takeoff_max_abs_vz)"/>
+        <param name="takeoff_confirm_duration" value="$(arg takeoff_confirm_duration)"/>
+        <param name="takeoff_timeout" value="$(arg takeoff_timeout)"/>
+        <param name="takeoff_max_overshoot" value="$(arg takeoff_max_overshoot)"/>
+        <param name="takeoff_max_xy_drift" value="$(arg takeoff_max_xy_drift)"/>
+        <param name="takeoff_max_climb_speed" value="$(arg takeoff_max_climb_speed)"/>
+        <param name="takeoff_max_vertical_accel" value="$(arg takeoff_max_vertical_accel)"/>
+        <param name="takeoff_max_tracking_error" value="$(arg takeoff_max_tracking_error)"/>
+        <param name="input_recovery_grace" value="$(arg input_recovery_grace)"/>
+        <param name="fault_response" value="$(arg fault_response)"/>
+        <param name="fault_land_mode" value="$(arg fault_land_mode)"/>
+        <param name="fault_land_confirm_timeout" value="$(arg fault_land_confirm_timeout)"/>
+        <param name="fault_land_retry_interval" value="$(arg fault_land_retry_interval)"/>
+        <param name="fault_land_max_attempts" value="$(arg fault_land_max_attempts)"/>
         <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
-        <param name="estop_hold_mode" value="$(arg estop_hold_mode)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
         <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
         <param name="collision_dist" value="$(arg collision_dist)"/>
+        <param name="safety_activation_height" value="$(arg safety_activation_height)"/>
         <param name="min_altitude" value="$(arg min_altitude)"/>
         <param name="max_altitude" value="$(arg max_altitude)"/>
         <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>
@@ -122,6 +150,8 @@
             <param name="output_dir" value="$(arg output_dir)"/>
             <param name="run_id" value="$(arg run_id)"/>
             <param name="odom_topic" value="$(arg odom_topic)"/>
+            <param name="px4_local_odom_topic" value="$(arg px4_local_odom_topic)"/>
+            <param name="px4_local_velocity_topic" value="$(arg px4_local_velocity_topic)"/>
             <param name="rc_topic" value="$(arg rc_topic)"/>
             <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
             <param name="lidar_range" value="4.0"/>

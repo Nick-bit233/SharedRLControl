@@ -17,8 +17,12 @@ if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   catkin_add_nosetests(test/test_mavlink_stream_guard_core.py)
   catkin_add_nosetests(test/test_launch_contracts.py)
+  catkin_add_nosetests(test/test_one_shot_flight.py)
+  catkin_add_nosetests(test/test_pcd_raycast_safety.py)
+  catkin_add_nosetests(test/test_recorder_contract.py)
   add_rostest(test/fake_runtime_stream_guard.test)
   add_rostest(test/mavlink_stream_guard.test)
+  add_rostest(test/one_shot_flight.test)
 endif()
 
 catkin_package(

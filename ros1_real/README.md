@@ -127,8 +127,8 @@ Start MAVROS and Nokov independently first. Then launch the navigation stack:
 
 ```bash
 roslaunch srlc_real real_px4.launch \
-  post_takeoff_mode:=direct \
-  takeoff_height:=1.2 \
+  post_takeoff_mode:=assist \
+  takeoff_height:=1.0 \
   rviz:=true \
   record:=true
 ```
@@ -142,17 +142,40 @@ roslaunch srlc_real real_px4.launch start_stream_guard:=false
 
 ### Safety warning
 
-The existing flight behavior is unchanged: `SRLC_AUTO_ARM` and
-`SRLC_AUTO_TAKEOFF` still default to true once the required OFFBOARD conditions
-are met. Bench tests must explicitly disable both:
+SRLC no longer arms PX4.  The pilot must arm manually and then select OFFBOARD.
+The first armed OFFBOARD transition starts exactly one automatic takeoff:
+
+1. The node captures the current PX4-local XYZ and starts the command at that
+   exact height; it does not send a one-metre position step.
+2. It generates a monotonic climb limited by default to `0.4 m/s` and
+   `0.5 m/s^2`, with no more than `0.25 m` command lead over PX4-local feedback.
+3. It enters ASSIST only after the generated target reaches the final relative
+   height and PX4-local height/vertical speed remain inside the configured band.
+4. Any OFFBOARD loss or disarm after takeoff starts permanently terminates that
+   navigator process.  Switching back to OFFBOARD cannot restart it; restart
+   `srlc_real_navigator` (normally the full `real_px4.launch`) before another
+   flight.
+
+Bench tests must disable automatic takeoff:
 
 ```bash
-SRLC_AUTO_ARM=false SRLC_AUTO_TAKEOFF=false \
+SRLC_AUTO_TAKEOFF=false \
 roslaunch srlc_real real_px4.launch record:=false rviz:=false
 ```
 
-The SRLC launch does not itself switch PX4 into OFFBOARD. Once the pilot or GCS
-selects OFFBOARD, the configured navigation behavior applies.
+Before arming, verify `/tunnel_nav/lifecycle_state` progresses to `WAIT_ARMED`.
+After arming it must report `WAIT_OFFBOARD`; do not select OFFBOARD while it
+still reports `WAIT_READY`.
+
+The smooth-profile defaults can be adjusted conservatively with
+`SRLC_TAKEOFF_MAX_CLIMB_SPEED`, `SRLC_TAKEOFF_MAX_VERTICAL_ACCEL`, and
+`SRLC_TAKEOFF_MAX_TRACKING_ERROR`.  Do not increase all three together on the
+first hardware test; inspect the recorded PX4-local tracking error first.
+
+Emergency faults default to requesting `AUTO.LAND`.  If PX4 does not confirm
+the mode within two seconds, SRLC holds the last valid XYZ until the pilot
+takes over.  Set `SRLC_FAULT_RESPONSE=hold` to skip the automatic landing
+request and use the hold fallback directly.
 
 ## Main data paths
 
@@ -170,7 +193,22 @@ Local estimate returned by PX4:
 PX4 LOCAL_POSITION_NED
   -> /mavros/local_position/pose
   -> /mavros/local_position/odom
+  -> /mavros/local_position/velocity_local
 ```
+
+Coordinate ownership is intentional:
+
+- raw `/nokov/local_position/odom` remains the model, map/LiDAR, visualization,
+  geofence, and physical-altitude source;
+- `/mavros/local_position/odom` and
+  `/mavros/local_position/velocity_local` are the feedback used only for
+  OFFBOARD prestream, takeoff trajectory, settle detection, and altitude hold.
+
+`nokov_node` still applies `vision_z_offset = -0.15 m` when sending visual pose
+to PX4.  The correction represents the chosen physical reference and is not
+removed.  Because takeoff origin, final target, and feedback are now all in the
+same PX4-local frame, this constant correction no longer appears as a 0.15 m
+takeoff target/measurement mismatch.
 
 Other important topics:
 
@@ -179,10 +217,16 @@ Other important topics:
 - `/mavros/state`
 - `/mavros/rc/in`
 - `/mavros/setpoint_raw/local`
+- `/mavros/local_position/velocity_local`
 - `/srlc/lidar/range_image`
 - `/srlc/lidar/min_distance`
+- `/srlc/lidar/min_safety_distance`
 - `/tunnel_nav/status`
 - `/tunnel_nav/lifecycle_state`
+- `/tunnel_nav/effective_mode`
+- `/tunnel_nav/session_consumed`
+- `/tunnel_nav/fault_reason`
+- `/tunnel_nav/policy_active`
 
 `HEALTHY` confirms stream delivery, not estimator correctness. Before flight,
 also check that position and quaternion values are finite and that PX4 estimator
@@ -210,6 +254,8 @@ rostopic echo /tunnel_nav/lifecycle_state
 rostopic echo /tunnel_nav/status
 rostopic echo /mavros/setpoint_raw/local
 rostopic echo /nokov/local_position/odom
+rostopic echo /mavros/local_position/odom
+rostopic echo /mavros/local_position/velocity_local
 ```
 
 ## Verification after rebuilding
@@ -242,6 +288,10 @@ project no longer requires `/opt/ros/noetic/share/mavros/soccer.launch`.
   `/vrpn_client_node/uav_soccer/pose`.
 - No local position with guard `HEALTHY`: inspect PX4 EKF status rather than
   repeatedly changing message intervals.
+- Lifecycle remains `WAIT_READY` with valid Nokov data: verify both
+  `/mavros/local_position/odom` and `/mavros/local_position/velocity_local` are
+  fresh; the latter must be the local-frame topic, not `odom.twist`, which
+  MAVROS publishes in the body frame.
 
 For real-flight acceptance, test MAVROS restart, FCU power-cycle recovery, and
 a ten-minute soak with zero MAVROS dropped packets, buffer overruns, and parse

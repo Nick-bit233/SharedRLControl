@@ -4,6 +4,7 @@ odom_topic: "/nokov/local_position/odom"
 range_image_topic: "/srlc/lidar/range_image"
 raycast_points_topic: "/srlc/lidar/raycast_points"
 min_distance_topic: "/srlc/lidar/min_distance"
+min_safety_distance_topic: "/srlc/lidar/min_safety_distance"
 frame_id: "map"
 rate: 20.0
 

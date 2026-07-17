@@ -4,8 +4,8 @@
 import math
 
 import rospy
-from geometry_msgs.msg import PoseStamped, Quaternion
-from mavros_msgs.msg import PositionTarget, RCIn, State
+from geometry_msgs.msg import PoseStamped, Quaternion, TwistStamped
+from mavros_msgs.msg import ExtendedState, PositionTarget, RCIn, State
 from mavros_msgs.srv import CommandBool, CommandBoolResponse
 from mavros_msgs.srv import CommandLong, CommandLongResponse
 from mavros_msgs.srv import MessageInterval, MessageIntervalResponse
@@ -36,8 +36,10 @@ class FakeRealRuntime:
             float(rospy.get_param("~initial_y", 0.0)),
             float(rospy.get_param("~initial_z", 0.0)),
         ]
+        self.ground_z = float(self.position[2])
         self.yaw = math.radians(float(rospy.get_param("~initial_yaw_deg", 0.0)))
         self.velocity = [0.0, 0.0, 0.0]
+        self.target_velocity = [0.0, 0.0, 0.0]
         self.target_position = [None, None, None]
         self.last_cmd_time = None
         self.last_odom_time = rospy.Time.now()
@@ -69,13 +71,23 @@ class FakeRealRuntime:
         self.fake_vertical_speed = float(rospy.get_param("~fake_vertical_speed", 0.0))
         self.motion_after = float(rospy.get_param("~motion_after", 5.0))
         self.stop_after = float(rospy.get_param("~stop_after", 0.0))
+        self.mode_after = float(rospy.get_param("~mode_after", 0.0))
+        self.mode_after_value = str(rospy.get_param("~mode_after_value", "OFFBOARD"))
+        self.reject_set_mode = _param_bool(rospy.get_param("~reject_set_mode", False))
+        self._mode_after_applied = False
         self.start_time = rospy.Time.now()
 
         self.state_pub = rospy.Publisher("/mavros/state", State, queue_size=2, latch=True)
+        self.extended_state_pub = rospy.Publisher(
+            "/mavros/extended_state", ExtendedState, queue_size=2, latch=True
+        )
         self.battery_pub = rospy.Publisher("/mavros/battery", BatteryState, queue_size=1, latch=True)
         self.rc_pub = rospy.Publisher("/mavros/rc/in", RCIn, queue_size=10)
         self.nokov_odom_pub = rospy.Publisher("/nokov/local_position/odom", Odometry, queue_size=10)
         self.mavros_odom_pub = rospy.Publisher("/mavros/local_position/odom", Odometry, queue_size=10)
+        self.mavros_velocity_local_pub = rospy.Publisher(
+            "/mavros/local_position/velocity_local", TwistStamped, queue_size=10
+        )
         self.pose_pub = rospy.Publisher("/mavros/local_position/pose", PoseStamped, queue_size=10)
         self.vision_pose_pub = rospy.Publisher("/mavros/vision_pose/pose", PoseStamped, queue_size=10)
         self.imu_pub = rospy.Publisher("/nokov/imu/data", Imu, queue_size=10)
@@ -107,6 +119,9 @@ class FakeRealRuntime:
         )
 
     def _set_mode_cb(self, req):
+        if self.reject_set_mode:
+            rospy.logwarn("[SRLC Fake] Rejecting SetMode -> %s", req.custom_mode)
+            return SetModeResponse(mode_sent=False)
         if req.custom_mode:
             self.state.mode = str(req.custom_mode)
         rospy.loginfo("[SRLC Fake] SetMode -> %s", self.state.mode)
@@ -154,13 +169,32 @@ class FakeRealRuntime:
             cmd[1] *= scale
         cmd[2] = self._clamp(cmd[2], -self.max_z_speed, self.max_z_speed)
 
-        self.velocity = cmd
+        self.target_velocity = list(cmd)
+        self.velocity = list(cmd)
         self.target_position = target
         self.last_cmd_time = rospy.Time.now()
 
     def _state_timer_cb(self, _event):
+        elapsed = (rospy.Time.now() - self.start_time).to_sec()
+        if (
+            not self._mode_after_applied
+            and self.mode_after > 0.0
+            and elapsed >= self.mode_after
+        ):
+            self.state.mode = self.mode_after_value
+            self._mode_after_applied = True
+            rospy.loginfo("[SRLC Fake] Timed mode change -> %s", self.state.mode)
+
         self.state.header.stamp = rospy.Time.now()
         self.state_pub.publish(self.state)
+
+        extended = ExtendedState()
+        extended.header.stamp = self.state.header.stamp
+        if self.position[2] <= self.ground_z + 0.05:
+            extended.landed_state = ExtendedState.LANDED_STATE_ON_GROUND
+        else:
+            extended.landed_state = ExtendedState.LANDED_STATE_IN_AIR
+        self.extended_state_pub.publish(extended)
 
         battery = BatteryState()
         battery.header.stamp = rospy.Time.now()
@@ -186,6 +220,14 @@ class FakeRealRuntime:
         self.nokov_odom_pub.publish(odom)
         self.mavros_odom_pub.publish(odom)
 
+        velocity_local = TwistStamped()
+        velocity_local.header.stamp = now
+        velocity_local.header.frame_id = "map"
+        velocity_local.twist.linear.x = float(self.velocity[0])
+        velocity_local.twist.linear.y = float(self.velocity[1])
+        velocity_local.twist.linear.z = float(self.velocity[2])
+        self.mavros_velocity_local_pub.publish(velocity_local)
+
         pose = PoseStamped()
         pose.header = odom.header
         pose.pose = odom.pose.pose
@@ -200,8 +242,14 @@ class FakeRealRuntime:
 
     def _apply_position_hold_targets(self):
         if self.target_position[0] is not None and self.target_position[1] is not None:
-            vx = (self.target_position[0] - self.position[0]) * self.xy_hold_kp
-            vy = (self.target_position[1] - self.position[1]) * self.xy_hold_kp
+            vx = (
+                (self.target_position[0] - self.position[0]) * self.xy_hold_kp
+                + self.target_velocity[0]
+            )
+            vy = (
+                (self.target_position[1] - self.position[1]) * self.xy_hold_kp
+                + self.target_velocity[1]
+            )
             hspeed = math.hypot(vx, vy)
             if hspeed > self.max_xy_speed:
                 scale = self.max_xy_speed / hspeed
@@ -210,7 +258,10 @@ class FakeRealRuntime:
             self.velocity[0] = vx
             self.velocity[1] = vy
         if self.target_position[2] is not None:
-            vz = (self.target_position[2] - self.position[2]) * self.z_hold_kp
+            vz = (
+                (self.target_position[2] - self.position[2]) * self.z_hold_kp
+                + self.target_velocity[2]
+            )
             self.velocity[2] = self._clamp(vz, -self.max_z_speed, self.max_z_speed)
 
     def _rc_timer_cb(self, _event):

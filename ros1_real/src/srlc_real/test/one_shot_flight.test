@@ -1,0 +1,15 @@
+<launch>
+    <include file="$(find srlc_real)/launch/dry_run_px4.launch">
+        <arg name="rviz" value="false"/>
+        <arg name="record" value="false"/>
+        <arg name="start_stream_guard" value="false"/>
+        <arg name="post_takeoff_mode" value="assist"/>
+        <arg name="fake_offboard_after" value="12.0"/>
+        <arg name="motion_after" value="13.0"/>
+    </include>
+
+    <test test-name="one_shot_flight_ros"
+          pkg="srlc_real"
+          type="test_one_shot_flight_ros.py"
+          time-limit="45.0"/>
+</launch>

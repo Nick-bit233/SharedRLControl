@@ -11,9 +11,13 @@
     <arg name="run_id" default="dry_run_px4_fixed_rc"/>
     <arg name="start_stream_guard" default="true"/>
 
-    <arg name="post_takeoff_mode" default="direct"/>
-    <arg name="takeoff_height" default="1.2"/>
+    <arg name="post_takeoff_mode" default="assist"/>
+    <arg name="takeoff_height" default="1.0"/>
+    <arg name="takeoff_max_climb_speed" default="0.4"/>
+    <arg name="takeoff_max_vertical_accel" default="0.5"/>
+    <arg name="takeoff_max_tracking_error" default="0.25"/>
     <arg name="motion_after" default="5.0"/>
+    <arg name="fake_offboard_after" default="8.0"/>
     <arg name="fake_forward_speed" default="1.0"/>
     <arg name="fake_lateral_speed" default="0.0"/>
     <arg name="fake_vertical_speed" default="0.0"/>
@@ -46,6 +50,8 @@
     <arg name="collision_dist" default="0.15"/>
 
     <arg name="odom_topic" default="/nokov/local_position/odom"/>
+    <arg name="px4_local_odom_topic" default="/mavros/local_position/odom"/>
+    <arg name="px4_local_velocity_topic" default="/mavros/local_position/velocity_local"/>
     <arg name="rc_topic" default="/mavros/rc/in"/>
     <arg name="setpoint_raw_topic" default="/mavros/setpoint_raw/local"/>
 
@@ -54,8 +60,10 @@
     <node pkg="srlc_real" type="srlc_real_fake_runtime_node.py"
           name="srlc_real_fake_runtime_node" output="screen" required="true">
         <rosparam file="$(find srlc_real)/cfg/tunnel/rc_input_real_px4.yaml"/>
-        <param name="mode" value="OFFBOARD"/>
-        <param name="armed" value="false"/>
+        <param name="mode" value="POSCTL"/>
+        <param name="armed" value="true"/>
+        <param name="mode_after" value="$(arg fake_offboard_after)"/>
+        <param name="mode_after_value" value="OFFBOARD"/>
         <param name="initial_x" value="$(arg fake_initial_x)"/>
         <param name="initial_y" value="$(arg fake_initial_y)"/>
         <param name="initial_z" value="$(arg fake_initial_z)"/>
@@ -115,16 +123,18 @@
         <param name="checkpoint_path" value="$(arg checkpoint)"/>
         <param name="device" value="$(arg device)"/>
         <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="px4_local_odom_topic" value="$(arg px4_local_odom_topic)"/>
+        <param name="px4_local_velocity_topic" value="$(arg px4_local_velocity_topic)"/>
         <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
         <param name="takeoff_height" value="$(arg takeoff_height)"/>
+        <param name="takeoff_max_climb_speed" value="$(arg takeoff_max_climb_speed)"/>
+        <param name="takeoff_max_vertical_accel" value="$(arg takeoff_max_vertical_accel)"/>
+        <param name="takeoff_max_tracking_error" value="$(arg takeoff_max_tracking_error)"/>
         <param name="lock_z_control" value="$(arg lock_z_control)"/>
         <param name="require_offboard" value="true"/>
         <param name="real_auto_takeoff_on_offboard" value="true"/>
-        <param name="auto_arm_on_offboard" value="true"/>
         <param name="post_takeoff_mode" value="$(arg post_takeoff_mode)"/>
-        <param name="post_takeoff_mode_delay" value="1.0"/>
-        <param name="takeoff_reached_tolerance" value="0.1"/>
-        <param name="hold_on_stop" value="false"/>
+        <param name="takeoff_confirm_duration" value="0.5"/>
         <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
@@ -144,6 +154,8 @@
             <param name="output_dir" value="$(arg output_dir)"/>
             <param name="run_id" value="$(arg run_id)"/>
             <param name="odom_topic" value="$(arg odom_topic)"/>
+            <param name="px4_local_odom_topic" value="$(arg px4_local_odom_topic)"/>
+            <param name="px4_local_velocity_topic" value="$(arg px4_local_velocity_topic)"/>
             <param name="rc_topic" value="$(arg rc_topic)"/>
             <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
             <param name="lidar_range" value="4.0"/>

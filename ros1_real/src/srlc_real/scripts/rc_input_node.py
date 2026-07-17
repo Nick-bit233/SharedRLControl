@@ -122,6 +122,8 @@ class RcInputNode:
         return (rospy.Time.now() - self.last_rc_time).to_sec() <= self.timeout_sec
 
     def _timer_cb(self, _event):
+        if rospy.is_shutdown():
+            return
         rc_fresh = self._rc_fresh()
         if not rc_fresh:
             if self.enable_stop_output and self.stop_on_timeout:
@@ -156,28 +158,38 @@ class RcInputNode:
         msg.twist.linear.x = float(vx)
         msg.twist.linear.y = float(vy)
         msg.twist.linear.z = float(vz)
-        self.human_pub.publish(msg)
-        if self.stop_pub is not None:
-            self.stop_pub.publish(Bool(data=bool(self.stop_latched)))
+        try:
+            self.human_pub.publish(msg)
+            if self.stop_pub is not None:
+                self.stop_pub.publish(Bool(data=bool(self.stop_latched)))
 
-        status = "STOP" if self.stop_latched else "RC"
-        self.status_pub.publish(
-            String(
-                data=(
-                    f"{status} vx={vx:.2f} vy={vy:.2f} vz={vz:.2f} "
-                    f"estop={estop_active} reset={reset_active}"
+            status = "STOP" if self.stop_latched else "RC"
+            self.status_pub.publish(
+                String(
+                    data=(
+                        f"{status} vx={vx:.2f} vy={vy:.2f} vz={vz:.2f} "
+                        f"estop={estop_active} reset={reset_active}"
+                    )
                 )
             )
-        )
+        except rospy.ROSException:
+            if not rospy.is_shutdown():
+                raise
 
     def _publish_zero(self, reason):
+        if rospy.is_shutdown():
+            return
         msg = TwistStamped()
         msg.header.stamp = rospy.Time.now()
         msg.header.frame_id = "base_link"
-        self.human_pub.publish(msg)
-        if self.stop_pub is not None:
-            self.stop_pub.publish(Bool(data=bool(self.stop_latched)))
-        self.status_pub.publish(String(data=reason))
+        try:
+            self.human_pub.publish(msg)
+            if self.stop_pub is not None:
+                self.stop_pub.publish(Bool(data=bool(self.stop_latched)))
+            self.status_pub.publish(String(data=reason))
+        except rospy.ROSException:
+            if not rospy.is_shutdown():
+                raise
 
 
 if __name__ == "__main__":

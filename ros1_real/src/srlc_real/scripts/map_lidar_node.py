@@ -19,7 +19,7 @@ from std_msgs.msg import Float32, Float32MultiArray, Header, MultiArrayDimension
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from srlc_real_deployment.pcd_raycast import PcdRaycaster
+from srlc_real_deployment.pcd_raycast import PcdRaycaster, minimum_raycast_distance
 
 
 class MapLidarNode:
@@ -36,6 +36,9 @@ class MapLidarNode:
         self.range_topic = rospy.get_param("~range_image_topic", "/srlc/lidar/range_image")
         self.points_topic = rospy.get_param("~raycast_points_topic", "/srlc/lidar/raycast_points")
         self.min_dist_topic = rospy.get_param("~min_distance_topic", "/srlc/lidar/min_distance")
+        self.safety_dist_topic = rospy.get_param(
+            "~min_safety_distance_topic", "/srlc/lidar/min_safety_distance"
+        )
         self.frame_id = rospy.get_param("~frame_id", "map")
         self.rate_hz = float(rospy.get_param("~rate", 20.0))
 
@@ -61,6 +64,9 @@ class MapLidarNode:
         self.range_pub = rospy.Publisher(self.range_topic, Float32MultiArray, queue_size=2)
         self.points_pub = rospy.Publisher(self.points_topic, PointCloud2, queue_size=2)
         self.min_dist_pub = rospy.Publisher(self.min_dist_topic, Float32, queue_size=2)
+        self.safety_dist_pub = rospy.Publisher(
+            self.safety_dist_topic, Float32, queue_size=2
+        )
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.rate_hz), self._timer_cb)
         rospy.loginfo(
@@ -107,6 +113,15 @@ class MapLidarNode:
         self._publish_range_image(points, pos_map)
         self._publish_points(points)
         self.min_dist_pub.publish(Float32(data=float(self.raycaster.nearest_distance(pos_map))))
+        self.safety_dist_pub.publish(
+            Float32(
+                data=minimum_raycast_distance(
+                    points,
+                    pos_map,
+                    max_range=self.lidar_range,
+                )
+            )
+        )
 
     def _publish_range_image(self, points, pos_map):
         expected = self.lidar_hbeams * self.lidar_vbeams

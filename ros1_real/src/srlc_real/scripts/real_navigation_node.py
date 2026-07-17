@@ -21,8 +21,8 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Float32, Float32MultiArray, String
 from visualization_msgs.msg import Marker, MarkerArray
 
-from mavros_msgs.msg import PositionTarget, State
-from mavros_msgs.srv import CommandBool, CommandBoolRequest, SetMode, SetModeRequest
+from mavros_msgs.msg import ExtendedState, PositionTarget, State
+from mavros_msgs.srv import SetMode, SetModeRequest
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,6 +30,13 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from srlc_real_deployment.policy_net import TunnelPolicyNet  # noqa: E402
+from srlc_real_deployment.one_shot_flight import (  # noqa: E402
+    FlightAction,
+    FlightSnapshot,
+    LifecycleState,
+    OneShotFlightConfig,
+    OneShotFlightLifecycle,
+)
 
 
 def _param_bool(value):
@@ -50,6 +57,9 @@ class RealConfig:
         self.lidar_min_distance_topic = rospy.get_param(
             "~lidar_min_distance_topic", "/srlc/lidar/min_distance"
         )
+        self.lidar_safety_distance_topic = rospy.get_param(
+            "~lidar_safety_distance_topic", "/srlc/lidar/min_safety_distance"
+        )
         self.lidar_timeout = float(rospy.get_param("~lidar_timeout", 0.3))
 
         self.action_limit = float(rospy.get_param("~action_limit", 2.0))
@@ -62,9 +72,15 @@ class RealConfig:
         self.control_freq = float(rospy.get_param("~control_freq", 20.0))
         self.height_control = _param_bool(rospy.get_param("~height_control", False))
         self.lock_z_control = _param_bool(rospy.get_param("~lock_z_control", True))
-        self.takeoff_height = float(rospy.get_param("~takeoff_height", 1.2))
+        self.takeoff_height = float(rospy.get_param("~takeoff_height", 1.0))
         self.odom_timeout = float(rospy.get_param("~odom_timeout", 0.3))
         self.odom_topic = rospy.get_param("~odom_topic", "/nokov/local_position/odom")
+        self.px4_local_odom_topic = rospy.get_param(
+            "~px4_local_odom_topic", "/mavros/local_position/odom"
+        )
+        self.px4_local_velocity_topic = rospy.get_param(
+            "~px4_local_velocity_topic", "/mavros/local_position/velocity_local"
+        )
         self.setpoint_raw_topic = rospy.get_param(
             "~setpoint_raw_topic", "/mavros/setpoint_raw/local"
         )
@@ -72,19 +88,43 @@ class RealConfig:
         self.real_auto_takeoff_on_offboard = _param_bool(
             rospy.get_param("~real_auto_takeoff_on_offboard", True)
         )
-        self.auto_arm_on_offboard = _param_bool(
-            rospy.get_param("~auto_arm_on_offboard", True)
+        self.post_takeoff_mode = str(rospy.get_param("~post_takeoff_mode", "assist")).lower()
+        self.takeoff_lower_margin = float(rospy.get_param("~takeoff_lower_margin", 0.2))
+        self.takeoff_upper_margin = float(rospy.get_param("~takeoff_upper_margin", 0.2))
+        self.takeoff_max_abs_vz = float(rospy.get_param("~takeoff_max_abs_vz", 0.25))
+        self.takeoff_confirm_duration = float(
+            rospy.get_param("~takeoff_confirm_duration", 0.5)
         )
-        self.post_takeoff_mode = str(rospy.get_param("~post_takeoff_mode", "direct")).lower()
-        self.post_takeoff_mode_delay = float(rospy.get_param("~post_takeoff_mode_delay", 2.0))
-        self.takeoff_reached_tolerance = float(
-            rospy.get_param("~takeoff_reached_tolerance", 0.1)
+        self.takeoff_timeout = float(rospy.get_param("~takeoff_timeout", 15.0))
+        self.takeoff_max_overshoot = float(
+            rospy.get_param("~takeoff_max_overshoot", 0.5)
         )
-        self.on_offboard_loss = str(rospy.get_param("~on_offboard_loss", "stream_hold")).lower()
-        self.hold_on_stop = _param_bool(rospy.get_param("~hold_on_stop", False))
-        self.estop_hold_mode = str(rospy.get_param("~estop_hold_mode", "AUTO.LOITER"))
-        self.estop_fallback_mode = str(rospy.get_param("~estop_fallback_mode", "POSCTL"))
-        self.hold_verify_timeout = float(rospy.get_param("~hold_verify_timeout", 1.0))
+        self.takeoff_max_xy_drift = float(
+            rospy.get_param("~takeoff_max_xy_drift", 0.5)
+        )
+        self.takeoff_max_climb_speed = float(
+            rospy.get_param("~takeoff_max_climb_speed", 0.4)
+        )
+        self.takeoff_max_vertical_accel = float(
+            rospy.get_param("~takeoff_max_vertical_accel", 0.5)
+        )
+        self.takeoff_max_tracking_error = float(
+            rospy.get_param("~takeoff_max_tracking_error", 0.25)
+        )
+        self.input_recovery_grace = float(
+            rospy.get_param("~input_recovery_grace", 1.0)
+        )
+        self.fault_response = str(rospy.get_param("~fault_response", "auto_land")).lower()
+        self.fault_land_mode = str(rospy.get_param("~fault_land_mode", "AUTO.LAND"))
+        self.fault_land_confirm_timeout = float(
+            rospy.get_param("~fault_land_confirm_timeout", 2.0)
+        )
+        self.fault_land_retry_interval = float(
+            rospy.get_param("~fault_land_retry_interval", 0.5)
+        )
+        self.fault_land_max_attempts = int(
+            rospy.get_param("~fault_land_max_attempts", 3)
+        )
         self.max_xy_speed_real = float(rospy.get_param("~max_xy_speed_real", 0.5))
         self.max_z_speed_real = float(rospy.get_param("~max_z_speed_real", 0.3))
         self.min_altitude = float(rospy.get_param("~min_altitude", 0.5))
@@ -104,8 +144,8 @@ class RealConfig:
         )
         self.safety_min_dist = float(rospy.get_param("~safety_min_dist", 0.25))
         self.collision_dist = float(rospy.get_param("~collision_dist", 0.15))
-        self.safety_start_takeoff_delta = float(
-            rospy.get_param("~safety_start_takeoff_delta", 0.3)
+        self.safety_activation_height = float(
+            rospy.get_param("~safety_activation_height", 0.3)
         )
 
     @staticmethod
@@ -143,41 +183,70 @@ class RealNavigator:
         self.odom = None
         self.odom_received = False
         self.last_odom_time = None
+        self.px4_local_odom = None
+        self.last_px4_local_odom_time = None
+        self.px4_local_velocity = None
+        self.last_px4_local_velocity_time = None
         self.mavros_state = None
+        self.extended_state = None
         self.topic_lidar_np = None
         self.last_lidar_time = None
         self.last_min_dist_time = None
         self.min_dist = float("inf")
+        self.last_safety_dist_time = None
+        self.safety_dist = float("inf")
         self._topic_human_cmd = np.zeros(3, dtype=np.float32)
         self._topic_human_lock = threading.Lock()
         self.last_human_action_time = None
 
         self.control_mode = self.cfg.post_takeoff_mode.upper()
         self.assist_enabled = self.control_mode == "ASSIST"
-        self.real_lifecycle_state = "WAIT_OFFBOARD"
-        self._takeoff_hold_z = None
-        self._takeoff_xy = None
-        self._takeoff_settle_start = None
-        self._last_arm_request = rospy.Time(0)
-        self._arm_request_failed = False
-        self._last_hold_mode_request = rospy.Time(0)
-        self._hold_mode_request_time = None
-        self._hold_mode_requested = None
-        self._hold_fallback_requested = False
+        self.effective_mode = "INACTIVE"
+        self.fault_reason = ""
+        collision_dist = self.cfg.collision_dist if self.cfg.enable_collision_detection else -1.0
+        safety_min_dist = (
+            self.cfg.safety_min_dist
+            if self.cfg.enable_safety_stop
+            else collision_dist
+        )
+        self.lifecycle = OneShotFlightLifecycle(
+            OneShotFlightConfig(
+                enabled=self.cfg.real_auto_takeoff_on_offboard,
+                takeoff_height=self.cfg.takeoff_height,
+                takeoff_lower_margin=self.cfg.takeoff_lower_margin,
+                takeoff_upper_margin=self.cfg.takeoff_upper_margin,
+                takeoff_max_abs_vz=self.cfg.takeoff_max_abs_vz,
+                takeoff_confirm_duration=self.cfg.takeoff_confirm_duration,
+                takeoff_timeout=self.cfg.takeoff_timeout,
+                takeoff_max_overshoot=self.cfg.takeoff_max_overshoot,
+                takeoff_max_xy_drift=self.cfg.takeoff_max_xy_drift,
+                takeoff_max_climb_speed=self.cfg.takeoff_max_climb_speed,
+                takeoff_max_vertical_accel=self.cfg.takeoff_max_vertical_accel,
+                takeoff_max_tracking_error=self.cfg.takeoff_max_tracking_error,
+                collision_dist=collision_dist,
+                safety_min_dist=safety_min_dist,
+                safety_activation_height=self.cfg.safety_activation_height,
+                input_recovery_grace=self.cfg.input_recovery_grace,
+                fault_response=self.cfg.fault_response,
+                fault_land_mode=self.cfg.fault_land_mode,
+                fault_land_confirm_timeout=self.cfg.fault_land_confirm_timeout,
+                fault_land_retry_interval=self.cfg.fault_land_retry_interval,
+                fault_land_max_attempts=self.cfg.fault_land_max_attempts,
+            )
+        )
+        self.real_lifecycle_state = self.lifecycle.state
+        self._last_decision = None
 
         self.ready = False
         self.policy_active = False
         self.z_policy_active = False
         self.safety_stop = False
         self.collision = False
-        self.initial_z = None
-        self.safety_airborne = False
 
         self._setup_ros()
         self._publish_mode_state()
         self._log_config()
 
-        self.safety_timer = rospy.Timer(rospy.Duration(0.1), self._safety_timer_cb)
         self.diagnostic_timer = rospy.Timer(rospy.Duration(0.5), self._diagnostic_timer_cb)
         self.control_timer = rospy.Timer(
             rospy.Duration(1.0 / self.cfg.control_freq), self._control_callback
@@ -186,34 +255,71 @@ class RealNavigator:
     def _validate_config(self):
         if self.cfg.post_takeoff_mode not in {"direct", "assist"}:
             raise ValueError("post_takeoff_mode must be 'direct' or 'assist'")
-        if self.cfg.on_offboard_loss != "stream_hold":
-            raise ValueError("on_offboard_loss must be 'stream_hold'")
+        if not self.cfg.require_offboard:
+            raise ValueError("one-shot real flight requires ~require_offboard=true")
+        if self.cfg.fault_response not in {"auto_land", "hold"}:
+            raise ValueError("fault_response must be 'auto_land' or 'hold'")
         if self.cfg.policy_mode not in {"residual", "direct"}:
             raise ValueError("policy_mode must be 'residual' or 'direct'")
         if not self.cfg.checkpoint_path:
             raise ValueError("~checkpoint_path is required")
 
     def _log_config(self):
-        rospy.loginfo("[SRLCReal] odom=%s setpoint=%s", self.cfg.odom_topic, self.cfg.setpoint_raw_topic)
         rospy.loginfo(
-            "[SRLCReal] mode=%s takeoff=%.2fm auto_arm=%s require_offboard=%s",
-            self.control_mode,
-            self.cfg.takeoff_height,
-            self.cfg.auto_arm_on_offboard,
-            self.cfg.require_offboard,
+            "[SRLCReal] model_odom=%s px4_local=(%s, %s) setpoint=%s",
+            self.cfg.odom_topic,
+            self.cfg.px4_local_odom_topic,
+            self.cfg.px4_local_velocity_topic,
+            self.cfg.setpoint_raw_topic,
         )
         rospy.loginfo(
-            "[SRLCReal] lidar=%dx%d range=%.2fm topics=(%s, %s)",
+            "[SRLCReal] requested_mode=%s one_shot_takeoff=%.2fm manual_arm=true",
+            self.control_mode,
+            self.cfg.takeoff_height,
+        )
+        rospy.loginfo(
+            "[SRLCReal] lidar=%dx%d range=%.2fm topics=(%s, diag=%s, safety=%s)",
             self.cfg.lidar_hbeams,
             self.cfg.lidar_vbeams,
             self.cfg.lidar_range,
             self.cfg.lidar_range_image_topic,
             self.cfg.lidar_min_distance_topic,
+            self.cfg.lidar_safety_distance_topic,
+        )
+        rospy.loginfo(
+            "[SRLCReal] takeoff_band=[-%.2f,+%.2f] vz<=%.2f stable=%.2fs timeout=%.1fs fault=%s",
+            self.cfg.takeoff_lower_margin,
+            self.cfg.takeoff_upper_margin,
+            self.cfg.takeoff_max_abs_vz,
+            self.cfg.takeoff_confirm_duration,
+            self.cfg.takeoff_timeout,
+            self.cfg.fault_response,
+        )
+        rospy.loginfo(
+            "[SRLCReal] takeoff_profile: climb<=%.2fm/s accel<=%.2fm/s^2 tracking_error<=%.2fm",
+            self.cfg.takeoff_max_climb_speed,
+            self.cfg.takeoff_max_vertical_accel,
+            self.cfg.takeoff_max_tracking_error,
         )
 
     def _setup_ros(self):
         self.odom_sub = rospy.Subscriber(self.cfg.odom_topic, Odometry, self._odom_cb, queue_size=1)
+        self.px4_local_odom_sub = rospy.Subscriber(
+            self.cfg.px4_local_odom_topic,
+            Odometry,
+            self._px4_local_odom_cb,
+            queue_size=1,
+        )
+        self.px4_local_velocity_sub = rospy.Subscriber(
+            self.cfg.px4_local_velocity_topic,
+            TwistStamped,
+            self._px4_local_velocity_cb,
+            queue_size=1,
+        )
         self.state_sub = rospy.Subscriber("/mavros/state", State, self._mavros_state_cb, queue_size=1)
+        self.extended_state_sub = rospy.Subscriber(
+            "/mavros/extended_state", ExtendedState, self._extended_state_cb, queue_size=1
+        )
         self.human_action_sub = rospy.Subscriber(
             self.cfg.human_action_topic, TwistStamped, self._human_action_cb, queue_size=1
         )
@@ -223,6 +329,12 @@ class RealNavigator:
         self.lidar_min_dist_sub = rospy.Subscriber(
             self.cfg.lidar_min_distance_topic, Float32, self._lidar_min_dist_cb, queue_size=1
         )
+        self.lidar_safety_dist_sub = rospy.Subscriber(
+            self.cfg.lidar_safety_distance_topic,
+            Float32,
+            self._lidar_safety_dist_cb,
+            queue_size=1,
+        )
 
         self.action_pub = rospy.Publisher(self.cfg.setpoint_raw_topic, PositionTarget, queue_size=10)
         self.status_pub = rospy.Publisher("/tunnel_nav/status", String, queue_size=2)
@@ -230,6 +342,15 @@ class RealNavigator:
             "/tunnel_nav/lifecycle_state", String, queue_size=2
         )
         self.control_mode_pub = rospy.Publisher("/tunnel_nav/control_mode", String, queue_size=2)
+        self.effective_mode_pub = rospy.Publisher(
+            "/tunnel_nav/effective_mode", String, queue_size=2
+        )
+        self.session_consumed_pub = rospy.Publisher(
+            "/tunnel_nav/session_consumed", Bool, queue_size=2, latch=True
+        )
+        self.fault_reason_pub = rospy.Publisher(
+            "/tunnel_nav/fault_reason", String, queue_size=2, latch=True
+        )
         self.collision_pub = rospy.Publisher(
             "/tunnel_nav/collision", Bool, queue_size=2, latch=True
         )
@@ -249,18 +370,28 @@ class RealNavigator:
         )
 
         self.collision_pub.publish(Bool(data=False))
+        self.session_consumed_pub.publish(Bool(data=False))
+        self.fault_reason_pub.publish(String(data=""))
         self.set_mode_client = rospy.ServiceProxy("mavros/set_mode", SetMode)
-        self.arming_client = rospy.ServiceProxy("mavros/cmd/arming", CommandBool)
 
     def _odom_cb(self, msg):
         self.odom = msg
         self.odom_received = True
         self.last_odom_time = rospy.Time.now()
-        if self.initial_z is None:
-            self.initial_z = float(msg.pose.pose.position.z)
+
+    def _px4_local_odom_cb(self, msg):
+        self.px4_local_odom = msg
+        self.last_px4_local_odom_time = rospy.Time.now()
+
+    def _px4_local_velocity_cb(self, msg):
+        self.px4_local_velocity = msg
+        self.last_px4_local_velocity_time = rospy.Time.now()
 
     def _mavros_state_cb(self, msg):
         self.mavros_state = msg
+
+    def _extended_state_cb(self, msg):
+        self.extended_state = msg
 
     def _human_action_cb(self, msg):
         with self._topic_human_lock:
@@ -289,6 +420,10 @@ class RealNavigator:
     def _lidar_min_dist_cb(self, msg):
         self.min_dist = float(msg.data)
         self.last_min_dist_time = rospy.Time.now()
+
+    def _lidar_safety_dist_cb(self, msg):
+        self.safety_dist = float(msg.data)
+        self.last_safety_dist_time = rospy.Time.now()
 
     def _diagnostic_timer_cb(self, _event):
         self._publish_mode_state()
@@ -342,252 +477,249 @@ class RealNavigator:
 
         return state, human_action, lidar_scan
 
-    def _real_common_gate_ok(self):
-        now = rospy.Time.now()
-        if self.mavros_state is None or not self.mavros_state.connected:
-            return False, "MAVROS_NOT_CONNECTED"
-        if self.cfg.require_offboard and self.mavros_state.mode != "OFFBOARD":
-            return False, "PX4_NOT_OFFBOARD"
-        if self.last_odom_time is None:
-            return False, "NO_ODOM"
-        if (now - self.last_odom_time).to_sec() > self.cfg.odom_timeout:
-            return False, "ODOM_TIMEOUT"
-        if self.last_human_action_time is None:
-            return False, "NO_RC_ACTION"
-        if (now - self.last_human_action_time).to_sec() > self.cfg.human_action_timeout:
-            return False, "RC_ACTION_TIMEOUT"
-        if self.odom is not None:
-            pos = self.odom.pose.pose.position
-            if pos.z < self.cfg.min_altitude:
-                return False, "LOW_ALTITUDE"
-            if pos.z > self.cfg.max_altitude:
-                return False, "HIGH_ALTITUDE"
-            if len(self.cfg.geofence_x) == 2:
-                if pos.x < self.cfg.geofence_x[0] or pos.x > self.cfg.geofence_x[1]:
-                    return False, "GEOFENCE_X"
-            if len(self.cfg.geofence_y) == 2:
-                if pos.y < self.cfg.geofence_y[0] or pos.y > self.cfg.geofence_y[1]:
-                    return False, "GEOFENCE_Y"
-        return True, "OK"
-
-    def _real_lidar_gate_ok(self):
-        now = rospy.Time.now()
-        if self.last_lidar_time is None:
-            return False, "NO_LIDAR"
-        if (now - self.last_lidar_time).to_sec() > self.cfg.lidar_timeout:
-            return False, "LIDAR_TIMEOUT"
-        if self.last_min_dist_time is None:
-            return False, "NO_LIDAR_MIN_DISTANCE"
-        if (now - self.last_min_dist_time).to_sec() > self.cfg.lidar_timeout:
-            return False, "LIDAR_MIN_DISTANCE_TIMEOUT"
-        if not self.ready:
-            return False, "NOT_READY"
-        return True, "OK"
-
-    def _real_lifecycle_preconditions_ok(self):
-        now = rospy.Time.now()
-        if self.mavros_state is None or not self.mavros_state.connected:
-            return False, "MAVROS_NOT_CONNECTED"
-        if self.cfg.require_offboard and self.mavros_state.mode != "OFFBOARD":
-            return False, "PX4_NOT_OFFBOARD"
-        if self.last_odom_time is None:
-            return False, "NO_ODOM"
-        if (now - self.last_odom_time).to_sec() > self.cfg.odom_timeout:
-            return False, "ODOM_TIMEOUT"
-        if self.last_human_action_time is None:
-            return False, "NO_RC_ACTION"
-        if (now - self.last_human_action_time).to_sec() > self.cfg.human_action_timeout:
-            return False, "RC_ACTION_TIMEOUT"
-        if self.odom is not None:
-            pos = self.odom.pose.pose.position
-            if len(self.cfg.geofence_x) == 2:
-                if pos.x < self.cfg.geofence_x[0] or pos.x > self.cfg.geofence_x[1]:
-                    return False, "GEOFENCE_X"
-            if len(self.cfg.geofence_y) == 2:
-                if pos.y < self.cfg.geofence_y[0] or pos.y > self.cfg.geofence_y[1]:
-                    return False, "GEOFENCE_Y"
-        return True, "OK"
-
     def _publish_mode_state(self):
+        self.real_lifecycle_state = self.lifecycle.state
         self.lifecycle_state_pub.publish(String(data=str(self.real_lifecycle_state)))
         self.control_mode_pub.publish(String(data=str(self.control_mode)))
+        self.effective_mode_pub.publish(String(data=str(self.effective_mode)))
+        self.session_consumed_pub.publish(
+            Bool(data=bool(self.lifecycle.session_consumed))
+        )
+        self.fault_reason_pub.publish(String(data=str(self.fault_reason)))
 
     def _set_control_mode(self, mode):
         self.control_mode = str(mode).upper()
         self.assist_enabled = self.control_mode == "ASSIST"
         self._publish_mode_state()
 
-    def _request_arm_on_offboard(self):
-        if not self.cfg.auto_arm_on_offboard:
-            return
-        if self.mavros_state is not None and self.mavros_state.armed:
-            return
-        now = rospy.Time.now()
-        if (now - self._last_arm_request).to_sec() < 1.0:
-            return
-        self._last_arm_request = now
-        try:
-            resp = self.arming_client(CommandBoolRequest(value=True))
-            self._arm_request_failed = not bool(resp.success)
-            if not resp.success:
-                rospy.logwarn_throttle(2.0, "[SRLCReal] PX4 arming request rejected")
-        except rospy.ServiceException as exc:
-            self._arm_request_failed = True
-            rospy.logwarn_throttle(2.0, "[SRLCReal] PX4 arming request failed: %s", exc)
-
-    def _start_real_takeoff(self):
-        pos = self.odom.pose.pose.position
-        self._takeoff_xy = (float(pos.x), float(pos.y))
-        self._takeoff_hold_z = float(pos.z) + float(self.cfg.takeoff_height)
-        self._takeoff_settle_start = None
-        self.initial_z = float(pos.z)
-        self.safety_airborne = False
-        self.real_lifecycle_state = "TAKEOFF_CLIMB"
-        self._publish_mode_state()
-        rospy.loginfo(
-            "[SRLCReal] Takeoff started at x=%.2f y=%.2f z=%.2f target_z=%.2f",
-            pos.x,
-            pos.y,
-            pos.z,
-            self._takeoff_hold_z,
-        )
-
-    def _resume_real_takeoff_target(self):
-        if self._takeoff_xy is None or self._takeoff_hold_z is None:
-            self._start_real_takeoff()
-            return
-        self._takeoff_settle_start = None
-        self.real_lifecycle_state = "TAKEOFF_CLIMB"
-        self._publish_mode_state()
-        rospy.loginfo("[SRLCReal] Resuming takeoff target z=%.2f", self._takeoff_hold_z)
-
     def _px4_altitude_hold_target(self):
-        if self._takeoff_hold_z is not None:
-            return float(self._takeoff_hold_z)
-        if self.odom is not None:
-            return float(self.odom.pose.pose.position.z)
+        if self.lifecycle.takeoff_target is not None:
+            return float(self.lifecycle.takeoff_target[2])
+        if self.px4_local_odom is not None:
+            return float(self.px4_local_odom.pose.pose.position.z)
         return float(self.cfg.takeoff_height)
 
-    def _takeoff_target_error(self, target_xy, target_z):
-        if self.odom is None or target_xy is None or target_z is None:
-            return float("inf"), float("inf"), float("inf")
+    @staticmethod
+    def _is_fresh(now, stamp, timeout):
+        return stamp is not None and (now - stamp).to_sec() <= timeout
+
+    def _external_fault_reason(self):
+        if self.odom is None:
+            return None
         pos = self.odom.pose.pose.position
-        dx = float(pos.x) - float(target_xy[0])
-        dy = float(pos.y) - float(target_xy[1])
-        dz = float(pos.z) - float(target_z)
-        return math.sqrt(dx * dx + dy * dy + dz * dz), math.hypot(dx, dy), dz
+        if pos.z > self.cfg.max_altitude:
+            return "HIGH_ALTITUDE"
+        if (
+            self.lifecycle.state == LifecycleState.ACTIVE
+            and pos.z < self.cfg.min_altitude
+        ):
+            return "LOW_ALTITUDE"
+        if len(self.cfg.geofence_x) == 2:
+            if pos.x < self.cfg.geofence_x[0] or pos.x > self.cfg.geofence_x[1]:
+                return "GEOFENCE_X"
+        if len(self.cfg.geofence_y) == 2:
+            if pos.y < self.cfg.geofence_y[0] or pos.y > self.cfg.geofence_y[1]:
+                return "GEOFENCE_Y"
+        return None
 
-    def _update_real_px4_lifecycle(self):
-        self._publish_mode_state()
-        if not self.cfg.real_auto_takeoff_on_offboard:
-            gate_ok, gate_reason = self._real_common_gate_ok()
-            if gate_ok:
-                gate_ok, gate_reason = self._real_lidar_gate_ok()
-            if not gate_ok:
-                self.real_lifecycle_state = "WAIT_READY"
-                self._publish_real_lifecycle_hold(gate_reason)
-                return False
-            if self.real_lifecycle_state != "ACTIVE":
-                self.real_lifecycle_state = "ACTIVE"
-                self._set_control_mode(self.cfg.post_takeoff_mode)
-            return True
+    def _flight_snapshot(self, now):
+        connected = bool(self.mavros_state is not None and self.mavros_state.connected)
+        armed = bool(self.mavros_state is not None and self.mavros_state.armed)
+        mode = str(self.mavros_state.mode) if self.mavros_state is not None else ""
 
-        hold_z = (
-            self._takeoff_hold_z
-            if self._takeoff_hold_z is not None
-            else (float(self.odom.pose.pose.position.z) if self.odom is not None else None)
+        position = None
+        velocity = None
+        if self.px4_local_odom is not None:
+            pos = self.px4_local_odom.pose.pose.position
+            position = (float(pos.x), float(pos.y), float(pos.z))
+        if self.px4_local_velocity is not None:
+            vel = self.px4_local_velocity.twist.linear
+            velocity = (float(vel.x), float(vel.y), float(vel.z))
+
+        nokov_odom_fresh = self._is_fresh(
+            now, self.last_odom_time, self.cfg.odom_timeout
         )
-        hold_xy = self._takeoff_xy
-        if hold_xy is None and self.odom is not None:
-            hold_xy = (
-                float(self.odom.pose.pose.position.x),
-                float(self.odom.pose.pose.position.y),
+        px4_odom_fresh = self._is_fresh(
+            now, self.last_px4_local_odom_time, self.cfg.odom_timeout
+        )
+        px4_velocity_fresh = self._is_fresh(
+            now, self.last_px4_local_velocity_time, self.cfg.odom_timeout
+        )
+        odom_fresh = bool(
+            nokov_odom_fresh and px4_odom_fresh and px4_velocity_fresh
+        )
+        rc_fresh = self._is_fresh(
+            now, self.last_human_action_time, self.cfg.human_action_timeout
+        )
+        range_fresh = self._is_fresh(
+            now, self.last_lidar_time, self.cfg.lidar_timeout
+        )
+        safety_required = (
+            self.cfg.enable_safety_stop or self.cfg.enable_collision_detection
+        )
+        safety_fresh = (
+            self._is_fresh(
+                now, self.last_safety_dist_time, self.cfg.lidar_timeout
+            )
+            if safety_required
+            else True
+        )
+        landed = bool(
+            self.extended_state is not None
+            and self.extended_state.landed_state
+            == ExtendedState.LANDED_STATE_ON_GROUND
+        )
+        safety_distance = (
+            float(self.safety_dist)
+            if safety_required and safety_fresh
+            else float("inf")
+        )
+        external_fault = self._external_fault_reason() if nokov_odom_fresh else None
+        return FlightSnapshot(
+            now=now.to_sec(),
+            connected=connected,
+            armed=armed,
+            mode=mode,
+            position=position,
+            velocity=velocity,
+            odom_fresh=odom_fresh,
+            rc_fresh=rc_fresh,
+            lidar_fresh=bool(range_fresh and safety_fresh and self.ready),
+            safety_distance=safety_distance,
+            landed=landed,
+            external_fault=external_fault,
+        )
+
+    def _deactivate_policy(self):
+        self.policy_active = False
+        self.policy_active_pub.publish(Bool(data=False))
+        self.z_policy_active = False
+        self.z_policy_active_pub.publish(Bool(data=False))
+        self._publish_policy_cmd(np.zeros(3, dtype=np.float32))
+
+    def _request_fault_mode(self, mode, reason):
+        try:
+            resp = self.set_mode_client(SetModeRequest(custom_mode=str(mode)))
+            if not resp.mode_sent:
+                rospy.logerr_throttle(
+                    1.0,
+                    "[SRLCReal] Emergency mode request rejected: mode=%s reason=%s",
+                    mode,
+                    reason,
+                )
+        except rospy.ServiceException as exc:
+            rospy.logerr_throttle(
+                1.0,
+                "[SRLCReal] Emergency mode request failed: mode=%s reason=%s error=%s",
+                mode,
+                reason,
+                exc,
             )
 
-        pre_ok, pre_reason = self._real_lifecycle_preconditions_ok()
-        if not pre_ok:
-            if pre_reason in {"MAVROS_NOT_CONNECTED", "PX4_NOT_OFFBOARD"}:
-                if self.real_lifecycle_state == "ACTIVE":
-                    rospy.logwarn("[SRLCReal] PX4 link/offboard lost; suppressing DIRECT/RL output")
-                    self.real_lifecycle_state = "OFFBOARD_LOST_HOLD"
-                elif self.real_lifecycle_state != "OFFBOARD_LOST_HOLD":
-                    self.real_lifecycle_state = "WAIT_OFFBOARD"
-                self._set_control_mode(self.cfg.post_takeoff_mode)
-            self._publish_real_lifecycle_hold(pre_reason, target_xy=hold_xy, target_z=hold_z)
-            return False
-
-        if self.mavros_state is not None and not self.mavros_state.armed:
-            self.real_lifecycle_state = "WAIT_ARMED"
-            self._request_arm_on_offboard()
-            reason = "ARMING_FAILED" if self._arm_request_failed else "WAIT_ARMED"
-            self._publish_real_lifecycle_hold(reason, target_xy=hold_xy, target_z=hold_z)
-            return False
-        self._arm_request_failed = False
-
-        if self.real_lifecycle_state in {"WAIT_OFFBOARD", "WAIT_ARMED"}:
-            self._start_real_takeoff()
-            hold_xy = self._takeoff_xy
-            hold_z = self._takeoff_hold_z
-        elif self.real_lifecycle_state == "OFFBOARD_LOST_HOLD":
-            self._resume_real_takeoff_target()
-            hold_xy = self._takeoff_xy
-            hold_z = self._takeoff_hold_z
-
-        if self.real_lifecycle_state == "TAKEOFF_CLIMB":
-            target_z = float(hold_z if hold_z is not None else self.cfg.takeoff_height)
-            self._publish_real_lifecycle_hold("TAKEOFF_CLIMB", target_xy=hold_xy, target_z=target_z)
-            pos_err, xy_err, z_err = self._takeoff_target_error(hold_xy, target_z)
-            if pos_err <= self.cfg.takeoff_reached_tolerance:
-                self.real_lifecycle_state = "TAKEOFF_SETTLE"
-                self._takeoff_settle_start = rospy.Time.now()
-                rospy.loginfo(
-                    "[SRLCReal] Takeoff target reached: err=%.3f xy=%.3f z=%.3f",
-                    pos_err,
-                    xy_err,
-                    z_err,
+    def _log_decision_transition(self, decision):
+        if not decision.state_changed:
+            if decision.state == LifecycleState.FAULT_HOLD:
+                rospy.logerr_throttle(
+                    2.0,
+                    "[SRLCReal] FAULT_HOLD: reason=%s target=%s; manual takeover required",
+                    decision.reason,
+                    decision.target,
                 )
+            return
+        if decision.state == LifecycleState.TAKEOFF:
+            rospy.loginfo(
+                "[SRLCReal] One-shot takeoff started: origin=%s target=%s",
+                self.lifecycle.takeoff_origin,
+                self.lifecycle.takeoff_target,
+            )
+        elif decision.state == LifecycleState.ACTIVE:
+            rospy.loginfo(
+                "[SRLCReal] Lifecycle ACTIVE: mode=%s target_z=%.2f",
+                self.control_mode,
+                self._px4_altitude_hold_target(),
+            )
+        elif decision.state in {LifecycleState.FAULT_LAND, LifecycleState.FAULT_HOLD}:
+            pos = decision.target
+            rospy.logerr(
+                "[SRLCReal] FLIGHT FAULT: state=%s reason=%s hold=%s response=%s",
+                decision.state,
+                decision.reason,
+                pos,
+                self.cfg.fault_response,
+            )
+        elif decision.state == LifecycleState.TERMINATED:
+            rospy.logwarn(
+                "[SRLCReal] Lifecycle TERMINATED: reason=%s; restart navigator before another takeoff",
+                decision.reason,
+            )
+
+    def _handle_lifecycle_decision(self, decision):
+        self._last_decision = decision
+        self.real_lifecycle_state = decision.state
+        self.fault_reason = (
+            decision.reason
+            if decision.state in {
+                LifecycleState.FAULT_LAND,
+                LifecycleState.FAULT_HOLD,
+            }
+            else self.fault_reason
+        )
+        if decision.reason == "COLLISION":
+            self.collision = True
+            self.collision_pub.publish(Bool(data=True))
+        self.safety_stop = decision.reason in {
+            "PROXIMITY_HOLD",
+            "INPUT_RECOVERY_HOLD",
+        }
+
+        if decision.action == FlightAction.ACTIVE_CONTROL:
+            self.effective_mode = self.control_mode
+        elif decision.action == FlightAction.TAKEOFF_HOLD:
+            self.effective_mode = "TAKEOFF_HOLD"
+        elif decision.action == FlightAction.PRESTREAM_HOLD:
+            self.effective_mode = "INACTIVE"
+        elif decision.action == FlightAction.REQUEST_MODE:
+            self.effective_mode = "AUTO_LAND_REQUEST"
+        elif decision.action == FlightAction.FAULT_HOLD:
+            self.effective_mode = (
+                "INPUT_HOLD"
+                if decision.reason in {"INPUT_RECOVERY_HOLD", "PROXIMITY_HOLD"}
+                else "FAULT_HOLD"
+            )
+        elif decision.state == LifecycleState.TERMINATED:
+            self.effective_mode = "TERMINATED"
+        else:
+            self.effective_mode = "INACTIVE"
+
+        self._log_decision_transition(decision)
+        self._publish_mode_state()
+
+        if decision.action == FlightAction.ACTIVE_CONTROL:
+            return True
+
+        self._deactivate_policy()
+        if decision.action == FlightAction.STOP_STREAM:
+            self._publish_status(decision.reason, np.zeros(3, dtype=np.float32))
             return False
 
-        if self.real_lifecycle_state == "TAKEOFF_SETTLE":
-            target_z = float(hold_z if hold_z is not None else self.cfg.takeoff_height)
-            self._publish_real_lifecycle_hold("TAKEOFF_SETTLE", target_xy=hold_xy, target_z=target_z)
-            elapsed = (rospy.Time.now() - self._takeoff_settle_start).to_sec()
-            if elapsed < self.cfg.post_takeoff_mode_delay:
-                return False
-            lidar_ok, lidar_reason = self._real_lidar_gate_ok()
-            if not lidar_ok:
-                self._publish_real_lifecycle_hold(lidar_reason, target_xy=hold_xy, target_z=target_z)
-                return False
-            self.real_lifecycle_state = "ACTIVE"
-            self._set_control_mode(self.cfg.post_takeoff_mode)
-            rospy.loginfo("[SRLCReal] Lifecycle ACTIVE: mode=%s", self.control_mode)
+        if decision.request_mode:
+            self._request_fault_mode(decision.request_mode, decision.reason)
 
-        return self.real_lifecycle_state == "ACTIVE"
+        if decision.target is not None:
+            self._publish_real_lifecycle_hold(
+                decision.reason,
+                target_xy=(decision.target[0], decision.target[1]),
+                target_z=decision.target[2],
+                target_velocity=decision.target_velocity,
+            )
+        else:
+            self._publish_status(decision.reason, np.zeros(3, dtype=np.float32))
+        return False
 
     def _control_callback(self, _event):
-        if not self.odom_received:
-            return
-
-        if not self._update_real_px4_lifecycle():
-            return
-
-        if self.collision:
-            self._publish_stop(reason="COLLISION")
-            self._publish_status("COLLISION", np.zeros(3, dtype=np.float32))
-            return
-
-        gate_ok, gate_reason = self._real_common_gate_ok()
-        if gate_ok:
-            gate_ok, gate_reason = self._real_lidar_gate_ok()
-        if not gate_ok:
-            request_hold = gate_reason not in {"NO_RC_ACTION"}
-            self._publish_hover_cmd(request_hold=request_hold, reason=gate_reason)
-            self._publish_status(gate_reason, np.zeros(3, dtype=np.float32))
-            return
-
-        if self.safety_stop:
-            self._publish_stop(reason="SAFETY_STOP")
-            self._publish_status("SAFETY_STOP", np.zeros(3, dtype=np.float32))
+        now = rospy.Time.now()
+        decision = self.lifecycle.update(self._flight_snapshot(now))
+        if not self._handle_lifecycle_decision(decision):
             return
 
         human_action_np = self._current_topic_human_cmd()
@@ -596,7 +728,9 @@ class RealNavigator:
             self.cfg.assist_input_deadzone_norm > 0.0
             and float(np.linalg.norm(human_action_np[:2])) < self.cfg.assist_input_deadzone_norm
         ):
-            self._publish_hover_cmd(request_hold=False, reason="INPUT_DEADZONE")
+            self.effective_mode = "ASSIST_IDLE"
+            self._publish_mode_state()
+            self._publish_hover_cmd(reason="INPUT_DEADZONE")
             self._publish_status("INPUT_DEADZONE", np.zeros(3, dtype=np.float32))
             return
 
@@ -618,6 +752,8 @@ class RealNavigator:
 
         self.policy_active = True
         self.policy_active_pub.publish(Bool(data=True))
+        self.effective_mode = "ASSIST"
+        self._publish_mode_state()
         self._publish_policy_cmd(cmd)
         self._publish_cmd(cmd)
         self._publish_vis(cmd, human_action_np)
@@ -625,17 +761,29 @@ class RealNavigator:
 
     def _publish_status(self, reason, cmd):
         pos = self.odom.pose.pose.position if self.odom is not None else None
+        px4_z = (
+            float(self.px4_local_odom.pose.pose.position.z)
+            if self.px4_local_odom is not None
+            else float("nan")
+        )
         if pos is None:
             msg = f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] | {reason}"
         else:
             msg = (
-                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
+                f"nokov=[{pos.x:.1f},{pos.y:.1f},{pos.z:.1f}] px4_z={px4_z:.2f} | "
                 f"cmd=[{cmd[0]:.2f},{cmd[1]:.2f},{cmd[2]:.2f}] | "
-                f"min_d={self.min_dist:.2f} | {reason}"
+                f"map_d={self.min_dist:.2f} safety_d={self.safety_dist:.2f} | "
+                f"{self.real_lifecycle_state}/{self.effective_mode} | {reason}"
             )
         self.status_pub.publish(String(data=msg))
 
-    def _publish_px4_hold_setpoint(self, target_xy=None, target_z=None, reason="HOLD"):
+    def _publish_px4_hold_setpoint(
+        self,
+        target_xy=None,
+        target_z=None,
+        target_velocity=None,
+        reason="HOLD",
+    ):
         self.policy_active = False
         self.policy_active_pub.publish(Bool(data=False))
         self.z_policy_active = False
@@ -643,14 +791,14 @@ class RealNavigator:
         self._publish_policy_cmd(np.zeros(3, dtype=np.float32))
 
         if target_z is None:
-            if self.odom is not None:
-                target_z = float(self.odom.pose.pose.position.z)
+            if self.px4_local_odom is not None:
+                target_z = float(self.px4_local_odom.pose.pose.position.z)
             else:
                 target_z = float(self.cfg.takeoff_height)
-        if target_xy is None and self.odom is not None:
+        if target_xy is None and self.px4_local_odom is not None:
             target_xy = (
-                float(self.odom.pose.pose.position.x),
-                float(self.odom.pose.pose.position.y),
+                float(self.px4_local_odom.pose.pose.position.x),
+                float(self.px4_local_odom.pose.pose.position.y),
             )
 
         msg = PositionTarget()
@@ -661,20 +809,34 @@ class RealNavigator:
             msg.position.x = float(target_xy[0])
             msg.position.y = float(target_xy[1])
         msg.position.z = float(target_z)
-        msg.yaw = self._current_yaw() if self.odom is not None else 0.0
+        if target_velocity is not None:
+            msg.velocity.z = float(target_velocity[2])
+        msg.yaw = self._current_px4_yaw()
         msg.type_mask = (
             PositionTarget.IGNORE_VX
             | PositionTarget.IGNORE_VY
-            | PositionTarget.IGNORE_VZ
             | PositionTarget.IGNORE_AFX
             | PositionTarget.IGNORE_AFY
             | PositionTarget.IGNORE_AFZ
             | PositionTarget.IGNORE_YAW_RATE
         )
+        if target_velocity is None:
+            msg.type_mask |= PositionTarget.IGNORE_VZ
         self.action_pub.publish(msg)
 
-    def _publish_real_lifecycle_hold(self, reason, target_xy=None, target_z=None):
-        self._publish_px4_hold_setpoint(target_xy=target_xy, target_z=target_z, reason=reason)
+    def _publish_real_lifecycle_hold(
+        self,
+        reason,
+        target_xy=None,
+        target_z=None,
+        target_velocity=None,
+    ):
+        self._publish_px4_hold_setpoint(
+            target_xy=target_xy,
+            target_z=target_z,
+            target_velocity=target_velocity,
+            reason=reason,
+        )
         self._publish_mode_state()
         pos = self.odom.pose.pose.position if self.odom is not None else None
         if pos is None:
@@ -683,94 +845,26 @@ class RealNavigator:
             z_cmd = float(target_z) if target_z is not None else float(pos.z)
             if target_xy is None:
                 target_xy = (float(pos.x), float(pos.y))
+            px4_z = (
+                float(self.px4_local_odom.pose.pose.position.z)
+                if self.px4_local_odom is not None
+                else float("nan")
+            )
             status_msg = (
-                f"x={pos.x:.1f} y={pos.y:.1f} z={pos.z:.1f} | "
-                f"hold=[{target_xy[0]:.2f},{target_xy[1]:.2f},{z_cmd:.2f}] | "
-                f"min_d={self.min_dist:.2f} | {self.real_lifecycle_state} | {reason}"
+                f"nokov=[{pos.x:.1f},{pos.y:.1f},{pos.z:.1f}] px4_z={px4_z:.2f} | "
+                f"hold_px4=[{target_xy[0]:.2f},{target_xy[1]:.2f},{z_cmd:.2f}] | "
+                f"ff_vz={target_velocity[2] if target_velocity is not None else 0.0:.2f} | "
+                f"map_d={self.min_dist:.2f} safety_d={self.safety_dist:.2f} | "
+                f"{self.real_lifecycle_state}/{self.effective_mode} | {reason}"
             )
         self.status_pub.publish(String(data=status_msg))
 
-    def _request_px4_hold_mode(self, reason="STOP"):
-        if not self.cfg.hold_on_stop:
-            return
-        now = rospy.Time.now()
-        if (now - self._last_hold_mode_request).to_sec() < 1.0:
-            self._verify_px4_hold_mode(reason=reason)
-            return
-        self._last_hold_mode_request = now
-        try:
-            resp = self.set_mode_client(SetModeRequest(custom_mode=self.cfg.estop_hold_mode))
-            if not resp.mode_sent:
-                rospy.logwarn_throttle(
-                    2.0,
-                    "[SRLCReal] PX4 hold mode request rejected: mode=%s reason=%s",
-                    self.cfg.estop_hold_mode,
-                    reason,
-                )
-                self._request_px4_fallback_mode(reason=reason)
-            else:
-                self._hold_mode_request_time = now
-                self._hold_mode_requested = self.cfg.estop_hold_mode
-                self._hold_fallback_requested = False
-        except rospy.ServiceException as exc:
-            rospy.logwarn_throttle(2.0, "[SRLCReal] PX4 hold mode request failed: %s", exc)
-            self._request_px4_fallback_mode(reason=reason)
-        self._verify_px4_hold_mode(reason=reason)
-
-    def _request_px4_fallback_mode(self, reason="STOP"):
-        if not self.cfg.estop_fallback_mode or self._hold_fallback_requested:
-            return
-        try:
-            resp = self.set_mode_client(SetModeRequest(custom_mode=self.cfg.estop_fallback_mode))
-            self._hold_fallback_requested = True
-            if resp.mode_sent:
-                self._hold_mode_request_time = rospy.Time.now()
-                self._hold_mode_requested = self.cfg.estop_fallback_mode
-                rospy.logwarn(
-                    "[SRLCReal] Requested PX4 fallback mode %s after stop reason=%s",
-                    self.cfg.estop_fallback_mode,
-                    reason,
-                )
-            else:
-                rospy.logerr(
-                    "[SRLCReal] PX4 rejected fallback mode %s after stop reason=%s",
-                    self.cfg.estop_fallback_mode,
-                    reason,
-                )
-        except rospy.ServiceException as exc:
-            rospy.logerr("[SRLCReal] PX4 fallback mode request failed: %s", exc)
-
-    def _verify_px4_hold_mode(self, reason="STOP"):
-        if (
-            self._hold_mode_request_time is None
-            or self.mavros_state is None
-            or not self._hold_mode_requested
-        ):
-            return
-        elapsed = (rospy.Time.now() - self._hold_mode_request_time).to_sec()
-        if elapsed < self.cfg.hold_verify_timeout:
-            return
-        if self.mavros_state.mode != self._hold_mode_requested:
-            rospy.logerr_throttle(
-                2.0,
-                "[SRLCReal] PX4 stop mode not confirmed: requested=%s current=%s reason=%s",
-                self._hold_mode_requested,
-                self.mavros_state.mode,
-                reason,
-            )
-            self._request_px4_fallback_mode(reason=reason)
-
-    def _publish_stop(self, reason="STOP"):
-        self._publish_hover_cmd(request_hold=True, reason=reason)
-
-    def _publish_hover_cmd(self, request_hold=False, reason="HOVER"):
+    def _publish_hover_cmd(self, reason="HOVER"):
         self.policy_active = False
         self.policy_active_pub.publish(Bool(data=False))
         self.z_policy_active = False
         self.z_policy_active_pub.publish(Bool(data=False))
         self._publish_policy_cmd(np.zeros(3, dtype=np.float32))
-        if request_hold:
-            self._request_px4_hold_mode(reason=reason)
 
         msg = PositionTarget()
         msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
@@ -808,6 +902,8 @@ class RealNavigator:
         self.policy_active_pub.publish(Bool(data=False))
         self.z_policy_active = False
         self.z_policy_active_pub.publish(Bool(data=False))
+        self.effective_mode = "DIRECT"
+        self._publish_mode_state()
 
         cmd = self._body_cmd_to_world(human_cmd_body)
         if self.cfg.lock_z_control:
@@ -899,61 +995,6 @@ class RealNavigator:
         msg.twist.linear.z = float(cmd_world[2])
         self.policy_cmd_pub.publish(msg)
 
-    def _apply_proximity_safety(self, min_dist):
-        if not self.cfg.enable_safety_stop and not self.cfg.enable_collision_detection:
-            self.safety_stop = False
-            return
-        if self.cfg.enable_collision_detection and min_dist < self.cfg.collision_dist:
-            if not self.collision:
-                rospy.logerr(
-                    "[SRLCReal] COLLISION: min_dist=%.3f threshold=%.3f",
-                    min_dist,
-                    self.cfg.collision_dist,
-                )
-            self.collision = True
-            self.collision_pub.publish(Bool(data=True))
-            return
-        if self.cfg.enable_safety_stop and min_dist < self.cfg.safety_min_dist:
-            if not self.safety_stop:
-                rospy.logwarn(
-                    "[SRLCReal] SAFETY_STOP: min_dist=%.3f threshold=%.3f",
-                    min_dist,
-                    self.cfg.safety_min_dist,
-                )
-            self.safety_stop = True
-        else:
-            if self.safety_stop:
-                rospy.loginfo("[SRLCReal] Safety cleared: min_dist=%.3f", min_dist)
-            self.safety_stop = False
-
-    def _safety_timer_cb(self, _event):
-        if self.collision or not self.odom_received:
-            return
-        if self.last_min_dist_time is None:
-            return
-        if (rospy.Time.now() - self.last_min_dist_time).to_sec() > self.cfg.lidar_timeout:
-            if self.cfg.enable_safety_stop or self.cfg.enable_collision_detection:
-                if not self.safety_stop:
-                    rospy.logwarn_throttle(2.0, "[SRLCReal] SAFETY_STOP: min_distance timeout")
-                self.safety_stop = True
-            return
-
-        pos_z = float(self.odom.pose.pose.position.z)
-        if self.initial_z is None:
-            self.initial_z = pos_z
-        if not self.safety_airborne:
-            if pos_z >= self.initial_z + self.cfg.safety_start_takeoff_delta:
-                self.safety_airborne = True
-                rospy.loginfo(
-                    "[SRLCReal] Safety monitor airborne at z=%.2f baseline=%.2f",
-                    pos_z,
-                    self.initial_z,
-                )
-            else:
-                self.safety_stop = False
-                return
-        self._apply_proximity_safety(self.min_dist)
-
     @staticmethod
     def _quat_to_rot(q):
         return np.array(tf.transformations.quaternion_matrix([q.x, q.y, q.z, q.w])[:3, :3])
@@ -962,6 +1003,13 @@ class RealNavigator:
         if self.odom is None:
             return 0.0
         q = self.odom.pose.pose.orientation
+        _, _, yaw = tf.transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+        return yaw
+
+    def _current_px4_yaw(self):
+        if self.px4_local_odom is None:
+            return 0.0
+        q = self.px4_local_odom.pose.pose.orientation
         _, _, yaw = tf.transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
         return yaw
 

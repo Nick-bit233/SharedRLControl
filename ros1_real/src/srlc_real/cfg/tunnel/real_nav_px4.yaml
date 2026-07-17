@@ -11,6 +11,7 @@ policy_debug: false
 # LiDAR topic input produced by map_lidar_node.py.
 lidar_range_image_topic: "/srlc/lidar/range_image"
 lidar_min_distance_topic: "/srlc/lidar/min_distance"
+lidar_safety_distance_topic: "/srlc/lidar/min_safety_distance"
 lidar_timeout: 0.3
 lidar_range: 4.0
 lidar_vbeams: 4
@@ -25,20 +26,30 @@ assist_input_deadzone_norm: 0.05
 control_freq: 20.0
 height_control: false
 lock_z_control: true
-takeoff_height: 1.2
+takeoff_height: 1.0
 require_offboard: true
 real_auto_takeoff_on_offboard: true
-auto_arm_on_offboard: true
-post_takeoff_mode: "direct"
-post_takeoff_mode_delay: 2.0
-takeoff_reached_tolerance: 0.1
-on_offboard_loss: "stream_hold"
-hold_on_stop: false
-estop_hold_mode: "AUTO.LOITER"
-estop_fallback_mode: "POSCTL"
-hold_verify_timeout: 1.0
+post_takeoff_mode: "assist"
+takeoff_lower_margin: 0.2
+takeoff_upper_margin: 0.2
+takeoff_max_abs_vz: 0.25
+takeoff_confirm_duration: 0.5
+takeoff_timeout: 15.0
+takeoff_max_overshoot: 0.5
+takeoff_max_xy_drift: 0.5
+takeoff_max_climb_speed: 0.4
+takeoff_max_vertical_accel: 0.5
+takeoff_max_tracking_error: 0.25
+input_recovery_grace: 1.0
+fault_response: "auto_land"
+fault_land_mode: "AUTO.LAND"
+fault_land_confirm_timeout: 2.0
+fault_land_retry_interval: 0.5
+fault_land_max_attempts: 3
 odom_timeout: 0.3
 odom_topic: "/nokov/local_position/odom"
+px4_local_odom_topic: "/mavros/local_position/odom"
+px4_local_velocity_topic: "/mavros/local_position/velocity_local"
 setpoint_raw_topic: "/mavros/setpoint_raw/local"
 
 # Conservative real-flight command limits.
@@ -54,4 +65,4 @@ enable_safety_stop: true
 enable_collision_detection: true
 safety_min_dist: 0.25
 collision_dist: 0.15
-safety_start_takeoff_delta: 0.3
+safety_activation_height: 0.3
