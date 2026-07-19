@@ -358,7 +358,7 @@ def test_dip_below_release_threshold_restarts_continuous_release_window():
     assert released.state == ClearanceState.NORMAL
 
 
-def test_unusable_soft_sample_forces_hold_and_restarts_release_window():
+def test_fresh_duplicate_remains_soft_usable_and_preserves_release_window():
     guard = ClearanceGuard(ClearanceGuardConfig(proximity_enabled=True))
     _update(guard, now=13.0, source_stamp=13.0, surface_clearance=0.10)
     escaping = _update(
@@ -369,39 +369,53 @@ def test_unusable_soft_sample_forces_hold_and_restarts_release_window():
         human_velocity_world=(0.1, 0.0, 0.0),
         px4_local_position=(1.1, 2.0, 3.0),
     )
-    unusable = _update(
+    duplicate = _update(
         guard,
         now=13.25,
         source_stamp=13.1,
-        surface_clearance=1.0,
+        surface_clearance=0.16,
         human_velocity_world=(0.1, 0.0, 0.0),
         px4_local_position=(1.2, 2.0, 3.0),
     )
-    restarted = _update(
-        guard,
-        now=13.3,
-        source_stamp=13.3,
-        surface_clearance=0.16,
-    )
-    too_soon = _update(
-        guard,
-        now=13.49,
-        source_stamp=13.49,
-        surface_clearance=0.16,
-    )
     released = _update(
         guard,
-        now=13.5,
-        source_stamp=13.5,
+        now=13.3,
+        source_stamp=13.1,
         surface_clearance=0.16,
+        human_velocity_world=(0.1, 0.0, 0.0),
+        px4_local_position=(1.3, 2.0, 3.0),
     )
 
     assert escaping.state == ClearanceState.PROXIMITY_ESCAPE
-    assert unusable.state == ClearanceState.PROXIMITY_HOLD
-    assert unusable.hold_position == (1.1, 2.0, 3.0)
-    assert restarted.state == ClearanceState.PROXIMITY_HOLD
-    assert too_soon.state == ClearanceState.PROXIMITY_HOLD
+    assert duplicate.state == ClearanceState.PROXIMITY_ESCAPE
+    assert duplicate.hold_position == (1.2, 2.0, 3.0)
     assert released.state == ClearanceState.NORMAL
+
+
+def test_backward_sample_forces_active_escape_to_captured_hold():
+    guard = ClearanceGuard(ClearanceGuardConfig(proximity_enabled=True))
+    _update(guard, now=13.5, source_stamp=13.5, surface_clearance=0.10)
+    escaping = _update(
+        guard,
+        now=13.6,
+        source_stamp=13.6,
+        surface_clearance=0.11,
+        human_velocity_world=(0.1, 0.0, 0.0),
+        px4_local_position=(1.1, 2.0, 3.0),
+    )
+    backward = _update(
+        guard,
+        now=13.7,
+        source_stamp=13.55,
+        surface_clearance=0.11,
+        human_velocity_world=(0.1, 0.0, 0.0),
+        px4_local_position=(1.2, 2.0, 3.0),
+    )
+
+    assert escaping.state == ClearanceState.PROXIMITY_ESCAPE
+    assert backward.state == ClearanceState.PROXIMITY_HOLD
+    assert backward.hold_position == (1.1, 2.0, 3.0)
+    assert backward.escape_direction is None
 
 
 def test_collision_interrupts_soft_release_continuity():
@@ -426,27 +440,96 @@ def test_collision_interrupts_soft_release_continuity():
     assert recovery.state == ClearanceState.PROXIMITY_HOLD
 
 
-def test_invalid_soft_only_vectors_fail_safe_without_masking_hard_collision():
+def test_nonfinite_human_velocity_enters_and_captures_proximity_hold():
     guard = ClearanceGuard(ClearanceGuardConfig(proximity_enabled=True))
-    first = _update(
+
+    result = _update(
         guard,
         now=15.0,
         source_stamp=15.0,
-        surface_clearance=0.01,
+        surface_clearance=0.10,
         human_velocity_world=(math.nan, 0.0, 0.0),
+        px4_local_position=(-0.5, 0.25, 1.2),
+    )
+
+    assert result.state == ClearanceState.PROXIMITY_HOLD
+    assert result.hold_position == (-0.5, 0.25, 1.2)
+    assert result.escape_direction == (1.0, 0.0, 0.0)
+
+
+def test_nonfinite_human_velocity_does_not_break_release_continuity():
+    guard = ClearanceGuard(ClearanceGuardConfig(proximity_enabled=True))
+    entered = _update(
+        guard,
+        now=15.5,
+        source_stamp=15.5,
+        surface_clearance=0.10,
+        px4_local_position=(-0.5, 0.25, 1.2),
+    )
+    release_started = _update(
+        guard,
+        now=15.6,
+        source_stamp=15.6,
+        surface_clearance=0.16,
+        human_velocity_world=(math.nan, 0.0, 0.0),
+        px4_local_position=(-0.5, 0.25, 1.2),
+    )
+    released = _update(
+        guard,
+        now=15.8,
+        source_stamp=15.8,
+        surface_clearance=0.16,
+        human_velocity_world=(math.nan, 0.0, 0.0),
+        px4_local_position=(-0.5, 0.25, 1.2),
+    )
+
+    assert entered.state == ClearanceState.PROXIMITY_HOLD
+    assert release_started.state == ClearanceState.PROXIMITY_HOLD
+    assert released.state == ClearanceState.NORMAL
+
+
+def test_nonfinite_px4_position_cannot_capture_hold_but_hard_collision_still_runs():
+    guard = ClearanceGuard(ClearanceGuardConfig(proximity_enabled=True))
+    first = _update(
+        guard,
+        now=16.0,
+        source_stamp=16.0,
+        surface_clearance=0.01,
         px4_local_position=(math.nan, 0.0, 0.0),
     )
     second = _update(
         guard,
-        now=15.1,
-        source_stamp=15.1,
+        now=16.1,
+        source_stamp=16.1,
         surface_clearance=0.01,
-        human_velocity_world=(math.nan, 0.0, 0.0),
         px4_local_position=(math.nan, 0.0, 0.0),
     )
 
     assert first.state == ClearanceState.NORMAL
     assert second.state == ClearanceState.COLLISION
+
+
+def test_nonfinite_px4_position_falls_back_to_existing_hold():
+    guard = ClearanceGuard(ClearanceGuardConfig(proximity_enabled=True))
+    entered = _update(
+        guard,
+        now=17.0,
+        source_stamp=17.0,
+        surface_clearance=0.10,
+        px4_local_position=(0.1, 0.2, 0.3),
+    )
+    unusable_position = _update(
+        guard,
+        now=17.1,
+        source_stamp=17.1,
+        surface_clearance=0.10,
+        human_velocity_world=(0.1, 0.0, 0.0),
+        px4_local_position=(math.nan, 0.0, 0.0),
+    )
+
+    assert entered.state == ClearanceState.PROXIMITY_HOLD
+    assert unusable_position.state == ClearanceState.PROXIMITY_HOLD
+    assert unusable_position.hold_position == (0.1, 0.2, 0.3)
 
 
 def test_velocity_projection_removes_only_component_toward_obstacle():

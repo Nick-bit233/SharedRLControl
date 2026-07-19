@@ -103,16 +103,17 @@ class ClearanceGuard:
         if accepted is None:
             return self._unusable_result()
 
-        now_value, clearance, direction = accepted
-        if clearance <= self.config.immediate_collision_clearance:
-            self._collision_confirmed = True
-        elif clearance <= self.config.collision_clearance:
-            self._collision_pending += 1
-            if self._collision_pending >= self.config.collision_confirm_samples:
+        now_value, clearance, direction, new_source_frame = accepted
+        if new_source_frame:
+            if clearance <= self.config.immediate_collision_clearance:
                 self._collision_confirmed = True
-        else:
-            self._collision_pending = 0
-            self._collision_confirmed = False
+            elif clearance <= self.config.collision_clearance:
+                self._collision_pending += 1
+                if self._collision_pending >= self.config.collision_confirm_samples:
+                    self._collision_confirmed = True
+            else:
+                self._collision_pending = 0
+                self._collision_confirmed = False
 
         if self._collision_confirmed:
             self._release_started_at = None
@@ -127,12 +128,15 @@ class ClearanceGuard:
             return ClearanceGuardResult(ClearanceState.NORMAL, None, direction)
 
         try:
-            human_velocity = _finite_vector(
-                human_velocity_world, "human_velocity_world"
-            )
             position = _finite_vector(px4_local_position, "px4_local_position")
         except ValueError:
             return self._unusable_soft_result()
+        try:
+            human_velocity = _finite_vector(
+                human_velocity_world, "human_velocity_world"
+            )
+        except ValueError:
+            human_velocity = None
 
         if self._soft_state == ClearanceState.NORMAL:
             if clearance > self.config.proximity_enter_clearance:
@@ -155,9 +159,13 @@ class ClearanceGuard:
         else:
             self._release_started_at = None
 
-        human_dot = sum(
-            component * normal
-            for component, normal in zip(human_velocity, direction)
+        human_dot = (
+            sum(
+                component * normal
+                for component, normal in zip(human_velocity, direction)
+            )
+            if human_velocity is not None
+            else -math.inf
         )
         if human_dot >= self.config.escape_dot_threshold:
             self._soft_state = ClearanceState.PROXIMITY_ESCAPE
@@ -178,7 +186,7 @@ class ClearanceGuard:
         valid: bool,
         surface_clearance: float,
         escape_direction: Sequence[float],
-    ) -> Optional[Tuple[float, float, Vector3]]:
+    ) -> Optional[Tuple[float, float, Vector3, bool]]:
         try:
             now_value = float(now)
             stamp = float(source_stamp)
@@ -192,11 +200,15 @@ class ClearanceGuard:
             return None
         if stamp > now_value or now_value - stamp > self.config.sample_timeout:
             return None
-        if self._last_source_stamp is not None and stamp <= self._last_source_stamp:
+        if self._last_source_stamp is not None and stamp < self._last_source_stamp:
             return None
 
-        self._last_source_stamp = stamp
-        return now_value, clearance, direction
+        new_source_frame = (
+            self._last_source_stamp is None or stamp > self._last_source_stamp
+        )
+        if new_source_frame:
+            self._last_source_stamp = stamp
+        return now_value, clearance, direction, new_source_frame
 
     def _unusable_result(self) -> ClearanceGuardResult:
         if self._collision_confirmed:
