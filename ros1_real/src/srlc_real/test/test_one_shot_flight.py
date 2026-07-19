@@ -31,11 +31,7 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
             "takeoff_max_climb_speed": 0.4,
             "takeoff_max_vertical_accel": 0.5,
             "takeoff_max_tracking_error": 0.25,
-            "collision_dist": 0.15,
-            "safety_min_dist": 0.25,
-            "safety_activation_height": 0.3,
             "input_recovery_grace": 1.0,
-            "fault_response": "auto_land",
             "fault_land_mode": "AUTO.LAND",
             "fault_land_confirm_timeout": 2.0,
             "fault_land_retry_interval": 0.5,
@@ -56,7 +52,6 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
         odom_fresh=True,
         rc_fresh=True,
         lidar_fresh=True,
-        safety_distance=2.0,
         landed=True,
         external_fault=None,
     ):
@@ -70,7 +65,6 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
             odom_fresh=odom_fresh,
             rc_fresh=rc_fresh,
             lidar_fresh=lidar_fresh,
-            safety_distance=safety_distance,
             landed=landed,
             external_fault=external_fault,
         )
@@ -359,7 +353,7 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
         self.assertEqual(core.takeoff_target, final_target)
 
     def test_persistent_input_timeout_requests_auto_land(self):
-        core = self.make_core()
+        core = self.make_core(fault_response="auto_land")
         self.start_takeoff(core)
 
         core.update(
@@ -375,7 +369,7 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
         self.assertEqual(fault.reason, "RC_TIMEOUT")
 
     def test_auto_land_confirmation_terminates_the_session(self):
-        core = self.make_core()
+        core = self.make_core(fault_response="auto_land")
         self.start_takeoff(core)
 
         fault = core.update(
@@ -402,7 +396,7 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
         self.assertEqual(landed_mode.action, FlightAction.STOP_STREAM)
 
     def test_auto_land_failure_falls_back_to_last_position_hold(self):
-        core = self.make_core()
+        core = self.make_core(fault_response="auto_land")
         self.start_takeoff(core)
 
         first = core.update(
@@ -435,8 +429,9 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
         self.assertEqual(fallback.target, (-1.6, 0.2, 0.5))
         self.assertEqual(fallback.reason, "AUTO_LAND_UNCONFIRMED")
 
-    def test_hold_fault_response_skips_mode_request(self):
-        core = self.make_core(fault_response="hold")
+    def test_default_fault_response_holds_without_requesting_mode(self):
+        self.assertEqual(OneShotFlightConfig().fault_response, "hold")
+        core = self.make_core()
         self.start_takeoff(core)
 
         fault = core.update(
@@ -452,7 +447,7 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
         self.assertEqual(fault.reason, "TAKEOFF_OVERHEIGHT")
 
     def test_external_geofence_fault_requests_auto_land(self):
-        core = self.make_core()
+        core = self.make_core(fault_response="auto_land")
         self.start_takeoff(core)
 
         fault = core.update(
@@ -468,24 +463,32 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
         self.assertEqual(fault.action, FlightAction.REQUEST_MODE)
         self.assertEqual(fault.reason, "GEOFENCE_X")
 
-    def test_floor_distance_is_ignored_until_takeoff_is_airborne(self):
+    def test_external_collision_fault_holds_by_default(self):
         core = self.make_core()
-        started = core.update(
-            self.snapshot(0.0, safety_distance=0.05, landed=True)
-        )
-        self.assertEqual(started.state, LifecycleState.TAKEOFF)
-        self.assertEqual(started.action, FlightAction.TAKEOFF_HOLD)
+        self.start_takeoff(core)
 
-        airborne_fault = core.update(
+        fault = core.update(
             self.snapshot(
                 1.0,
-                position=(-1.8, 0.0, 0.41),
-                safety_distance=0.05,
+                position=(-1.8, 0.0, 0.5),
                 landed=False,
+                external_fault="COLLISION",
             )
         )
-        self.assertEqual(airborne_fault.state, LifecycleState.FAULT_LAND)
-        self.assertEqual(airborne_fault.reason, "COLLISION")
+
+        self.assertEqual(fault.state, LifecycleState.FAULT_HOLD)
+        self.assertEqual(fault.action, FlightAction.FAULT_HOLD)
+        self.assertEqual(fault.reason, "COLLISION")
+        self.assertIsNone(fault.request_mode)
+
+    def test_distance_policy_fields_are_absent_from_lifecycle_contract(self):
+        config_fields = OneShotFlightConfig.__dataclass_fields__
+        snapshot_fields = FlightSnapshot.__dataclass_fields__
+
+        self.assertNotIn("collision_dist", config_fields)
+        self.assertNotIn("safety_min_dist", config_fields)
+        self.assertNotIn("safety_activation_height", config_fields)
+        self.assertNotIn("safety_distance", snapshot_fields)
 
 
 if __name__ == "__main__":

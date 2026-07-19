@@ -48,11 +48,8 @@ class OneShotFlightConfig:
     takeoff_max_climb_speed: float = 0.4
     takeoff_max_vertical_accel: float = 0.5
     takeoff_max_tracking_error: float = 0.25
-    collision_dist: float = 0.15
-    safety_min_dist: float = 0.25
-    safety_activation_height: float = 0.3
     input_recovery_grace: float = 1.0
-    fault_response: str = "auto_land"
+    fault_response: str = "hold"
     fault_land_mode: str = "AUTO.LAND"
     fault_land_confirm_timeout: float = 2.0
     fault_land_retry_interval: float = 0.5
@@ -70,7 +67,6 @@ class FlightSnapshot:
     odom_fresh: bool
     rc_fresh: bool
     lidar_fresh: bool
-    safety_distance: float
     landed: bool
     external_fault: Optional[str] = None
 
@@ -120,7 +116,6 @@ class OneShotFlightLifecycle:
         self._takeoff_decelerating = False
         self._takeoff_confirm_started_at: Optional[float] = None
         self._input_fault_started_at: Optional[float] = None
-        self._safety_active = False
         self._last_safe_position: Optional[Vector3] = None
         self._fault_hold_target: Optional[Vector3] = None
         self._fault_reason: Optional[str] = None
@@ -245,7 +240,6 @@ class OneShotFlightLifecycle:
         self._takeoff_decelerating = False
         self._takeoff_confirm_started_at = None
         self._input_fault_started_at = None
-        self._safety_active = False
         self._last_safe_position = origin
         self.state = LifecycleState.TAKEOFF
         self.reason = "TAKEOFF"
@@ -294,30 +288,6 @@ class OneShotFlightLifecycle:
                 previous_state=previous_state,
             )
         self._input_fault_started_at = None
-
-        if (
-            not self._safety_active
-            and self.takeoff_origin is not None
-            and position[2] - self.takeoff_origin[2]
-            >= self.config.safety_activation_height
-        ):
-            self._safety_active = True
-        if self._safety_active:
-            if math.isnan(float(snapshot.safety_distance)):
-                return self._enter_fault(
-                    "INVALID_SAFETY_DISTANCE", snapshot, previous_state
-                )
-            if float(snapshot.safety_distance) < self.config.collision_dist:
-                return self._enter_fault("COLLISION", snapshot, previous_state)
-            if float(snapshot.safety_distance) < self.config.safety_min_dist:
-                self._takeoff_confirm_started_at = None
-                self._pause_takeoff_profile(snapshot.now, position)
-                return self._decision(
-                    FlightAction.FAULT_HOLD,
-                    "PROXIMITY_HOLD",
-                    target=position,
-                    previous_state=previous_state,
-                )
 
         if self.state == LifecycleState.TAKEOFF:
             return self._update_takeoff(snapshot, position, velocity, previous_state)
