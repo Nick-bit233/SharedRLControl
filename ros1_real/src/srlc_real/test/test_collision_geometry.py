@@ -109,6 +109,27 @@ def test_raw_raycast_orders_vertical_beams_inside_each_horizontal_beam(tmp_path)
     )
 
 
+def test_cardinal_beam_does_not_enter_orthogonal_voxel_at_grid_boundary(tmp_path):
+    pcd_path = _write_pcd(tmp_path, [[-0.5, 0.5, 0.5]])
+    raycaster = PcdRaycaster(str(pcd_path), resolution=1.0)
+
+    result = raycaster.raycast_raw(
+        position=[0.0, 0.5, 0.5],
+        yaw=0.0,
+        range_m=2.0,
+        vfov_min_deg=0.0,
+        vfov_max_deg=0.0,
+        vbeams=1,
+        hres_deg=90.0,
+    )
+
+    assert result.hit_mask[2]
+    assert result.entry_distances[2] == 0.0
+    assert not result.hit_mask[3]
+    assert result.entry_distances[3] == 2.0
+    np.testing.assert_array_equal(result.directions_world[3], [0.0, -1.0, 0.0])
+
+
 def test_raw_raycast_dda_enters_diagonal_voxel_at_shared_boundary(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[1.25, 1.25, 0.25]])
     raycaster = PcdRaycaster(str(pcd_path), resolution=1.0, inflate=(0.0, 0.0, 0.0))

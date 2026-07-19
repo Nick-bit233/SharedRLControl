@@ -280,6 +280,8 @@ class PcdRaycaster:
                 dy /= norm
                 dz /= norm
                 direction = np.array([dx, dy, dz], dtype=np.float64)
+                direction[np.abs(direction) < 1e-12] = 0.0
+                direction /= np.linalg.norm(direction)
                 directions[idx] = direction
                 entry_distance = self._dda_entry_distance(origin, direction, range_m)
                 if entry_distance is not None:
