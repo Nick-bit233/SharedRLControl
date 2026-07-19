@@ -162,6 +162,24 @@ def test_map_clearance_is_published_once_per_odometry_callback_not_timer():
         assert forbidden not in timer_callback
 
 
+def test_map_lidar_constructs_callback_dependencies_before_ros_callbacks():
+    path = SCRIPT_DIR / "map_lidar_node.py"
+    constructor = _class_method_source(path, "MapLidarNode", "__init__")
+    subscriber_index = constructor.index("self.odom_sub = rospy.Subscriber(")
+    timer_index = constructor.index("self.timer = rospy.Timer(")
+
+    publisher_assignments = (
+        "self.range_pub = rospy.Publisher(",
+        "self.points_pub = rospy.Publisher(",
+        "self.min_dist_pub = rospy.Publisher(",
+        "self.safety_dist_pub = rospy.Publisher(",
+        "self.clearance_pub = rospy.Publisher(",
+    )
+    for assignment in publisher_assignments:
+        assert constructor.index(assignment) < subscriber_index
+    assert subscriber_index < timer_index
+
+
 def test_navigation_uses_clearance_guard_without_safety_alias_subscription():
     source = (SCRIPT_DIR / "real_navigation_node.py").read_text(encoding="utf-8")
 
@@ -173,7 +191,7 @@ def test_navigation_uses_clearance_guard_without_safety_alias_subscription():
         '"/srlc/lidar/obstacle_clearance"',
         "ClearanceGuard(",
         "ClearanceGuardConfig(",
-        "project_velocity_away(",
+        "finalize_px4_escape_velocity(",
         "self._clearance_guard_lock",
         '"/tunnel_nav/clearance_guard_state"',
         '"/tunnel_nav/clearance_guard_shadow_state"',
@@ -192,6 +210,41 @@ def test_navigation_uses_clearance_guard_without_safety_alias_subscription():
     assert "safety_d=" not in source
     assert "enable_collision_detection" not in source
     assert source.count("self._invalidate_lidar_range()") == 2
+
+
+def test_navigation_constrains_final_escape_before_policy_and_px4_publish():
+    path = SCRIPT_DIR / "real_navigation_node.py"
+    control_callback = _class_method_source(
+        path,
+        "RealNavigator",
+        "_control_callback",
+    )
+
+    policy_index = control_callback.index("action_world = self.policy(")
+    constraint_index = control_callback.index("finalize_px4_escape_velocity(")
+    policy_publish_index = control_callback.index("self._publish_policy_cmd(cmd)")
+    px4_publish_index = control_callback.index("self._publish_cmd(")
+
+    assert policy_index < constraint_index < policy_publish_index < px4_publish_index
+    assert "lock_z=(" in control_callback
+    assert "self.cfg.lock_z_control" in control_callback
+    assert "or not self.cfg.height_control" in control_callback
+    assert "max_xy_speed=self.cfg.max_xy_speed_real" in control_callback
+    assert "max_z_speed=self.cfg.max_z_speed_real" in control_callback
+    assert "project_velocity_away(" not in control_callback
+    assert 'reason="PROXIMITY_HOLD_INVALID_ESCAPE"' in control_callback
+    assert "already_constrained=proximity_escape" in control_callback
+
+
+def test_navigation_uses_shared_px4_clamp_without_mutating_final_escape():
+    path = SCRIPT_DIR / "real_navigation_node.py"
+    clamp_cmd = _class_method_source(path, "RealNavigator", "_clamp_px4_cmd")
+    publish_cmd = _class_method_source(path, "RealNavigator", "_publish_cmd")
+
+    assert "clamp_px4_velocity(" in clamp_cmd
+    assert "if already_constrained:" in publish_cmd
+    assert "self._clamp_px4_cmd(cmd_vel_world)" in publish_cmd
+    assert "constrain_escape_velocity(" not in publish_cmd
 
 
 def test_enforce_soft_guard_captures_current_position_only_after_active():

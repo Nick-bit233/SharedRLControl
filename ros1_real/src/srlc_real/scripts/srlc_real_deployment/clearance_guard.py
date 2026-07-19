@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import math
+import struct
 from typing import Optional, Sequence, Tuple
 
 
@@ -67,6 +68,123 @@ def project_velocity_away(
         component - toward_component * normal
         for component, normal in zip(velocity, direction)
     )  # type: ignore[return-value]
+
+
+def _positive_finite_limit(value: float, name: str) -> float:
+    try:
+        limit = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive finite value") from exc
+    if not math.isfinite(limit) or limit <= 0.0:
+        raise ValueError(f"{name} must be a positive finite value")
+    return limit
+
+
+def constrain_escape_velocity(
+    model_velocity: Sequence[float],
+    escape_direction: Sequence[float],
+    *,
+    lock_z: bool,
+    max_xy_speed: float,
+    max_z_speed: float,
+) -> Vector3:
+    """Apply the escape half-space to the velocity that PX4 will receive."""
+    velocity = _finite_vector(model_velocity, "model_velocity")
+    direction = _normalized_vector(escape_direction, "escape_direction")
+    xy_limit = _positive_finite_limit(max_xy_speed, "max_xy_speed")
+    z_limit = _positive_finite_limit(max_z_speed, "max_z_speed")
+
+    if lock_z:
+        horizontal_norm = math.hypot(direction[0], direction[1])
+        if horizontal_norm <= 1e-12:
+            raise ValueError(
+                "escape_direction must have a usable horizontal component "
+                "when Z is locked"
+            )
+        horizontal_direction = (
+            direction[0] / horizontal_norm,
+            direction[1] / horizontal_norm,
+        )
+        horizontal_dot = (
+            velocity[0] * horizontal_direction[0]
+            + velocity[1] * horizontal_direction[1]
+        )
+        toward_component = min(0.0, horizontal_dot)
+        constrained_x = velocity[0] - toward_component * horizontal_direction[0]
+        constrained_y = velocity[1] - toward_component * horizontal_direction[1]
+        horizontal_speed = math.hypot(constrained_x, constrained_y)
+        scale = min(1.0, xy_limit / horizontal_speed) if horizontal_speed else 1.0
+        return (constrained_x * scale, constrained_y * scale, 0.0)
+
+    projected = project_velocity_away(velocity, direction)
+    horizontal_speed = math.hypot(projected[0], projected[1])
+    scale = 1.0
+    if horizontal_speed > 0.0:
+        scale = min(scale, xy_limit / horizontal_speed)
+    if abs(projected[2]) > 0.0:
+        scale = min(scale, z_limit / abs(projected[2]))
+    return tuple(component * scale for component in projected)  # type: ignore[return-value]
+
+
+def _float32(value: float, name: str) -> float:
+    try:
+        quantized = struct.unpack("!f", struct.pack("!f", value))[0]
+    except (OverflowError, struct.error) as exc:
+        raise ValueError(f"{name} must remain finite in float32") from exc
+    if not math.isfinite(quantized):
+        raise ValueError(f"{name} must remain finite in float32")
+    return quantized
+
+
+def clamp_px4_velocity(
+    velocity: Sequence[float],
+    *,
+    max_xy_speed: float,
+    max_z_speed: float,
+) -> Vector3:
+    """Match the navigator's float32 XY-scale and independent Z clip."""
+    command = _finite_vector(velocity, "velocity")
+    xy_limit = _positive_finite_limit(max_xy_speed, "max_xy_speed")
+    z_limit = _positive_finite_limit(max_z_speed, "max_z_speed")
+    cmd = [_float32(component, "velocity") for component in command]
+
+    horizontal_speed = math.hypot(cmd[0], cmd[1])
+    if horizontal_speed > xy_limit:
+        scale = xy_limit / horizontal_speed
+        cmd[0] = _float32(cmd[0] * scale, "velocity")
+        cmd[1] = _float32(cmd[1] * scale, "velocity")
+    cmd[2] = _float32(max(-z_limit, min(cmd[2], z_limit)), "velocity")
+    return (cmd[0], cmd[1], cmd[2])
+
+
+def finalize_px4_escape_velocity(
+    model_velocity: Sequence[float],
+    escape_direction: Sequence[float],
+    *,
+    lock_z: bool,
+    max_xy_speed: float,
+    max_z_speed: float,
+) -> Vector3:
+    """Return the final escape command after PX4-bound quantization and limits."""
+    constrained = constrain_escape_velocity(
+        model_velocity,
+        escape_direction,
+        lock_z=lock_z,
+        max_xy_speed=max_xy_speed,
+        max_z_speed=max_z_speed,
+    )
+    clamped = clamp_px4_velocity(
+        constrained,
+        max_xy_speed=max_xy_speed,
+        max_z_speed=max_z_speed,
+    )
+    return constrain_escape_velocity(
+        clamped,
+        escape_direction,
+        lock_z=lock_z,
+        max_xy_speed=max_xy_speed,
+        max_z_speed=max_z_speed,
+    )
 
 
 class ClearanceGuard:

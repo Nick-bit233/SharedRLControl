@@ -12,6 +12,9 @@ from srlc_real_deployment.clearance_guard import (  # noqa: E402
     ClearanceGuard,
     ClearanceGuardConfig,
     ClearanceState,
+    clamp_px4_velocity,
+    constrain_escape_velocity,
+    finalize_px4_escape_velocity,
     project_velocity_away,
 )
 
@@ -534,3 +537,103 @@ def test_velocity_projection_removes_only_component_toward_obstacle():
         abs_tol=1e-12,
     )
     assert already_away == (2.0, 1.0, -3.0)
+
+
+def test_locked_z_escape_constraint_uses_actual_horizontal_half_space():
+    root_half = math.sqrt(0.5)
+    direction = (root_half, 0.0, root_half)
+
+    constrained = finalize_px4_escape_velocity(
+        (-1.0, 0.0, 0.0),
+        direction,
+        lock_z=True,
+        max_xy_speed=0.5,
+        max_z_speed=0.3,
+    )
+
+    assert constrained[2] == 0.0
+    assert math.hypot(constrained[0], constrained[1]) <= 0.5
+    assert sum(v * n for v, n in zip(constrained, direction)) >= -1e-12
+
+
+def test_unlocked_escape_constraint_uniformly_scales_mixed_axis_projection():
+    direction_raw = (0.06, 0.08, -1.0)
+    direction_norm = math.sqrt(sum(value * value for value in direction_raw))
+    direction = tuple(value / direction_norm for value in direction_raw)
+    tangent_velocity = (6.0, 8.0, 1.0)
+    model_velocity = tuple(
+        value - 4.0 * normal
+        for value, normal in zip(tangent_velocity, direction)
+    )
+
+    constrained = constrain_escape_velocity(
+        model_velocity,
+        direction,
+        lock_z=False,
+        max_xy_speed=0.5,
+        max_z_speed=0.3,
+    )
+    independently_clamped = (0.3, 0.4, 0.3)
+
+    assert sum(
+        value * normal
+        for value, normal in zip(independently_clamped, direction)
+    ) < 0.0
+    assert sum(v * n for v, n in zip(constrained, direction)) >= -1e-12
+    assert math.hypot(constrained[0], constrained[1]) <= 0.5 + 1e-12
+    assert abs(constrained[2]) <= 0.3 + 1e-12
+    for actual, expected in zip(constrained, (0.3, 0.4, 0.05)):
+        assert math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_post_clamp_recheck_restores_actual_px4_escape_half_space():
+    direction_raw = (0.12, 0.16, -1.0)
+    direction_norm = math.sqrt(sum(value * value for value in direction_raw))
+    direction = tuple(value / direction_norm for value in direction_raw)
+    tangent_velocity = (3.0, 4.0, 1.0)
+    model_velocity = tuple(
+        value - 4.0 * normal
+        for value, normal in zip(tangent_velocity, direction)
+    )
+    max_xy_speed = 10.0
+    max_z_speed = 0.3
+
+    constrained = constrain_escape_velocity(
+        model_velocity,
+        direction,
+        lock_z=False,
+        max_xy_speed=max_xy_speed,
+        max_z_speed=max_z_speed,
+    )
+    legacy_clamped = clamp_px4_velocity(
+        constrained,
+        max_xy_speed=max_xy_speed,
+        max_z_speed=max_z_speed,
+    )
+    final_velocity = finalize_px4_escape_velocity(
+        model_velocity,
+        direction,
+        lock_z=False,
+        max_xy_speed=max_xy_speed,
+        max_z_speed=max_z_speed,
+    )
+
+    assert sum(v * n for v, n in zip(legacy_clamped, direction)) < -1e-9
+    assert sum(v * n for v, n in zip(final_velocity, direction)) >= -1e-12
+    assert math.hypot(final_velocity[0], final_velocity[1]) <= max_xy_speed
+    assert abs(final_velocity[2]) <= max_z_speed
+
+
+def test_locked_z_escape_constraint_rejects_vertical_escape_direction():
+    try:
+        finalize_px4_escape_velocity(
+            (1.0, 2.0, 3.0),
+            (0.0, 0.0, 1.0),
+            lock_z=True,
+            max_xy_speed=0.5,
+            max_z_speed=0.3,
+        )
+    except ValueError as exc:
+        assert "horizontal" in str(exc)
+    else:
+        raise AssertionError("vertical locked-Z escape direction must be rejected")

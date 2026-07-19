@@ -95,12 +95,6 @@ class MapLidarNode:
         self.clearance_geometry = PcdClearanceGeometry(self.pcd_file)
 
         self.odom = None
-        self.odom_sub = rospy.Subscriber(
-            self.odom_topic,
-            Odometry,
-            self._odom_cb,
-            queue_size=50,
-        )
         self.range_pub = rospy.Publisher(self.range_topic, Float32MultiArray, queue_size=2)
         self.points_pub = rospy.Publisher(self.points_topic, PointCloud2, queue_size=2)
         self.min_dist_pub = rospy.Publisher(
@@ -115,6 +109,12 @@ class MapLidarNode:
             self.clearance_topic, ObstacleClearance, queue_size=50
         )
 
+        self.odom_sub = rospy.Subscriber(
+            self.odom_topic,
+            Odometry,
+            self._odom_cb,
+            queue_size=50,
+        )
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.rate_hz), self._timer_cb)
         rospy.loginfo(
             "[MapLiDAR] Ready: pcd=%s lidar=%dx%d range=%.2fm topic=%s",

@@ -36,7 +36,8 @@ from srlc_real_deployment.clearance_guard import (  # noqa: E402
     ClearanceGuardConfig,
     ClearanceGuardResult,
     ClearanceState,
-    project_velocity_away,
+    clamp_px4_velocity,
+    finalize_px4_escape_velocity,
 )
 from srlc_real_deployment.config_migration import (  # noqa: E402
     find_legacy_safety_config,
@@ -1073,16 +1074,20 @@ class RealNavigator:
                 deterministic=self.cfg.deterministic,
             )
         cmd = action_world.squeeze(0).cpu().numpy().astype(np.float32)
-        if self.cfg.lock_z_control:
-            cmd[2] = 0.0
         if proximity_escape:
             try:
                 cmd = np.asarray(
-                    project_velocity_away(
+                    finalize_px4_escape_velocity(
                         cmd,
                         guard_result.escape_direction,
+                        lock_z=(
+                            self.cfg.lock_z_control
+                            or not self.cfg.height_control
+                        ),
+                        max_xy_speed=self.cfg.max_xy_speed_real,
+                        max_z_speed=self.cfg.max_z_speed_real,
                     ),
-                    dtype=np.float32,
+                    dtype=np.float64,
                 )
             except ValueError:
                 self._publish_proximity_hold(
@@ -1090,6 +1095,8 @@ class RealNavigator:
                     reason="PROXIMITY_HOLD_INVALID_ESCAPE",
                 )
                 return
+        elif self.cfg.lock_z_control:
+            cmd[2] = 0.0
 
         self.policy_active = True
         self.policy_active_pub.publish(Bool(data=True))
@@ -1098,7 +1105,10 @@ class RealNavigator:
         )
         self._publish_mode_state()
         self._publish_policy_cmd(cmd)
-        self._publish_cmd(cmd)
+        self._publish_cmd(
+            cmd,
+            already_constrained=proximity_escape,
+        )
         self._publish_vis(cmd, human_action_np)
         self._publish_status(
             "PROXIMITY_ESCAPE" if proximity_escape else "ASSIST",
@@ -1283,17 +1293,20 @@ class RealNavigator:
         self._publish_status("DIRECT", cmd)
 
     def _clamp_px4_cmd(self, cmd_vel_world):
-        cmd = np.asarray(cmd_vel_world, dtype=np.float32).copy()
-        hspeed = math.hypot(float(cmd[0]), float(cmd[1]))
-        if hspeed > self.cfg.max_xy_speed_real:
-            scale = self.cfg.max_xy_speed_real / hspeed
-            cmd[0] *= scale
-            cmd[1] *= scale
-        cmd[2] = np.clip(cmd[2], -self.cfg.max_z_speed_real, self.cfg.max_z_speed_real)
-        return cmd
+        return np.asarray(
+            clamp_px4_velocity(
+                cmd_vel_world,
+                max_xy_speed=self.cfg.max_xy_speed_real,
+                max_z_speed=self.cfg.max_z_speed_real,
+            ),
+            dtype=np.float32,
+        )
 
-    def _publish_cmd(self, cmd_vel_world):
-        cmd_vel_world = self._clamp_px4_cmd(cmd_vel_world)
+    def _publish_cmd(self, cmd_vel_world, already_constrained=False):
+        if already_constrained:
+            cmd_vel_world = np.asarray(cmd_vel_world, dtype=np.float64).copy()
+        else:
+            cmd_vel_world = self._clamp_px4_cmd(cmd_vel_world)
         msg = PositionTarget()
         msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
         msg.header.stamp = rospy.Time.now()
