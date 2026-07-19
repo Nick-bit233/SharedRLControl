@@ -5,6 +5,7 @@ range_image_topic: "/srlc/lidar/range_image"
 raycast_points_topic: "/srlc/lidar/raycast_points"
 min_distance_topic: "/srlc/lidar/min_distance"
 min_safety_distance_topic: "/srlc/lidar/min_safety_distance"
+clearance_topic: "/srlc/lidar/obstacle_clearance"
 frame_id: "map"
 rate: 20.0
 
@@ -14,9 +15,11 @@ lidar_vfov: [-10.0, 20.0]
 lidar_vbeams: 4
 lidar_hres: 10.0
 
-# PCD voxelization.
+# Raw PCD voxelization and dual vehicle envelopes.
 map_resolution: 0.1
-inflate_xyz: [0.15, 0.15, 0.05]
+vehicle_half_extents: [0.15, 0.15, 0.05]
+policy_extra_margin: [0.05, 0.05, 0.0]
+clearance_cap: 1.0
 
 # Default assumption: pre-scanned PCD map is aligned with MAVROS local ENU.
 map_origin_xyz: [0.0, 0.0, 0.0]

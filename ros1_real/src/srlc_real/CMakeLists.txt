@@ -4,6 +4,7 @@ project(srlc_real)
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   mavros_msgs
+  message_generation
   nav_msgs
   rospy
   sensor_msgs
@@ -13,9 +14,21 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_python_setup()
 
+add_message_files(
+  FILES
+  ObstacleClearance.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  geometry_msgs
+  std_msgs
+)
+
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   catkin_add_nosetests(test/test_mavlink_stream_guard_core.py)
+  catkin_add_nosetests(test/test_clearance_ros_integration_contract.py)
   catkin_add_nosetests(test/test_launch_contracts.py)
   catkin_add_nosetests(test/test_one_shot_flight.py)
   catkin_add_nosetests(test/test_pcd_raycast_safety.py)
@@ -29,6 +42,7 @@ catkin_package(
   CATKIN_DEPENDS
     geometry_msgs
     mavros_msgs
+    message_runtime
     nav_msgs
     rospy
     sensor_msgs

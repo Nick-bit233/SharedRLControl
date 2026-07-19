@@ -12,6 +12,9 @@
     <arg name="map_origin_x" default="$(optenv SRLC_MAP_ORIGIN_X 0.0)"/>
     <arg name="map_origin_y" default="$(optenv SRLC_MAP_ORIGIN_Y 0.0)"/>
     <arg name="map_origin_z" default="$(optenv SRLC_MAP_ORIGIN_Z 0.0)"/>
+    <arg name="vehicle_half_extents" default="$(optenv SRLC_VEHICLE_HALF_EXTENTS [0.15,0.15,0.05])"/>
+    <arg name="policy_extra_margin" default="$(optenv SRLC_POLICY_EXTRA_MARGIN [0.05,0.05,0.0])"/>
+    <arg name="clearance_cap" default="$(optenv SRLC_CLEARANCE_CAP 1.0)"/>
 
     <arg name="takeoff_height" default="$(optenv SRLC_TAKEOFF_HEIGHT 1.0)"/>
     <arg name="post_takeoff_mode" default="$(optenv SRLC_POST_TAKEOFF_MODE assist)"/>
@@ -26,7 +29,7 @@
     <arg name="takeoff_max_vertical_accel" default="$(optenv SRLC_TAKEOFF_MAX_VERTICAL_ACCEL 0.5)"/>
     <arg name="takeoff_max_tracking_error" default="$(optenv SRLC_TAKEOFF_MAX_TRACKING_ERROR 0.25)"/>
     <arg name="input_recovery_grace" default="$(optenv SRLC_INPUT_RECOVERY_GRACE 1.0)"/>
-    <arg name="fault_response" default="$(optenv SRLC_FAULT_RESPONSE auto_land)"/>
+    <arg name="fault_response" default="$(optenv SRLC_FAULT_RESPONSE hold)"/>
     <arg name="fault_land_mode" default="$(optenv SRLC_FAULT_LAND_MODE AUTO.LAND)"/>
     <arg name="fault_land_confirm_timeout" default="$(optenv SRLC_FAULT_LAND_CONFIRM_TIMEOUT 2.0)"/>
     <arg name="fault_land_retry_interval" default="$(optenv SRLC_FAULT_LAND_RETRY_INTERVAL 0.5)"/>
@@ -39,9 +42,15 @@
     <arg name="lateral_reverse" default="$(optenv SRLC_RC_LATERAL_REVERSE true)"/>
     <arg name="max_xy_speed_real" default="$(optenv SRLC_MAX_XY_SPEED 0.5)"/>
     <arg name="max_z_speed_real" default="$(optenv SRLC_MAX_Z_SPEED 0.3)"/>
-    <arg name="safety_min_dist" default="$(optenv SRLC_SAFETY_MIN_DIST 0.25)"/>
-    <arg name="collision_dist" default="$(optenv SRLC_COLLISION_DIST 0.15)"/>
-    <arg name="safety_activation_height" default="$(optenv SRLC_SAFETY_ACTIVATION_HEIGHT 0.3)"/>
+    <arg name="enable_proximity_guard" default="$(optenv SRLC_ENABLE_PROXIMITY_GUARD false)"/>
+    <arg name="proximity_enter_clearance" default="$(optenv SRLC_PROXIMITY_ENTER_CLEARANCE 0.10)"/>
+    <arg name="proximity_release_clearance" default="$(optenv SRLC_PROXIMITY_RELEASE_CLEARANCE 0.15)"/>
+    <arg name="proximity_release_duration" default="$(optenv SRLC_PROXIMITY_RELEASE_DURATION 0.20)"/>
+    <arg name="proximity_escape_min_speed" default="$(optenv SRLC_PROXIMITY_ESCAPE_MIN_SPEED 0.05)"/>
+    <arg name="collision_confirm_clearance" default="$(optenv SRLC_COLLISION_CONFIRM_CLEARANCE 0.02)"/>
+    <arg name="collision_confirm_frames" default="$(optenv SRLC_COLLISION_CONFIRM_FRAMES 2)"/>
+    <arg name="collision_immediate_clearance" default="$(optenv SRLC_COLLISION_IMMEDIATE_CLEARANCE -0.03)"/>
+    <arg name="clearance_guard_mode" default="$(optenv SRLC_CLEARANCE_GUARD_MODE enforce)"/>
     <arg name="assist_input_deadzone_norm" default="$(optenv SRLC_ASSIST_INPUT_DEADZONE_NORM 0.05)"/>
     <arg name="geofence_x_min" default="$(optenv SRLC_GEOFENCE_X_MIN -3.0)"/>
     <arg name="geofence_x_max" default="$(optenv SRLC_GEOFENCE_X_MAX 3.0)"/>
@@ -70,6 +79,9 @@
         <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
         <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+        <rosparam param="vehicle_half_extents" subst_value="true">$(arg vehicle_half_extents)</rosparam>
+        <rosparam param="policy_extra_margin" subst_value="true">$(arg policy_extra_margin)</rosparam>
+        <param name="clearance_cap" value="$(arg clearance_cap)"/>
     </node>
 
     <node pkg="srlc_real" type="pcd_map_publisher.py"
@@ -135,9 +147,15 @@
         <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
-        <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
-        <param name="collision_dist" value="$(arg collision_dist)"/>
-        <param name="safety_activation_height" value="$(arg safety_activation_height)"/>
+        <param name="enable_proximity_guard" value="$(arg enable_proximity_guard)"/>
+        <param name="proximity_enter_clearance" value="$(arg proximity_enter_clearance)"/>
+        <param name="proximity_release_clearance" value="$(arg proximity_release_clearance)"/>
+        <param name="proximity_release_duration" value="$(arg proximity_release_duration)"/>
+        <param name="proximity_escape_min_speed" value="$(arg proximity_escape_min_speed)"/>
+        <param name="collision_confirm_clearance" value="$(arg collision_confirm_clearance)"/>
+        <param name="collision_confirm_frames" value="$(arg collision_confirm_frames)"/>
+        <param name="collision_immediate_clearance" value="$(arg collision_immediate_clearance)"/>
+        <param name="clearance_guard_mode" value="$(arg clearance_guard_mode)"/>
         <param name="min_altitude" value="$(arg min_altitude)"/>
         <param name="max_altitude" value="$(arg max_altitude)"/>
         <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>

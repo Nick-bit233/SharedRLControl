@@ -1,0 +1,6 @@
+std_msgs/Header header
+bool valid
+float32 surface_clearance
+float32 center_distance
+geometry_msgs/Point nearest_obstacle_point
+geometry_msgs/Vector3 escape_direction

@@ -33,6 +33,9 @@
     <arg name="map_origin_x" default="$(optenv SRLC_MAP_ORIGIN_X 0.0)"/>
     <arg name="map_origin_y" default="$(optenv SRLC_MAP_ORIGIN_Y 0.0)"/>
     <arg name="map_origin_z" default="$(optenv SRLC_MAP_ORIGIN_Z 0.0)"/>
+    <arg name="vehicle_half_extents" default="[0.15,0.15,0.05]"/>
+    <arg name="policy_extra_margin" default="[0.05,0.05,0.0]"/>
+    <arg name="clearance_cap" default="1.0"/>
 
     <arg name="max_xy_speed_real" default="1.0"/>
     <arg name="max_z_speed_real" default="0.3"/>
@@ -44,10 +47,16 @@
     <arg name="geofence_y_max" default="10.0"/>
     <arg name="min_altitude" default="0.2"/>
     <arg name="max_altitude" default="5.0"/>
-    <arg name="enable_safety_stop" default="false"/>
-    <arg name="enable_collision_detection" default="false"/>
-    <arg name="safety_min_dist" default="0.25"/>
-    <arg name="collision_dist" default="0.15"/>
+    <arg name="enable_proximity_guard" default="false"/>
+    <arg name="proximity_enter_clearance" default="0.10"/>
+    <arg name="proximity_release_clearance" default="0.15"/>
+    <arg name="proximity_release_duration" default="0.20"/>
+    <arg name="proximity_escape_min_speed" default="0.05"/>
+    <arg name="collision_confirm_clearance" default="0.02"/>
+    <arg name="collision_confirm_frames" default="2"/>
+    <arg name="collision_immediate_clearance" default="-0.03"/>
+    <arg name="clearance_guard_mode" default="enforce"/>
+    <arg name="fault_response" default="hold"/>
 
     <arg name="odom_topic" default="/nokov/local_position/odom"/>
     <arg name="px4_local_odom_topic" default="/mavros/local_position/odom"/>
@@ -87,6 +96,9 @@
         <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
         <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+        <rosparam param="vehicle_half_extents" subst_value="true">$(arg vehicle_half_extents)</rosparam>
+        <rosparam param="policy_extra_margin" subst_value="true">$(arg policy_extra_margin)</rosparam>
+        <param name="clearance_cap" value="$(arg clearance_cap)"/>
     </node>
 
     <node pkg="srlc_real" type="pcd_map_publisher.py"
@@ -134,14 +146,20 @@
         <param name="require_offboard" value="true"/>
         <param name="real_auto_takeoff_on_offboard" value="true"/>
         <param name="post_takeoff_mode" value="$(arg post_takeoff_mode)"/>
+        <param name="fault_response" value="$(arg fault_response)"/>
         <param name="takeoff_confirm_duration" value="0.5"/>
         <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
-        <param name="enable_safety_stop" value="$(arg enable_safety_stop)"/>
-        <param name="enable_collision_detection" value="$(arg enable_collision_detection)"/>
-        <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
-        <param name="collision_dist" value="$(arg collision_dist)"/>
+        <param name="enable_proximity_guard" value="$(arg enable_proximity_guard)"/>
+        <param name="proximity_enter_clearance" value="$(arg proximity_enter_clearance)"/>
+        <param name="proximity_release_clearance" value="$(arg proximity_release_clearance)"/>
+        <param name="proximity_release_duration" value="$(arg proximity_release_duration)"/>
+        <param name="proximity_escape_min_speed" value="$(arg proximity_escape_min_speed)"/>
+        <param name="collision_confirm_clearance" value="$(arg collision_confirm_clearance)"/>
+        <param name="collision_confirm_frames" value="$(arg collision_confirm_frames)"/>
+        <param name="collision_immediate_clearance" value="$(arg collision_immediate_clearance)"/>
+        <param name="clearance_guard_mode" value="$(arg clearance_guard_mode)"/>
         <param name="min_altitude" value="$(arg min_altitude)"/>
         <param name="max_altitude" value="$(arg max_altitude)"/>
         <rosparam param="geofence_x" subst_value="true">[$(arg geofence_x_min), $(arg geofence_x_max)]</rosparam>

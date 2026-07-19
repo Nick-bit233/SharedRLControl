@@ -9,6 +9,8 @@
 
   <buildtool_depend>catkin</buildtool_depend>
 
+  <build_depend>message_generation</build_depend>
+
   <depend>geometry_msgs</depend>
   <depend>mavros_msgs</depend>
   <depend>nav_msgs</depend>
@@ -16,6 +18,8 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>visualization_msgs</depend>
+
+  <exec_depend>message_runtime</exec_depend>
 
   <test_depend>rostest</test_depend>
 
