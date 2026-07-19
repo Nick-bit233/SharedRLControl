@@ -306,34 +306,71 @@ class PcdRaycaster:
 
     def _dda_entry_distance(self, origin, direction, max_range):
         """Return the exact entry parameter of the first occupied voxel."""
-        voxel = np.floor(origin * self.inv_res).astype(np.int64)
-        if tuple(voxel) in self._occupied:
+        # Keep this hot loop scalar. Constructing NumPy arrays for every voxel
+        # transition dominates the 144-beam runtime even though each ray only
+        # needs three coordinates and three boundary times.
+        ox, oy, oz = (float(value) for value in origin)
+        dx, dy, dz = (float(value) for value in direction)
+        inv_res = self.inv_res
+        resolution = self.res
+        occupied = self._occupied
+
+        ix = int(math.floor(ox * inv_res))
+        iy = int(math.floor(oy * inv_res))
+        iz = int(math.floor(oz * inv_res))
+        if (ix, iy, iz) in occupied:
             return 0.0
 
-        step = np.sign(direction).astype(np.int64)
-        t_max = np.full(3, np.inf, dtype=np.float64)
-        t_delta = np.full(3, np.inf, dtype=np.float64)
-        for axis in range(3):
-            component = direction[axis]
-            if component > 0.0:
-                boundary = (voxel[axis] + 1) * self.res
-            elif component < 0.0:
-                boundary = voxel[axis] * self.res
-            else:
-                continue
-            t_max[axis] = (boundary - origin[axis]) / component
-            t_delta[axis] = self.res / abs(component)
+        sx = 1 if dx > 0.0 else -1 if dx < 0.0 else 0
+        sy = 1 if dy > 0.0 else -1 if dy < 0.0 else 0
+        sz = 1 if dz > 0.0 else -1 if dz < 0.0 else 0
+
+        if dx > 0.0:
+            tx = ((ix + 1) * resolution - ox) / dx
+            delta_x = resolution / dx
+        elif dx < 0.0:
+            tx = (ix * resolution - ox) / dx
+            delta_x = resolution / -dx
+        else:
+            tx = math.inf
+            delta_x = math.inf
+
+        if dy > 0.0:
+            ty = ((iy + 1) * resolution - oy) / dy
+            delta_y = resolution / dy
+        elif dy < 0.0:
+            ty = (iy * resolution - oy) / dy
+            delta_y = resolution / -dy
+        else:
+            ty = math.inf
+            delta_y = math.inf
+
+        if dz > 0.0:
+            tz = ((iz + 1) * resolution - oz) / dz
+            delta_z = resolution / dz
+        elif dz < 0.0:
+            tz = (iz * resolution - oz) / dz
+            delta_z = resolution / -dz
+        else:
+            tz = math.inf
+            delta_z = math.inf
 
         while True:
-            entry_distance = float(np.min(t_max))
+            entry_distance = min(tx, ty, tz)
             if not math.isfinite(entry_distance) or entry_distance > max_range:
                 return None
 
             tolerance = 1e-12 * max(1.0, abs(entry_distance))
-            crossed_axes = np.abs(t_max - entry_distance) <= tolerance
-            voxel[crossed_axes] += step[crossed_axes]
-            t_max[crossed_axes] += t_delta[crossed_axes]
-            if tuple(voxel) in self._occupied:
+            if abs(tx - entry_distance) <= tolerance:
+                ix += sx
+                tx += delta_x
+            if abs(ty - entry_distance) <= tolerance:
+                iy += sy
+                ty += delta_y
+            if abs(tz - entry_distance) <= tolerance:
+                iz += sz
+                tz += delta_z
+            if (ix, iy, iz) in occupied:
                 return max(0.0, entry_distance)
 
     def raycast(self, position, yaw, range_m, vfov_min_deg, vfov_max_deg,

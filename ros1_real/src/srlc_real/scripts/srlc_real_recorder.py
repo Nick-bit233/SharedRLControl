@@ -12,6 +12,22 @@ from geometry_msgs.msg import TwistStamped
 from mavros_msgs.msg import ExtendedState, PositionTarget, RCIn, State
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Float32, Float32MultiArray, String
+from srlc_real.msg import ObstacleClearance
+
+
+SHADOW_INTERVENTION_STATES = frozenset(
+    ("PROXIMITY_HOLD", "PROXIMITY_ESCAPE", "COLLISION")
+)
+
+
+def _minimum_finite(samples, field, valid_field=None):
+    values = (
+        float(sample[field])
+        for sample in samples
+        if (valid_field is None or bool(sample[valid_field]))
+        and math.isfinite(float(sample[field]))
+    )
+    return min(values, default=float("inf"))
 
 
 class SrlcRealRecorder:
@@ -51,11 +67,22 @@ class SrlcRealRecorder:
         )
         self.policy_cmd_topic = rospy.get_param("~policy_cmd_topic", "/tunnel_nav/policy_cmd")
         self.setpoint_raw_topic = rospy.get_param("~setpoint_raw_topic", "/mavros/setpoint_raw/local")
-        self.lidar_min_distance_topic = rospy.get_param("~lidar_min_distance_topic", "/srlc/lidar/min_distance")
-        self.lidar_safety_distance_topic = rospy.get_param(
-            "~lidar_safety_distance_topic", "/srlc/lidar/min_safety_distance"
+        self.lidar_min_distance_topic = rospy.get_param(
+            "~lidar_min_distance_topic", "/srlc/lidar/min_distance"
         )
-        self.lidar_range_image_topic = rospy.get_param("~lidar_range_image_topic", "/srlc/lidar/range_image")
+        self.clearance_topic = rospy.get_param(
+            "~clearance_topic", "/srlc/lidar/obstacle_clearance"
+        )
+        self.clearance_guard_state_topic = rospy.get_param(
+            "~clearance_guard_state_topic", "/tunnel_nav/clearance_guard_state"
+        )
+        self.clearance_guard_shadow_state_topic = rospy.get_param(
+            "~clearance_guard_shadow_state_topic",
+            "/tunnel_nav/clearance_guard_shadow_state",
+        )
+        self.lidar_range_image_topic = rospy.get_param(
+            "~lidar_range_image_topic", "/srlc/lidar/range_image"
+        )
         self.status_topic = rospy.get_param("~status_topic", "/tunnel_nav/status")
 
         self.odom = None
@@ -74,8 +101,16 @@ class SrlcRealRecorder:
         self.fault_reason = ""
         self.mavros_state = None
         self.extended_state = None
-        self.min_distance = float("inf")
-        self.safety_distance = float("inf")
+        self.raw_center_distance = float("inf")
+        self.policy_min_distance = float("inf")
+        self.clearance_valid = False
+        self.surface_clearance = float("nan")
+        self.clearance_center_distance = float("nan")
+        self.clearance_source_stamp = float("nan")
+        self.nearest_obstacle_point = [float("nan")] * 3
+        self.escape_direction = [float("nan")] * 3
+        self.effective_guard_state = "UNKNOWN"
+        self.shadow_guard_state = "UNKNOWN"
         self.front_distance = float("inf")
         self.status = ""
         self.start_time = rospy.Time.now()
@@ -126,14 +161,36 @@ class SrlcRealRecorder:
         )
         rospy.Subscriber(self.policy_cmd_topic, TwistStamped, self._policy_cb, queue_size=1)
         rospy.Subscriber(self.setpoint_raw_topic, PositionTarget, self._setpoint_cb, queue_size=1)
-        rospy.Subscriber(self.lidar_min_distance_topic, Float32, self._min_distance_cb, queue_size=1)
         rospy.Subscriber(
-            self.lidar_safety_distance_topic,
+            self.lidar_min_distance_topic,
             Float32,
-            self._safety_distance_cb,
+            self._min_distance_cb,
             queue_size=1,
         )
-        rospy.Subscriber(self.lidar_range_image_topic, Float32MultiArray, self._range_image_cb, queue_size=1)
+        rospy.Subscriber(
+            self.clearance_topic,
+            ObstacleClearance,
+            self._clearance_cb,
+            queue_size=50,
+        )
+        rospy.Subscriber(
+            self.clearance_guard_state_topic,
+            String,
+            self._clearance_guard_state_cb,
+            queue_size=10,
+        )
+        rospy.Subscriber(
+            self.clearance_guard_shadow_state_topic,
+            String,
+            self._clearance_guard_shadow_state_cb,
+            queue_size=10,
+        )
+        rospy.Subscriber(
+            self.lidar_range_image_topic,
+            Float32MultiArray,
+            self._range_image_cb,
+            queue_size=1,
+        )
         rospy.Subscriber(self.status_topic, String, self._status_cb, queue_size=1)
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.rate_hz), self._record_cb)
@@ -195,10 +252,29 @@ class SrlcRealRecorder:
         self.last_setpoint_time = rospy.Time.now()
 
     def _min_distance_cb(self, msg):
-        self.min_distance = float(msg.data)
+        self.raw_center_distance = float(msg.data)
 
-    def _safety_distance_cb(self, msg):
-        self.safety_distance = float(msg.data)
+    def _clearance_cb(self, msg):
+        self.clearance_valid = bool(msg.valid)
+        self.surface_clearance = float(msg.surface_clearance)
+        self.clearance_center_distance = float(msg.center_distance)
+        self.clearance_source_stamp = float(msg.header.stamp.to_sec())
+        self.nearest_obstacle_point = [
+            float(msg.nearest_obstacle_point.x),
+            float(msg.nearest_obstacle_point.y),
+            float(msg.nearest_obstacle_point.z),
+        ]
+        self.escape_direction = [
+            float(msg.escape_direction.x),
+            float(msg.escape_direction.y),
+            float(msg.escape_direction.z),
+        ]
+
+    def _clearance_guard_state_cb(self, msg):
+        self.effective_guard_state = str(msg.data)
+
+    def _clearance_guard_shadow_state_cb(self, msg):
+        self.shadow_guard_state = str(msg.data)
 
     def _status_cb(self, msg):
         self.status = msg.data
@@ -208,6 +284,8 @@ class SrlcRealRecorder:
         if len(msg.data) != expected:
             return
         ranges = np.asarray(msg.data, dtype=np.float32).reshape(self.lidar_hbeams, self.lidar_vbeams)
+        policy_norm = float(np.max(ranges))
+        self.policy_min_distance = self.lidar_range * (1.0 - policy_norm)
         front_bins = [0, 1, self.lidar_hbeams - 2, self.lidar_hbeams - 1]
         front_norm = float(np.max(ranges[front_bins, :]))
         self.front_distance = self.lidar_range * (1.0 - front_norm)
@@ -228,6 +306,9 @@ class SrlcRealRecorder:
         if self.odom is None:
             return
         now = rospy.Time.now()
+        clearance_source_age = float("inf")
+        if math.isfinite(self.clearance_source_stamp):
+            clearance_source_age = float(now.to_sec() - self.clearance_source_stamp)
         p = self.odom.pose.pose.position
         v = self.odom.twist.twist.linear
         position = np.array([p.x, p.y, p.z], dtype=np.float32)
@@ -294,8 +375,26 @@ class SrlcRealRecorder:
                 "setpoint_z": setpoint_z,
                 "setpoint_type_mask": setpoint_type_mask,
                 "setpoint_age": setpoint_age,
-                "min_distance": float(self.min_distance),
-                "safety_distance": float(self.safety_distance),
+                "raw_center_distance": float(self.raw_center_distance),
+                "policy_min_distance": float(self.policy_min_distance),
+                "model_min_distance": float(self.policy_min_distance),
+                "clearance_valid": bool(self.clearance_valid),
+                "surface_clearance": float(self.surface_clearance),
+                "clearance_center_distance": float(
+                    self.clearance_center_distance
+                ),
+                "clearance_source_stamp": float(self.clearance_source_stamp),
+                "clearance_source_age": clearance_source_age,
+                "nearest_obstacle_point": list(self.nearest_obstacle_point),
+                "escape_direction": list(self.escape_direction),
+                "effective_guard_state": self.effective_guard_state,
+                "shadow_guard_state": self.shadow_guard_state,
+                # The shadow topic carries the guard's hypothetical raw
+                # decision even while effective enforcement stays NORMAL.
+                "shadow_decision": self.shadow_guard_state,
+                "shadow_would_intervene": (
+                    self.shadow_guard_state in SHADOW_INTERVENTION_STATES
+                ),
                 "front_distance": float(self.front_distance),
                 "status": self.status,
             }
@@ -313,15 +412,38 @@ class SrlcRealRecorder:
         summary = {
             "run_id": self.run_id,
             "samples": len(self.samples),
-            "min_distance": min((s["min_distance"] for s in self.samples), default=float("inf")),
-            "min_safety_distance": min(
-                (s["safety_distance"] for s in self.samples),
-                default=float("inf"),
+            "min_raw_center_distance": _minimum_finite(
+                self.samples,
+                "raw_center_distance",
+            ),
+            "min_policy_distance": _minimum_finite(
+                self.samples,
+                "policy_min_distance",
+            ),
+            "min_surface_clearance": _minimum_finite(
+                self.samples,
+                "surface_clearance",
+                valid_field="clearance_valid",
             ),
             "min_front_distance": min((s["front_distance"] for s in self.samples), default=float("inf")),
             "max_abs_setpoint_xy": max(
                 (math.hypot(s["setpoint_velocity"][0], s["setpoint_velocity"][1]) for s in self.samples),
                 default=0.0,
+            ),
+            "latest_guard_state": (
+                self.samples[-1]["effective_guard_state"]
+                if self.samples
+                else "UNKNOWN"
+            ),
+            "latest_shadow_decision": (
+                self.samples[-1]["shadow_decision"]
+                if self.samples
+                else "UNKNOWN"
+            ),
+            "latest_shadow_would_intervene": (
+                self.samples[-1]["shadow_would_intervene"]
+                if self.samples
+                else False
             ),
             "latest_status": self.samples[-1]["status"] if self.samples else "",
             "data_file": os.path.basename(npz_path),
