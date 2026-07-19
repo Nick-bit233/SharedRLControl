@@ -28,6 +28,8 @@ generate_messages(
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   catkin_add_nosetests(test/test_mavlink_stream_guard_core.py)
+  catkin_add_nosetests(test/test_clearance_guard.py)
+  catkin_add_nosetests(test/test_collision_geometry.py)
   catkin_add_nosetests(test/test_clearance_ros_integration_contract.py)
   catkin_add_nosetests(test/test_launch_contracts.py)
   catkin_add_nosetests(test/test_one_shot_flight.py)

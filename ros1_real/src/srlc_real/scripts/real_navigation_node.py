@@ -42,7 +42,10 @@ from srlc_real_deployment.config_migration import (  # noqa: E402
     find_legacy_safety_config,
     legacy_safety_migration_error,
 )
-from srlc_real_deployment.clearance_runtime import soft_guard_position  # noqa: E402
+from srlc_real_deployment.clearance_runtime import (  # noqa: E402
+    lifecycle_lidar_fresh,
+    soft_guard_position,
+)
 from srlc_real_deployment.one_shot_flight import (  # noqa: E402
     FlightAction,
     FlightSnapshot,
@@ -859,8 +862,11 @@ class RealNavigator:
             velocity=velocity,
             odom_fresh=odom_fresh,
             rc_fresh=rc_fresh,
-            lidar_fresh=bool(
-                range_fresh and clearance_fresh and self.ready
+            lidar_fresh=lifecycle_lidar_fresh(
+                clearance_guard_mode=self.cfg.clearance_guard_mode,
+                range_fresh=range_fresh,
+                range_ready=self.ready,
+                clearance_fresh=clearance_fresh,
             ),
             landed=landed,
             external_fault=external_fault,

@@ -6,6 +6,19 @@ from typing import Sequence, Tuple
 Vector3 = Tuple[float, float, float]
 
 
+def lifecycle_lidar_fresh(
+    clearance_guard_mode: str,
+    range_fresh: bool,
+    range_ready: bool,
+    clearance_fresh: bool,
+) -> bool:
+    """Return lifecycle readiness without leaking shadow clearance state."""
+    range_channel_fresh = bool(range_fresh) and bool(range_ready)
+    if str(clearance_guard_mode).strip().lower() == "shadow":
+        return range_channel_fresh
+    return range_channel_fresh and bool(clearance_fresh)
+
+
 def soft_guard_position(
     clearance_guard_mode: str,
     lifecycle_active: bool,

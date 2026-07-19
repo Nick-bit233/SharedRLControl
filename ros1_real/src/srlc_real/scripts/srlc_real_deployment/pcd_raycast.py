@@ -206,7 +206,7 @@ class PcdRaycaster:
         return read_pcd_xyz(filepath)
 
     def raycast_raw(self, position, yaw, range_m, vfov_min_deg, vfov_max_deg,
-                    vbeams, hres_deg):
+                    vbeams, hres_deg, direction_frame_yaw=0.0):
         """Return exact raw voxel entries and per-beam metadata.
 
         Parameters
@@ -217,9 +217,11 @@ class PcdRaycaster:
         vfov_min_deg, vfov_max_deg : float — vertical FOV in degrees
         vbeams : int — number of vertical beams
         hres_deg : float — horizontal angular resolution in degrees
+        direction_frame_yaw : float — world-axis rotation in radians
 
-        Beam directions are fixed in the world frame, so ``yaw`` is retained
-        only for API compatibility. Results are ordered
+        Beam directions are fixed in the selected world frame, so vehicle
+        ``yaw`` is retained only for API compatibility. The optional direction
+        frame rotation defaults to identity. Results are ordered
         ``[h0v0, h0v1, ..., h1v0, ...]`` exactly as the training input.
         """
         del yaw
@@ -235,6 +237,9 @@ class PcdRaycaster:
             raise ValueError("vbeams must be positive")
         if not math.isfinite(hres_deg) or hres_deg <= 0.0:
             raise ValueError("hres_deg must be a positive finite value")
+        direction_frame_yaw = float(direction_frame_yaw)
+        if not math.isfinite(direction_frame_yaw):
+            raise ValueError("direction_frame_yaw must be finite")
 
         hres = math.radians(hres_deg)
         n_hbeams = int(360.0 / hres_deg)
@@ -260,8 +265,10 @@ class PcdRaycaster:
         #   → lidar beams are WORLD-FRAME-FIXED, not body-frame
         # Our cos/sin convention naturally maps:
         #   h_angle=0 → (+1,0,0)=+X, h_angle=90° → (0,+1,0)=+Y
-        # So start_h=0 exactly reproduces training beam ordering.
-        start_h = 0.0
+        # So start_h=0 exactly reproduces training beam ordering. A static
+        # world-frame transform may rotate that complete arrangement without
+        # introducing any vehicle-yaw coupling.
+        start_h = direction_frame_yaw
 
         idx = 0
         for h in range(n_hbeams):

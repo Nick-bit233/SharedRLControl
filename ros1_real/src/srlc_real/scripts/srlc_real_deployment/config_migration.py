@@ -40,10 +40,8 @@ def find_legacy_safety_config(
             ros_params.append(full_name)
 
     environment_names = []
-    for name, value in environment.items():
+    for name in environment:
         if str(name).lower() not in LEGACY_SAFETY_ENV_NAMES:
-            continue
-        if value is None or not str(value).strip():
             continue
         environment_names.append(str(name))
 

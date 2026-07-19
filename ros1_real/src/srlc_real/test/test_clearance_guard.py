@@ -4,8 +4,6 @@ import math
 import sys
 from pathlib import Path
 
-import pytest
-
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -189,9 +187,8 @@ def test_immediate_penetration_threshold_is_inclusive_in_one_frame():
     assert result.state == ClearanceState.COLLISION
 
 
-@pytest.mark.parametrize(
-    "bad_overrides",
-    [
+def test_unusable_samples_neither_increment_nor_reset_pending_collision():
+    bad_override_cases = [
         {"valid": False},
         {"surface_clearance": math.nan},
         {"surface_clearance": math.inf},
@@ -200,40 +197,27 @@ def test_immediate_penetration_threshold_is_inclusive_in_one_frame():
         {"now": 7.1, "source_stamp": 7.2},
         {"now": 7.1, "source_stamp": 6.9},
         {"now": 8.0, "source_stamp": 7.1},
-    ],
-    ids=[
-        "invalid",
-        "nan-clearance",
-        "infinite-clearance",
-        "nan-stamp",
-        "nan-direction",
-        "future",
-        "backwards",
-        "stale",
-    ],
-)
-def test_unusable_samples_neither_increment_nor_reset_pending_collision(
-    bad_overrides,
-):
-    guard = ClearanceGuard(ClearanceGuardConfig(sample_timeout=0.3))
-    _update(guard, now=7.0, source_stamp=7.0, surface_clearance=0.01)
+    ]
+    for bad_overrides in bad_override_cases:
+        guard = ClearanceGuard(ClearanceGuardConfig(sample_timeout=0.3))
+        _update(guard, now=7.0, source_stamp=7.0, surface_clearance=0.01)
 
-    unusable_values = {
-        "now": 7.1,
-        "source_stamp": 7.1,
-        "surface_clearance": 0.01,
-    }
-    unusable_values.update(bad_overrides)
-    unusable = _update(guard, **unusable_values)
-    confirmed = _update(
-        guard,
-        now=8.1,
-        source_stamp=8.1,
-        surface_clearance=0.01,
-    )
+        unusable_values = {
+            "now": 7.1,
+            "source_stamp": 7.1,
+            "surface_clearance": 0.01,
+        }
+        unusable_values.update(bad_overrides)
+        unusable = _update(guard, **unusable_values)
+        confirmed = _update(
+            guard,
+            now=8.1,
+            source_stamp=8.1,
+            surface_clearance=0.01,
+        )
 
-    assert unusable.state == ClearanceState.NORMAL
-    assert confirmed.state == ClearanceState.COLLISION
+        assert unusable.state == ClearanceState.NORMAL, bad_overrides
+        assert confirmed.state == ClearanceState.COLLISION, bad_overrides
 
 
 def test_proximity_enter_threshold_is_inclusive_and_captures_local_hold():
@@ -543,5 +527,10 @@ def test_velocity_projection_removes_only_component_toward_obstacle():
     already_away = project_velocity_away((2.0, 1.0, -3.0), direction)
 
     assert projected == expected
-    assert sum(v * n for v, n in zip(projected, direction)) == pytest.approx(0.0)
+    assert math.isclose(
+        sum(v * n for v, n in zip(projected, direction)),
+        0.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
     assert already_away == (2.0, 1.0, -3.0)

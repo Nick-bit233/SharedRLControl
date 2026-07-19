@@ -95,15 +95,24 @@ class MapLidarNode:
         self.clearance_geometry = PcdClearanceGeometry(self.pcd_file)
 
         self.odom = None
-        self.odom_sub = rospy.Subscriber(self.odom_topic, Odometry, self._odom_cb, queue_size=1)
+        self.odom_sub = rospy.Subscriber(
+            self.odom_topic,
+            Odometry,
+            self._odom_cb,
+            queue_size=50,
+        )
         self.range_pub = rospy.Publisher(self.range_topic, Float32MultiArray, queue_size=2)
         self.points_pub = rospy.Publisher(self.points_topic, PointCloud2, queue_size=2)
-        self.min_dist_pub = rospy.Publisher(self.min_dist_topic, Float32, queue_size=2)
+        self.min_dist_pub = rospy.Publisher(
+            self.min_dist_topic,
+            Float32,
+            queue_size=50,
+        )
         self.safety_dist_pub = rospy.Publisher(
             self.safety_dist_topic, Float32, queue_size=2
         )
         self.clearance_pub = rospy.Publisher(
-            self.clearance_topic, ObstacleClearance, queue_size=10
+            self.clearance_topic, ObstacleClearance, queue_size=50
         )
 
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.rate_hz), self._timer_cb)
@@ -117,6 +126,7 @@ class MapLidarNode:
         )
 
     def _odom_cb(self, msg):
+        self._publish_source_clearance(msg)
         self.odom = msg
 
     def _validate_geometry_config(self):
@@ -139,8 +149,55 @@ class MapLidarNode:
         y = self._sin_yaw * pos_local[0] + self._cos_yaw * pos_local[1]
         return np.array([x, y, pos_local[2]], dtype=np.float64) + self.map_origin_xyz
 
-    def _local_to_map_yaw(self, yaw_local):
-        return yaw_local + self.map_yaw
+    def _pose_from_odom(self, odom):
+        p = odom.pose.pose.position
+        q = odom.pose.pose.orientation
+        pos_local = np.asarray([p.x, p.y, p.z], dtype=np.float64)
+        quaternion_local = np.asarray([q.x, q.y, q.z, q.w], dtype=np.float64)
+        if not np.isfinite(pos_local).all() or not np.isfinite(
+            quaternion_local
+        ).all():
+            raise ValueError("odometry pose must be finite")
+        quaternion_norm = float(np.linalg.norm(quaternion_local))
+        if quaternion_norm <= 0.0:
+            raise ValueError("odometry quaternion must have non-zero length")
+        quaternion_local /= quaternion_norm
+
+        rotation_local_from_body = np.asarray(
+            tf.transformations.quaternion_matrix(quaternion_local.tolist())[:3, :3],
+            dtype=np.float64,
+        )
+        rotation_map_from_body = (
+            self._rotation_map_from_local @ rotation_local_from_body
+        )
+        return self._local_to_map_position(pos_local), rotation_map_from_body
+
+    def _publish_source_clearance(self, odom):
+        try:
+            pos_map, rotation_map_from_body = self._pose_from_odom(odom)
+            clearance_result = self.clearance_geometry.query(
+                pos_map,
+                rotation_map_from_body,
+                self.vehicle_half_extents,
+                clearance_cap=self.clearance_cap,
+            )
+        except (TypeError, ValueError) as exc:
+            rospy.logerr_throttle(
+                1.0,
+                "[MapLiDAR] Invalid odometry/clearance geometry: %s",
+                exc,
+            )
+            self._publish_invalid_clearance(odom)
+            return
+
+        self.min_dist_pub.publish(
+            Float32(data=float(clearance_result.center_distance))
+        )
+        self._publish_clearance(
+            odom,
+            clearance_result,
+            self._rotation_map_from_local,
+        )
 
     def _timer_cb(self, _event):
         if self.odom is None:
@@ -148,39 +205,17 @@ class MapLidarNode:
 
         odom = self.odom
         try:
-            p = odom.pose.pose.position
-            q = odom.pose.pose.orientation
-            pos_local = np.asarray([p.x, p.y, p.z], dtype=np.float64)
-            quaternion_local = np.asarray([q.x, q.y, q.z, q.w], dtype=np.float64)
-            if not np.isfinite(pos_local).all() or not np.isfinite(quaternion_local).all():
-                raise ValueError("odometry pose must be finite")
-            quaternion_norm = float(np.linalg.norm(quaternion_local))
-            if quaternion_norm <= 0.0:
-                raise ValueError("odometry quaternion must have non-zero length")
-            quaternion_local /= quaternion_norm
-
-            _, _, yaw_local = tf.transformations.euler_from_quaternion(
-                quaternion_local.tolist()
-            )
-            rotation_local_from_body = np.asarray(
-                tf.transformations.quaternion_matrix(quaternion_local.tolist())[:3, :3],
-                dtype=np.float64,
-            )
-            rotation_map_from_local = self._rotation_map_from_local
-            rotation_map_from_body = (
-                rotation_map_from_local @ rotation_local_from_body
-            )
-            pos_map = self._local_to_map_position(pos_local)
-            yaw_map = self._local_to_map_yaw(yaw_local)
+            pos_map, rotation_map_from_body = self._pose_from_odom(odom)
 
             raw_raycast = self.raycaster.raycast_raw(
                 pos_map,
-                yaw_map,
+                0.0,
                 self.lidar_range,
                 float(self.lidar_vfov[0]),
                 float(self.lidar_vfov[1]),
                 self.lidar_vbeams,
                 self.lidar_hres,
+                direction_frame_yaw=self.map_yaw,
             )
             policy_distances = policy_surface_distances(
                 raw_raycast.entry_distances,
@@ -190,29 +225,18 @@ class MapLidarNode:
                 self.policy_half_extents,
                 max_range=self.lidar_range,
             )
-            clearance_result = self.clearance_geometry.query(
-                pos_map,
-                rotation_map_from_body,
-                self.vehicle_half_extents,
-                clearance_cap=self.clearance_cap,
-            )
         except (TypeError, ValueError) as exc:
-            rospy.logerr_throttle(1.0, "[MapLiDAR] Invalid odometry/geometry: %s", exc)
-            self._publish_invalid_clearance(odom)
+            rospy.logerr_throttle(
+                1.0,
+                "[MapLiDAR] Invalid odometry/policy raycast: %s",
+                exc,
+            )
             return
 
         self._publish_range_image(policy_distances)
         self._publish_points(raw_raycast.points, odom.header.stamp)
-        self.min_dist_pub.publish(
-            Float32(data=float(clearance_result.center_distance))
-        )
         self.safety_dist_pub.publish(
             Float32(data=float(np.min(policy_distances)))
-        )
-        self._publish_clearance(
-            odom,
-            clearance_result,
-            rotation_map_from_local,
         )
 
     def _publish_range_image(self, policy_distances):

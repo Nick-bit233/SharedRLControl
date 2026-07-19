@@ -3,6 +3,7 @@
 import importlib
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 
@@ -21,10 +22,21 @@ def _write_pcd(tmp_path, points):
     return pcd_path
 
 
+def _with_temporary_path(test_function):
+    def run_with_temporary_path():
+        with TemporaryDirectory() as directory:
+            test_function(Path(directory))
+
+    run_with_temporary_path.__name__ = test_function.__name__
+    run_with_temporary_path.__doc__ = test_function.__doc__
+    return run_with_temporary_path
+
+
 def _clearance_geometry():
     return importlib.import_module("srlc_real_deployment.clearance_geometry")
 
 
+@_with_temporary_path
 def test_raw_raycast_uses_uninflated_voxels_and_exact_entry_distance(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[2.25, 0.25, 0.25]])
     raycaster = PcdRaycaster(str(pcd_path), resolution=1.0)
@@ -49,6 +61,7 @@ def test_raw_raycast_uses_uninflated_voxels_and_exact_entry_distance(tmp_path):
     np.testing.assert_allclose(result.points[0], [2.0, 0.25, 0.25], atol=1e-12)
 
 
+@_with_temporary_path
 def test_raw_raycast_preserves_world_fixed_beam_order_and_exact_misses(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[50.0, 50.0, 50.0]])
     raycaster = PcdRaycaster(str(pcd_path), resolution=0.5, inflate=(0.0, 0.0, 0.0))
@@ -82,6 +95,47 @@ def test_raw_raycast_preserves_world_fixed_beam_order_and_exact_misses(tmp_path)
     )
 
 
+@_with_temporary_path
+def test_raw_raycast_rotates_world_fixed_beams_into_direction_frame(tmp_path):
+    pcd_path = _write_pcd(tmp_path, [[0.25, 2.25, 0.25]])
+    raycaster = PcdRaycaster(str(pcd_path), resolution=1.0)
+    common = {
+        "position": [0.25, 0.25, 0.25],
+        "range_m": 3.75,
+        "vfov_min_deg": 0.0,
+        "vfov_max_deg": 0.0,
+        "vbeams": 1,
+        "hres_deg": 90.0,
+        "direction_frame_yaw": np.pi / 2.0,
+    }
+
+    first_vehicle_yaw = raycaster.raycast_raw(yaw=0.0, **common)
+    second_vehicle_yaw = raycaster.raycast_raw(yaw=-1.7, **common)
+
+    np.testing.assert_allclose(
+        first_vehicle_yaw.directions_world[0],
+        [0.0, 1.0, 0.0],
+        atol=1e-15,
+    )
+    assert first_vehicle_yaw.hit_mask[0]
+    assert first_vehicle_yaw.entry_distances[0] == 1.75
+    np.testing.assert_array_equal(
+        second_vehicle_yaw.hit_mask,
+        first_vehicle_yaw.hit_mask,
+    )
+    np.testing.assert_allclose(
+        second_vehicle_yaw.entry_distances,
+        first_vehicle_yaw.entry_distances,
+        atol=1e-15,
+    )
+    np.testing.assert_allclose(
+        second_vehicle_yaw.directions_world,
+        first_vehicle_yaw.directions_world,
+        atol=1e-15,
+    )
+
+
+@_with_temporary_path
 def test_raw_raycast_orders_vertical_beams_inside_each_horizontal_beam(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[50.0, 50.0, 50.0]])
     raycaster = PcdRaycaster(str(pcd_path), resolution=0.5)
@@ -109,6 +163,7 @@ def test_raw_raycast_orders_vertical_beams_inside_each_horizontal_beam(tmp_path)
     )
 
 
+@_with_temporary_path
 def test_cardinal_beam_does_not_enter_orthogonal_voxel_at_grid_boundary(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[-0.5, 0.5, 0.5]])
     raycaster = PcdRaycaster(str(pcd_path), resolution=1.0)
@@ -130,6 +185,7 @@ def test_cardinal_beam_does_not_enter_orthogonal_voxel_at_grid_boundary(tmp_path
     np.testing.assert_array_equal(result.directions_world[3], [0.0, -1.0, 0.0])
 
 
+@_with_temporary_path
 def test_raw_raycast_dda_enters_diagonal_voxel_at_shared_boundary(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[1.25, 1.25, 0.25]])
     raycaster = PcdRaycaster(str(pcd_path), resolution=1.0, inflate=(0.0, 0.0, 0.0))
@@ -224,6 +280,7 @@ def test_policy_surface_distances_transform_world_beams_through_full_rpy():
     np.testing.assert_allclose(policy_distances, [1.0 - expected_boundary], atol=1e-12)
 
 
+@_with_temporary_path
 def test_obb_clearance_returns_face_distance_raw_point_and_escape(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[1.0, 0.0, 0.0], [2.0, 2.0, 0.0]])
     geometry = _clearance_geometry().PcdClearanceGeometry(str(pcd_path))
@@ -241,6 +298,7 @@ def test_obb_clearance_returns_face_distance_raw_point_and_escape(tmp_path):
     np.testing.assert_array_equal(result.escape_direction, [-1.0, 0.0, 0.0])
 
 
+@_with_temporary_path
 def test_obb_clearance_uses_euclidean_corner_sdf(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[0.30, 0.40, 0.0]])
     geometry = _clearance_geometry().PcdClearanceGeometry(str(pcd_path))
@@ -260,6 +318,7 @@ def test_obb_clearance_uses_euclidean_corner_sdf(tmp_path):
     )
 
 
+@_with_temporary_path
 def test_obb_clearance_preserves_negative_inside_sdf(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[0.19, 0.0, 0.0]])
     geometry = _clearance_geometry().PcdClearanceGeometry(str(pcd_path))
@@ -275,6 +334,7 @@ def test_obb_clearance_preserves_negative_inside_sdf(tmp_path):
     np.testing.assert_array_equal(result.escape_direction, [-1.0, 0.0, 0.0])
 
 
+@_with_temporary_path
 def test_obb_clearance_ground_point_directs_vehicle_upward(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[0.0, 0.0, 0.0]])
     geometry = _clearance_geometry().PcdClearanceGeometry(str(pcd_path))
@@ -290,6 +350,7 @@ def test_obb_clearance_ground_point_directs_vehicle_upward(tmp_path):
     np.testing.assert_array_equal(result.escape_direction, [0.0, 0.0, 1.0])
 
 
+@_with_temporary_path
 def test_obb_clearance_uses_full_rpy_and_selects_minimum_sdf_point(tmp_path):
     roll, pitch, yaw = 0.23, -0.41, 0.67
     cr, sr = np.cos(roll), np.sin(roll)
@@ -330,6 +391,7 @@ def test_obb_clearance_uses_full_rpy_and_selects_minimum_sdf_point(tmp_path):
     np.testing.assert_allclose(np.linalg.norm(result.escape_direction), 1.0, atol=1e-12)
 
 
+@_with_temporary_path
 def test_obb_clearance_caps_empty_candidate_query_but_returns_global_raw_point(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[5.0, 0.0, 0.0]])
     geometry = _clearance_geometry().PcdClearanceGeometry(str(pcd_path))
@@ -347,6 +409,7 @@ def test_obb_clearance_caps_empty_candidate_query_but_returns_global_raw_point(t
     np.testing.assert_array_equal(result.escape_direction, [-1.0, 0.0, 0.0])
 
 
+@_with_temporary_path
 def test_obb_clearance_numpy_fallback_matches_continuous_geometry(tmp_path):
     pcd_path = _write_pcd(tmp_path, [[0.40, 0.0, 0.0], [0.0, 0.30, 0.0]])
     geometry = _clearance_geometry().PcdClearanceGeometry(

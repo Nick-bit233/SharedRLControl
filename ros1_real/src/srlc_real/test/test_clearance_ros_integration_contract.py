@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ast
 import importlib.util
 import math
 import sys
@@ -61,6 +62,18 @@ def _load_clearance_runtime_module():
     return module
 
 
+def _class_method_source(path, class_name, method_name):
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name != class_name:
+            continue
+        for item in node.body:
+            if isinstance(item, ast.FunctionDef) and item.name == method_name:
+                return ast.get_source_segment(source, item)
+    raise AssertionError(f"{class_name}.{method_name} is missing")
+
+
 def test_obstacle_clearance_message_and_catkin_dependencies_are_exact():
     message_path = PACKAGE_DIR / "msg" / "ObstacleClearance.msg"
     assert message_path.exists()
@@ -82,6 +95,24 @@ def test_obstacle_clearance_message_and_catkin_dependencies_are_exact():
     assert "<exec_depend>message_runtime</exec_depend>" in package_xml
 
 
+def test_catkin_registers_clearance_guard_and_geometry_suites():
+    cmake = (PACKAGE_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+    guard_source = (PACKAGE_DIR / "test" / "test_clearance_guard.py").read_text(
+        encoding="utf-8"
+    )
+    geometry_source = (
+        PACKAGE_DIR / "test" / "test_collision_geometry.py"
+    ).read_text(encoding="utf-8")
+
+    assert "catkin_add_nosetests(test/test_clearance_guard.py)" in cmake
+    assert "catkin_add_nosetests(test/test_collision_geometry.py)" in cmake
+    assert "import pytest" not in guard_source
+    assert "@pytest" not in guard_source
+    assert geometry_source.count("@_with_temporary_path") == geometry_source.count(
+        "(tmp_path):"
+    )
+
+
 def test_map_lidar_uses_raw_full_pose_channels_and_source_header():
     source = (SCRIPT_DIR / "map_lidar_node.py").read_text(encoding="utf-8")
 
@@ -91,6 +122,7 @@ def test_map_lidar_uses_raw_full_pose_channels_and_source_header():
         "PcdClearanceGeometry",
         "policy_surface_distances",
         ".raycast_raw(",
+        "direction_frame_yaw=self.map_yaw",
         "rotation_map_from_local @ rotation_local_from_body",
         "rotation_map_from_local.T @",
         "clearance_msg.header = odom.header",
@@ -102,12 +134,42 @@ def test_map_lidar_uses_raw_full_pose_channels_and_source_header():
     assert "nearest_distance(" not in source
 
 
+def test_map_clearance_is_published_once_per_odometry_callback_not_timer():
+    path = SCRIPT_DIR / "map_lidar_node.py"
+    source = path.read_text(encoding="utf-8")
+    odom_callback = _class_method_source(path, "MapLidarNode", "_odom_cb")
+    timer_callback = _class_method_source(path, "MapLidarNode", "_timer_cb")
+    source_clearance = _class_method_source(
+        path,
+        "MapLidarNode",
+        "_publish_source_clearance",
+    )
+
+    assert "self._publish_source_clearance(msg)" in odom_callback
+    assert "self._pose_from_odom(odom)" in timer_callback
+    assert "queue_size=50" in source
+    assert "self._pose_from_odom(odom)" in source_clearance
+    assert "self.clearance_geometry.query(" in source_clearance
+    assert "self.min_dist_pub.publish(" in source_clearance
+    assert "self._publish_clearance(" in source_clearance
+    assert "self._publish_invalid_clearance(odom)" in source_clearance
+    for forbidden in (
+        "self.clearance_geometry.query(",
+        "self.min_dist_pub.publish(",
+        "self._publish_clearance(",
+        "self._publish_invalid_clearance(",
+    ):
+        assert forbidden not in timer_callback
+
+
 def test_navigation_uses_clearance_guard_without_safety_alias_subscription():
     source = (SCRIPT_DIR / "real_navigation_node.py").read_text(encoding="utf-8")
 
     for required in (
         "from srlc_real.msg import ObstacleClearance",
-        "from srlc_real_deployment.clearance_runtime import soft_guard_position",
+        "from srlc_real_deployment.clearance_runtime import (",
+        "lifecycle_lidar_fresh",
+        "soft_guard_position",
         '"/srlc/lidar/obstacle_clearance"',
         "ClearanceGuard(",
         "ClearanceGuardConfig(",
@@ -122,6 +184,7 @@ def test_navigation_uses_clearance_guard_without_safety_alias_subscription():
         "clearance=",
         "self._clearance_guard_position(",
         "decision.state_changed and decision.state == LifecycleState.ACTIVE",
+        "lidar_fresh=lifecycle_lidar_fresh(",
     ):
         assert required in source
     assert "min_safety_distance" not in source
@@ -209,7 +272,30 @@ def test_enforce_soft_guard_captures_current_position_only_after_active():
     ) == current_position
 
 
-def test_legacy_config_detection_uses_ros_basenames_and_nonempty_env_values():
+def test_shadow_lifecycle_freshness_ignores_clearance_channel():
+    runtime = _load_clearance_runtime_module()
+
+    assert runtime.lifecycle_lidar_fresh(
+        clearance_guard_mode="shadow",
+        range_fresh=True,
+        range_ready=True,
+        clearance_fresh=False,
+    )
+    assert not runtime.lifecycle_lidar_fresh(
+        clearance_guard_mode="enforce",
+        range_fresh=True,
+        range_ready=True,
+        clearance_fresh=False,
+    )
+    assert not runtime.lifecycle_lidar_fresh(
+        clearance_guard_mode="shadow",
+        range_fresh=False,
+        range_ready=True,
+        clearance_fresh=True,
+    )
+
+
+def test_legacy_config_detection_uses_ros_basenames_and_env_presence():
     migration = _load_migration_module()
 
     uses = migration.find_legacy_safety_config(
@@ -222,6 +308,7 @@ def test_legacy_config_detection_uses_ros_basenames_and_nonempty_env_values():
             "collision_dist": "0.15",
             "SRLC_ENABLE_SAFETY_STOP": "false",
             "SRLC_SAFETY_MIN_DIST": "   ",
+            "srlc_collision_dist": "",
         },
     )
 
@@ -231,7 +318,9 @@ def test_legacy_config_detection_uses_ros_basenames_and_nonempty_env_values():
     )
     assert uses.environment == (
         "SRLC_ENABLE_SAFETY_STOP",
+        "SRLC_SAFETY_MIN_DIST",
         "collision_dist",
+        "srlc_collision_dist",
     )
     error = migration.legacy_safety_migration_error(uses)
     for replacement in (
