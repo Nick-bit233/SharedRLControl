@@ -23,6 +23,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from mavros_msgs.msg import ExtendedState, PositionTarget, State
 from mavros_msgs.srv import SetMode, SetModeRequest
+from srlc_real.msg import ClearanceGuardStatus
 from srlc_real.msg import ObstacleClearance
 
 
@@ -47,6 +48,7 @@ from srlc_real_deployment.clearance_runtime import (  # noqa: E402
     lifecycle_lidar_fresh,
     soft_guard_position,
 )
+from srlc_real_deployment.guard_status import GuardStatusSource  # noqa: E402
 from srlc_real_deployment.one_shot_flight import (  # noqa: E402
     FlightAction,
     FlightSnapshot,
@@ -251,6 +253,7 @@ class RealNavigator:
             )
         )
         self._latest_clearance_sample = None
+        self._latest_guard_source = GuardStatusSource()
         self._last_clearance_source_stamp = None
         self._clearance_sample_usable = False
         self._clearance_result = ClearanceGuardResult(
@@ -448,6 +451,15 @@ class RealNavigator:
             String,
             queue_size=10,
         )
+        self.clearance_guard_status_pub = rospy.Publisher(
+            "/tunnel_nav/clearance_guard_status",
+            ClearanceGuardStatus,
+            queue_size=10,
+        )
+        self._publish_guard_states(
+            ClearanceState.NORMAL,
+            ClearanceState.NORMAL,
+        )
 
         self.clearance_sub = rospy.Subscriber(
             self.cfg.clearance_topic,
@@ -459,7 +471,6 @@ class RealNavigator:
         self.collision_pub.publish(Bool(data=False))
         self.session_consumed_pub.publish(Bool(data=False))
         self.fault_reason_pub.publish(String(data=""))
-        self._publish_guard_states(ClearanceState.NORMAL, ClearanceState.NORMAL)
         self.set_mode_client = rospy.ServiceProxy("mavros/set_mode", SetMode)
 
     def _odom_cb(self, msg):
@@ -559,6 +570,10 @@ class RealNavigator:
                 nearest_point=nearest_point,
                 escape_direction=escape_direction,
             )
+            guard_source = GuardStatusSource.from_header(
+                msg.header, source_valid=usable,
+            )
+            self._latest_guard_source = guard_source
             if usable:
                 if (
                     self._last_clearance_source_stamp is None
@@ -569,6 +584,7 @@ class RealNavigator:
                     source_stamp,
                     surface_clearance,
                     escape_direction,
+                    guard_source,
                 )
                 self._clearance_sample_usable = True
                 self.clearance = surface_clearance
@@ -590,7 +606,7 @@ class RealNavigator:
             )
             raw_state, effective_state = self._record_guard_result_locked(result)
 
-        self._publish_guard_states(raw_state, effective_state)
+        self._publish_guard_states(raw_state, effective_state, guard_source)
 
     def _clearance_values_usable_locked(
         self,
@@ -650,20 +666,34 @@ class RealNavigator:
     ):
         with self._clearance_guard_lock:
             sample = self._latest_clearance_sample
+            guard_source = self._latest_guard_source.with_validity(False)
             if sample is None:
                 result = self._clearance_result
             else:
-                source_stamp, surface_clearance, escape_direction = sample
+                (
+                    source_stamp,
+                    surface_clearance,
+                    escape_direction,
+                    cached_guard_source,
+                ) = sample
+                source_valid = bool(
+                    self._clearance_sample_usable
+                    and math.isfinite(source_stamp)
+                    and source_stamp <= now
+                    and now - source_stamp <= self.cfg.lidar_timeout
+                )
+                guard_source = cached_guard_source.with_validity(source_valid)
+                self._latest_guard_source = guard_source
                 result = self.clearance_guard.update(
                     now=now,
                     source_stamp=source_stamp,
-                    valid=self._clearance_sample_usable,
+                    valid=source_valid,
                     surface_clearance=surface_clearance,
                     escape_direction=escape_direction,
                     human_velocity_world=human_velocity_world,
                     px4_local_position=px4_local_position,
                 )
-                if source_stamp > now or now - source_stamp > self.cfg.lidar_timeout:
+                if not source_valid:
                     self._latest_clearance_sample = None
                     self._clearance_sample_usable = False
                     self.clearance = float("nan")
@@ -674,7 +704,7 @@ class RealNavigator:
             effective_state = raw_state if (
                 self.cfg.clearance_guard_mode == "enforce"
             ) else ClearanceState.NORMAL
-        self._publish_guard_states(raw_state, effective_state)
+        self._publish_guard_states(raw_state, effective_state, guard_source)
         return result
 
     def _clearance_is_fresh(self, now):
@@ -703,13 +733,29 @@ class RealNavigator:
             px4_local_position=current_position,
         )
 
-    def _publish_guard_states(self, raw_state, effective_state):
+    def _publish_guard_states(
+        self,
+        raw_state,
+        effective_state,
+        guard_source=None,
+    ):
+        if guard_source is None:
+            guard_source = GuardStatusSource()
         self.clearance_guard_shadow_state_pub.publish(
             String(data=str(raw_state))
         )
         self.clearance_guard_state_pub.publish(
             String(data=str(effective_state))
         )
+        status = ClearanceGuardStatus()
+        status.header.seq = guard_source.seq
+        status.header.stamp.secs = guard_source.stamp_secs
+        status.header.stamp.nsecs = guard_source.stamp_nsecs
+        status.header.frame_id = guard_source.frame_id
+        status.source_valid = guard_source.source_valid
+        status.raw_state = str(raw_state)
+        status.effective_state = str(effective_state)
+        self.clearance_guard_status_pub.publish(status)
 
     def _diagnostic_timer_cb(self, _event):
         self._publish_mode_state()

@@ -21,6 +21,6 @@ vehicle_half_extents: [0.15, 0.15, 0.05]
 policy_extra_margin: [0.05, 0.05, 0.0]
 clearance_cap: 1.0
 
-# Default assumption: pre-scanned PCD map is aligned with MAVROS local ENU.
+# Default assumption: pre-scanned PCD map is aligned with Nokov odometry-local.
 map_origin_xyz: [0.0, 0.0, 0.0]
 map_yaw_deg: 0.0

@@ -16,6 +16,7 @@ catkin_python_setup()
 
 add_message_files(
   FILES
+  ClearanceGuardStatus.msg
   ObstacleClearance.msg
 )
 
@@ -36,6 +37,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_one_shot_flight.py)
   catkin_add_nosetests(test/test_pcd_raycast_safety.py)
   catkin_add_nosetests(test/test_recorder_contract.py)
+  catkin_add_nosetests(test/test_recorder_snapshots.py)
   add_rostest(test/fake_runtime_stream_guard.test)
   add_rostest(test/mavlink_stream_guard.test)
   add_rostest(test/one_shot_flight.test)

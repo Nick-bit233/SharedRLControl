@@ -12,7 +12,13 @@ from geometry_msgs.msg import TwistStamped
 from mavros_msgs.msg import ExtendedState, PositionTarget, RCIn, State
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Float32, Float32MultiArray, String
-from srlc_real.msg import ObstacleClearance
+from srlc_real.msg import ClearanceGuardStatus, ObstacleClearance
+
+from srlc_real_deployment.recorder_snapshots import (
+    ClearanceObservation,
+    GuardObservation,
+    RecorderObservationStore,
+)
 
 
 SHADOW_INTERVENTION_STATES = frozenset(
@@ -73,12 +79,9 @@ class SrlcRealRecorder:
         self.clearance_topic = rospy.get_param(
             "~clearance_topic", "/srlc/lidar/obstacle_clearance"
         )
-        self.clearance_guard_state_topic = rospy.get_param(
-            "~clearance_guard_state_topic", "/tunnel_nav/clearance_guard_state"
-        )
-        self.clearance_guard_shadow_state_topic = rospy.get_param(
-            "~clearance_guard_shadow_state_topic",
-            "/tunnel_nav/clearance_guard_shadow_state",
+        self.clearance_guard_status_topic = rospy.get_param(
+            "~clearance_guard_status_topic",
+            "/tunnel_nav/clearance_guard_status",
         )
         self.lidar_range_image_topic = rospy.get_param(
             "~lidar_range_image_topic", "/srlc/lidar/range_image"
@@ -101,17 +104,7 @@ class SrlcRealRecorder:
         self.fault_reason = ""
         self.mavros_state = None
         self.extended_state = None
-        self.raw_center_distance = float("inf")
-        self.policy_min_distance = float("inf")
-        self.clearance_valid = False
-        self.surface_clearance = float("nan")
-        self.clearance_center_distance = float("nan")
-        self.clearance_source_stamp = float("nan")
-        self.nearest_obstacle_point = [float("nan")] * 3
-        self.escape_direction = [float("nan")] * 3
-        self.effective_guard_state = "UNKNOWN"
-        self.shadow_guard_state = "UNKNOWN"
-        self.front_distance = float("inf")
+        self._observation_store = RecorderObservationStore()
         self.status = ""
         self.start_time = rospy.Time.now()
         self.initial_position = None
@@ -174,15 +167,9 @@ class SrlcRealRecorder:
             queue_size=50,
         )
         rospy.Subscriber(
-            self.clearance_guard_state_topic,
-            String,
-            self._clearance_guard_state_cb,
-            queue_size=10,
-        )
-        rospy.Subscriber(
-            self.clearance_guard_shadow_state_topic,
-            String,
-            self._clearance_guard_shadow_state_cb,
+            self.clearance_guard_status_topic,
+            ClearanceGuardStatus,
+            self._clearance_guard_status_cb,
             queue_size=10,
         )
         rospy.Subscriber(
@@ -252,29 +239,49 @@ class SrlcRealRecorder:
         self.last_setpoint_time = rospy.Time.now()
 
     def _min_distance_cb(self, msg):
-        self.raw_center_distance = float(msg.data)
+        self._observation_store.replace_raw_center_distance(float(msg.data))
 
     def _clearance_cb(self, msg):
-        self.clearance_valid = bool(msg.valid)
-        self.surface_clearance = float(msg.surface_clearance)
-        self.clearance_center_distance = float(msg.center_distance)
-        self.clearance_source_stamp = float(msg.header.stamp.to_sec())
-        self.nearest_obstacle_point = [
-            float(msg.nearest_obstacle_point.x),
-            float(msg.nearest_obstacle_point.y),
-            float(msg.nearest_obstacle_point.z),
-        ]
-        self.escape_direction = [
-            float(msg.escape_direction.x),
-            float(msg.escape_direction.y),
-            float(msg.escape_direction.z),
-        ]
+        clearance = ClearanceObservation(
+            valid=bool(msg.valid),
+            source_stamp=float(msg.header.stamp.to_sec()),
+            source_frame_id=str(msg.header.frame_id),
+            surface_clearance=float(msg.surface_clearance),
+            center_distance=float(msg.center_distance),
+            nearest_obstacle_point=(
+                float(msg.nearest_obstacle_point.x),
+                float(msg.nearest_obstacle_point.y),
+                float(msg.nearest_obstacle_point.z),
+            ),
+            escape_direction=(
+                float(msg.escape_direction.x),
+                float(msg.escape_direction.y),
+                float(msg.escape_direction.z),
+            ),
+        )
+        self._observation_store.replace_clearance(clearance)
 
-    def _clearance_guard_state_cb(self, msg):
-        self.effective_guard_state = str(msg.data)
-
-    def _clearance_guard_shadow_state_cb(self, msg):
-        self.shadow_guard_state = str(msg.data)
+    def _clearance_guard_status_cb(self, msg):
+        has_source = bool(
+            msg.source_valid
+            or msg.header.seq
+            or msg.header.stamp.secs
+            or msg.header.stamp.nsecs
+            or msg.header.frame_id
+        )
+        source_stamp = (
+            float(msg.header.stamp.to_sec())
+            if has_source
+            else float("nan")
+        )
+        guard = GuardObservation(
+            source_valid=bool(msg.source_valid),
+            source_stamp=source_stamp,
+            source_frame_id=str(msg.header.frame_id),
+            raw_state=str(msg.raw_state),
+            effective_state=str(msg.effective_state),
+        )
+        self._observation_store.replace_guard(guard)
 
     def _status_cb(self, msg):
         self.status = msg.data
@@ -285,10 +292,14 @@ class SrlcRealRecorder:
             return
         ranges = np.asarray(msg.data, dtype=np.float32).reshape(self.lidar_hbeams, self.lidar_vbeams)
         policy_norm = float(np.max(ranges))
-        self.policy_min_distance = self.lidar_range * (1.0 - policy_norm)
+        policy_min_distance = self.lidar_range * (1.0 - policy_norm)
         front_bins = [0, 1, self.lidar_hbeams - 2, self.lidar_hbeams - 1]
         front_norm = float(np.max(ranges[front_bins, :]))
-        self.front_distance = self.lidar_range * (1.0 - front_norm)
+        front_distance = self.lidar_range * (1.0 - front_norm)
+        self._observation_store.replace_policy_ranges(
+            policy_min_distance,
+            front_distance,
+        )
 
     @staticmethod
     def _yaw_from_odom(msg):
@@ -306,9 +317,17 @@ class SrlcRealRecorder:
         if self.odom is None:
             return
         now = rospy.Time.now()
+        observations = self._observation_store.read()
+        clearance = observations.clearance
+        guard = observations.guard
         clearance_source_age = float("inf")
-        if math.isfinite(self.clearance_source_stamp):
-            clearance_source_age = float(now.to_sec() - self.clearance_source_stamp)
+        if math.isfinite(clearance.source_stamp):
+            clearance_source_age = float(
+                now.to_sec() - clearance.source_stamp
+            )
+        guard_source_age = float("inf")
+        if math.isfinite(guard.source_stamp):
+            guard_source_age = float(now.to_sec() - guard.source_stamp)
         p = self.odom.pose.pose.position
         v = self.odom.twist.twist.linear
         position = np.array([p.x, p.y, p.z], dtype=np.float32)
@@ -375,27 +394,42 @@ class SrlcRealRecorder:
                 "setpoint_z": setpoint_z,
                 "setpoint_type_mask": setpoint_type_mask,
                 "setpoint_age": setpoint_age,
-                "raw_center_distance": float(self.raw_center_distance),
-                "policy_min_distance": float(self.policy_min_distance),
-                "model_min_distance": float(self.policy_min_distance),
-                "clearance_valid": bool(self.clearance_valid),
-                "surface_clearance": float(self.surface_clearance),
-                "clearance_center_distance": float(
-                    self.clearance_center_distance
+                "raw_center_distance": float(
+                    observations.raw_center_distance
                 ),
-                "clearance_source_stamp": float(self.clearance_source_stamp),
+                "policy_min_distance": float(
+                    observations.policy_min_distance
+                ),
+                "model_min_distance": float(
+                    observations.policy_min_distance
+                ),
+                "clearance_valid": bool(clearance.valid),
+                "surface_clearance": float(clearance.surface_clearance),
+                "clearance_center_distance": float(clearance.center_distance),
+                "clearance_source_stamp": float(clearance.source_stamp),
                 "clearance_source_age": clearance_source_age,
-                "nearest_obstacle_point": list(self.nearest_obstacle_point),
-                "escape_direction": list(self.escape_direction),
-                "effective_guard_state": self.effective_guard_state,
-                "shadow_guard_state": self.shadow_guard_state,
-                # The shadow topic carries the guard's hypothetical raw
-                # decision even while effective enforcement stays NORMAL.
-                "shadow_decision": self.shadow_guard_state,
-                "shadow_would_intervene": (
-                    self.shadow_guard_state in SHADOW_INTERVENTION_STATES
+                "clearance_source_frame_id": clearance.source_frame_id,
+                "nearest_obstacle_point": list(
+                    clearance.nearest_obstacle_point
                 ),
-                "front_distance": float(self.front_distance),
+                "escape_direction": list(clearance.escape_direction),
+                "guard_source_valid": bool(guard.source_valid),
+                "guard_source_stamp": float(guard.source_stamp),
+                "guard_source_age": guard_source_age,
+                "guard_source_frame_id": guard.source_frame_id,
+                "raw_guard_state": guard.raw_state,
+                "effective_guard_state": guard.effective_state,
+                "shadow_guard_state": guard.raw_state,
+                # Compatibility fields mirror the combined status's raw
+                # decision even while effective enforcement stays NORMAL.
+                "shadow_decision": guard.raw_state,
+                "shadow_would_intervene": (
+                    guard.raw_state in SHADOW_INTERVENTION_STATES
+                ),
+                "would_intervene": (
+                    guard.raw_state in SHADOW_INTERVENTION_STATES
+                ),
+                "front_distance": float(observations.front_distance),
                 "status": self.status,
             }
         )

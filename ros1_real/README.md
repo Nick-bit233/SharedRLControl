@@ -220,7 +220,9 @@ Other important topics:
 - `/mavros/local_position/velocity_local`
 - `/srlc/lidar/range_image`
 - `/srlc/lidar/min_distance`
-- `/srlc/lidar/min_safety_distance`
+- `/srlc/lidar/min_safety_distance` — policy-min compatibility alias; navigation does not subscribe to it
+- `/srlc/lidar/obstacle_clearance` — raw PCD OBB failsafe clearance with the source odometry header
+- `/tunnel_nav/clearance_guard_status` — raw/effective guard decision and its exact clearance source header
 - `/tunnel_nav/status`
 - `/tunnel_nav/lifecycle_state`
 - `/tunnel_nav/effective_mode`

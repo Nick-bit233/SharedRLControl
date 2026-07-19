@@ -35,12 +35,17 @@ class RecorderContractTest(unittest.TestCase):
             '"clearance_center_distance"',
             '"clearance_source_stamp"',
             '"clearance_source_age"',
+            '"clearance_source_frame_id"',
             '"nearest_obstacle_point"',
             '"escape_direction"',
             '"effective_guard_state"',
             '"shadow_guard_state"',
             '"shadow_decision"',
             '"shadow_would_intervene"',
+            '"guard_source_valid"',
+            '"guard_source_stamp"',
+            '"guard_source_age"',
+            '"guard_source_frame_id"',
         ):
             self.assertIn(field, source)
 
@@ -54,16 +59,15 @@ class RecorderContractTest(unittest.TestCase):
             "/tunnel_nav/fault_reason",
             "/srlc/lidar/min_distance",
             "/srlc/lidar/obstacle_clearance",
-            "/tunnel_nav/clearance_guard_state",
-            "/tunnel_nav/clearance_guard_shadow_state",
+            "/tunnel_nav/clearance_guard_status",
             "/mavros/local_position/odom",
             "/mavros/local_position/velocity_local",
         ):
             self.assertIn(topic, source)
 
-        self.assertIn("from srlc_real.msg import ObstacleClearance", source)
+        self.assertIn("ClearanceGuardStatus", source)
+        self.assertIn("ObstacleClearance", source)
         self.assertIn("msg.header.stamp.to_sec()", source)
-        self.assertIn("now.to_sec() - self.clearance_source_stamp", source)
         self.assertIn("self.lidar_range * (1.0 - policy_norm)", source)
         self.assertIn("PROXIMITY_HOLD", source)
         self.assertIn("PROXIMITY_ESCAPE", source)
@@ -73,6 +77,31 @@ class RecorderContractTest(unittest.TestCase):
         self.assertNotIn('"safety_distance"', source)
         self.assertNotIn('"min_safety_distance"', source)
         self.assertNotIn("safety_d=", source)
+        self.assertNotIn("_clearance_guard_state_cb", source)
+        self.assertNotIn("_clearance_guard_shadow_state_cb", source)
+        self.assertEqual(source.count('"model_min_distance"'), 1)
+
+    def test_callbacks_replace_immutable_observations_and_timer_reads_once(self):
+        source = RECORDER.read_text(encoding="utf-8")
+
+        for required in (
+            "RecorderObservationStore(",
+            "ClearanceObservation(",
+            "GuardObservation(",
+            "self._observation_store.replace_clearance(clearance)",
+            "self._observation_store.replace_guard(guard)",
+            "self._observation_store.replace_raw_center_distance(",
+            "self._observation_store.replace_policy_ranges(",
+            "observations = self._observation_store.read()",
+            "clearance = observations.clearance",
+            "guard = observations.guard",
+        ):
+            self.assertIn(required, source)
+
+        self.assertEqual(
+            source.count("observations = self._observation_store.read()"),
+            1,
+        )
 
     def test_summary_uses_unambiguous_dual_channel_names(self):
         source = RECORDER.read_text(encoding="utf-8")

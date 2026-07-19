@@ -94,6 +94,18 @@ class LaunchContractTest(unittest.TestCase):
         self.assertEqual(params["mode_after"], "$(arg fake_offboard_after)")
         self.assertGreater(float(args["fake_offboard_after"]), 0.0)
 
+    def test_one_shot_fixture_starts_at_a_known_clear_map_position(self):
+        root = ET.parse(str(PACKAGE_DIR / "test" / "one_shot_flight.test")).getroot()
+        include = next(root.iter("include"))
+        args = {
+            arg.attrib["name"]: arg.attrib.get("value", "")
+            for arg in include.findall("arg")
+        }
+
+        self.assertEqual(args["fake_initial_x"], "-0.011")
+        self.assertEqual(args["fake_initial_y"], "-0.607")
+        self.assertEqual(args["fake_initial_z"], "0.30")
+
     def test_real_stack_defaults_to_manual_arm_one_shot_assist(self):
         root = parse_launch("real_px4.launch")
         args = launch_args(root)

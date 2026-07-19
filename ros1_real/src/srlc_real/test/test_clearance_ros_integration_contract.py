@@ -35,6 +35,13 @@ MESSAGE_FIELDS = [
     "geometry_msgs/Vector3 escape_direction",
 ]
 
+GUARD_STATUS_FIELDS = [
+    "std_msgs/Header header",
+    "bool source_valid",
+    "string raw_state",
+    "string effective_state",
+]
+
 
 def _launch_args(name):
     root = ET.parse(str(LAUNCH_DIR / name)).getroot()
@@ -93,6 +100,21 @@ def test_obstacle_clearance_message_and_catkin_dependencies_are_exact():
     assert "message_runtime" in cmake
     assert "<build_depend>message_generation</build_depend>" in package_xml
     assert "<exec_depend>message_runtime</exec_depend>" in package_xml
+
+
+def test_clearance_guard_status_message_and_catkin_registration_are_exact():
+    message_path = PACKAGE_DIR / "msg" / "ClearanceGuardStatus.msg"
+    assert message_path.exists()
+    fields = [
+        line.strip()
+        for line in message_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert fields == GUARD_STATUS_FIELDS
+
+    cmake = (PACKAGE_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert "ClearanceGuardStatus.msg" in cmake
+    assert "catkin_add_nosetests(test/test_recorder_snapshots.py)" in cmake
 
 
 def test_catkin_registers_clearance_guard_and_geometry_suites():
@@ -185,6 +207,7 @@ def test_navigation_uses_clearance_guard_without_safety_alias_subscription():
 
     for required in (
         "from srlc_real.msg import ObstacleClearance",
+        "ClearanceGuardStatus",
         "from srlc_real_deployment.clearance_runtime import (",
         "lifecycle_lidar_fresh",
         "soft_guard_position",
@@ -195,6 +218,7 @@ def test_navigation_uses_clearance_guard_without_safety_alias_subscription():
         "self._clearance_guard_lock",
         '"/tunnel_nav/clearance_guard_state"',
         '"/tunnel_nav/clearance_guard_shadow_state"',
+        '"/tunnel_nav/clearance_guard_status"',
         'external_fault = "COLLISION"',
         "if not np.isfinite(lidar_np).all()",
         "self.policy_dist = float(",
@@ -210,6 +234,54 @@ def test_navigation_uses_clearance_guard_without_safety_alias_subscription():
     assert "safety_d=" not in source
     assert "enable_collision_detection" not in source
     assert source.count("self._invalidate_lidar_range()") == 2
+
+
+def test_navigation_publishes_guard_decision_with_exact_evaluated_source():
+    path = SCRIPT_DIR / "real_navigation_node.py"
+    source = path.read_text(encoding="utf-8")
+    setup_ros = _class_method_source(path, "RealNavigator", "_setup_ros")
+    clearance_cb = _class_method_source(path, "RealNavigator", "_clearance_cb")
+    refresh = _class_method_source(path, "RealNavigator", "_refresh_clearance_guard")
+    publish = _class_method_source(path, "RealNavigator", "_publish_guard_states")
+
+    assert "ClearanceGuardStatus" in source
+    assert '"/tunnel_nav/clearance_guard_status"' in setup_ros
+    assert "GuardStatusSource.from_header(" in clearance_cb
+    assert "msg.header, source_valid=usable" in clearance_cb
+    assert "source_valid=usable" in clearance_cb
+    assert "guard_source" in refresh
+    assert "source_header" not in refresh
+    assert "status.header.seq = guard_source.seq" in publish
+    assert "status.header.stamp.secs = guard_source.stamp_secs" in publish
+    assert "status.header.stamp.nsecs = guard_source.stamp_nsecs" in publish
+    assert "status.header.frame_id = guard_source.frame_id" in publish
+    assert "status.source_valid = guard_source.source_valid" in publish
+    assert "status.raw_state = str(raw_state)" in publish
+    assert "status.effective_state = str(effective_state)" in publish
+    assert "rospy.Time.now()" not in publish
+
+
+def test_startup_guard_status_cannot_overwrite_a_clearance_callback():
+    path = SCRIPT_DIR / "real_navigation_node.py"
+    setup_ros = _class_method_source(path, "RealNavigator", "_setup_ros")
+
+    publisher_index = setup_ros.index("self.clearance_guard_status_pub =")
+    startup_index = setup_ros.index("self._publish_guard_states(")
+    subscriber_index = setup_ros.index("self.clearance_sub = rospy.Subscriber(")
+
+    assert publisher_index < startup_index < subscriber_index
+
+
+def test_alignment_comment_and_readme_document_dual_channel_topics():
+    map_config = (CFG_DIR / "map_lidar_real_px4.yaml").read_text(encoding="utf-8")
+    readme = (REPO_DIR / "README.md").read_text(encoding="utf-8")
+
+    assert "Nokov odometry-local" in map_config
+    assert "MAVROS local ENU" not in map_config
+    assert "/srlc/lidar/obstacle_clearance" in readme
+    assert "/tunnel_nav/clearance_guard_status" in readme
+    assert "policy-min compatibility alias" in readme
+    assert "raw PCD OBB failsafe" in readme
 
 
 def test_navigation_constrains_final_escape_before_policy_and_px4_publish():

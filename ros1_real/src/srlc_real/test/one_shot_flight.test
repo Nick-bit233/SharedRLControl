@@ -4,6 +4,9 @@
         <arg name="record" value="false"/>
         <arg name="start_stream_guard" value="false"/>
         <arg name="post_takeoff_mode" value="assist"/>
+        <arg name="fake_initial_x" value="-0.011"/>
+        <arg name="fake_initial_y" value="-0.607"/>
+        <arg name="fake_initial_z" value="0.30"/>
         <arg name="fake_offboard_after" value="12.0"/>
         <arg name="motion_after" value="13.0"/>
     </include>
