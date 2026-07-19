@@ -157,6 +157,112 @@ def clamp_px4_velocity(
     return (cmd[0], cmd[1], cmd[2])
 
 
+def _next_float32_toward_zero(value: float) -> float:
+    """Return the adjacent finite float32 with no greater magnitude."""
+    quantized = _float32(value, "velocity")
+    if quantized == 0.0:
+        return 0.0
+    bits = struct.unpack("!I", struct.pack("!f", quantized))[0]
+    toward_zero = struct.unpack("!f", struct.pack("!I", bits - 1))[0]
+    return 0.0 if toward_zero == 0.0 else toward_zero
+
+
+def _bound_quantized_velocity(
+    velocity: Vector3,
+    *,
+    max_xy_speed: float,
+    max_z_speed: float,
+) -> Vector3:
+    """Move a rounded command inward until its exact float32 values are bounded."""
+    command = list(velocity)
+    if abs(command[2]) > max_z_speed:
+        command[2] = _next_float32_toward_zero(command[2])
+
+    for _ in range(8):
+        if math.hypot(command[0], command[1]) <= max_xy_speed:
+            return (command[0], command[1], command[2])
+        index = 0 if abs(command[0]) >= abs(command[1]) else 1
+        nudged = _next_float32_toward_zero(command[index])
+        if nudged == command[index]:
+            break
+        command[index] = nudged
+    return (0.0, 0.0, 0.0)
+
+
+def _effective_escape_direction(
+    escape_direction: Sequence[float], *, lock_z: bool
+) -> Vector3:
+    direction = _normalized_vector(escape_direction, "escape_direction")
+    if not lock_z:
+        return direction
+    horizontal_norm = math.hypot(direction[0], direction[1])
+    if horizontal_norm <= 1e-12:
+        raise ValueError(
+            "escape_direction must have a usable horizontal component when Z is locked"
+        )
+    return (
+        direction[0] / horizontal_norm,
+        direction[1] / horizontal_norm,
+        0.0,
+    )
+
+
+def _repair_quantized_half_space(
+    velocity: Vector3, escape_direction: Vector3
+) -> Vector3:
+    """Nudge only opposing float32 components toward zero until dot >= 0."""
+    command = list(velocity)
+
+    def escape_dot() -> float:
+        return sum(
+            component * normal
+            for component, normal in zip(command, escape_direction)
+        )
+
+    dot = escape_dot()
+    if dot >= 0.0:
+        return velocity
+
+    opposing = sorted(
+        (
+            index
+            for index, (component, normal) in enumerate(
+                zip(command, escape_direction)
+            )
+            if component * normal < 0.0
+        ),
+        key=lambda index: abs(escape_direction[index]),
+        reverse=True,
+    )
+    for index in opposing:
+        normal_magnitude = abs(escape_direction[index])
+        required_change = -dot / normal_magnitude
+        target_magnitude = max(0.0, abs(command[index]) - required_change)
+        corrected = _float32(
+            math.copysign(target_magnitude, command[index]),
+            "velocity",
+        )
+        if abs(corrected) > abs(command[index]):
+            corrected = command[index]
+        command[index] = corrected
+        dot = escape_dot()
+
+        for _ in range(2):
+            if dot >= 0.0 or command[index] == 0.0:
+                break
+            command[index] = _next_float32_toward_zero(command[index])
+            dot = escape_dot()
+        if dot >= 0.0:
+            return (command[0], command[1], command[2])
+
+        command[index] = 0.0
+        dot = escape_dot()
+        if dot >= 0.0:
+            return (command[0], command[1], command[2])
+
+    return (0.0, 0.0, 0.0)
+
+
 def finalize_px4_escape_velocity(
     model_velocity: Sequence[float],
     escape_direction: Sequence[float],
@@ -166,25 +272,55 @@ def finalize_px4_escape_velocity(
     max_z_speed: float,
 ) -> Vector3:
     """Return the final escape command after PX4-bound quantization and limits."""
-    constrained = constrain_escape_velocity(
-        model_velocity,
+    xy_limit = _positive_finite_limit(max_xy_speed, "max_xy_speed")
+    z_limit = _positive_finite_limit(max_z_speed, "max_z_speed")
+    effective_direction = _effective_escape_direction(
         escape_direction,
         lock_z=lock_z,
-        max_xy_speed=max_xy_speed,
-        max_z_speed=max_z_speed,
+    )
+    constrained = constrain_escape_velocity(
+        model_velocity,
+        effective_direction,
+        lock_z=lock_z,
+        max_xy_speed=xy_limit,
+        max_z_speed=z_limit,
     )
     clamped = clamp_px4_velocity(
         constrained,
-        max_xy_speed=max_xy_speed,
-        max_z_speed=max_z_speed,
+        max_xy_speed=xy_limit,
+        max_z_speed=z_limit,
     )
-    return constrain_escape_velocity(
+    rechecked = constrain_escape_velocity(
         clamped,
-        escape_direction,
+        effective_direction,
         lock_z=lock_z,
-        max_xy_speed=max_xy_speed,
-        max_z_speed=max_z_speed,
+        max_xy_speed=xy_limit,
+        max_z_speed=z_limit,
     )
+    quantized = clamp_px4_velocity(
+        rechecked,
+        max_xy_speed=xy_limit,
+        max_z_speed=z_limit,
+    )
+    bounded = _bound_quantized_velocity(
+        quantized,
+        max_xy_speed=xy_limit,
+        max_z_speed=z_limit,
+    )
+    safe = _repair_quantized_half_space(bounded, effective_direction)
+
+    if clamp_px4_velocity(
+        safe,
+        max_xy_speed=xy_limit,
+        max_z_speed=z_limit,
+    ) != safe:
+        return (0.0, 0.0, 0.0)
+    if sum(
+        component * normal
+        for component, normal in zip(safe, effective_direction)
+    ) < 0.0:
+        return (0.0, 0.0, 0.0)
+    return safe
 
 
 class ClearanceGuard:

@@ -624,6 +624,57 @@ def test_post_clamp_recheck_restores_actual_px4_escape_half_space():
     assert abs(final_velocity[2]) <= max_z_speed
 
 
+def test_final_escape_payload_is_float32_fixed_point_inside_half_space():
+    cases = (
+        (
+            False,
+            (-0.6370175412881358, 0.9989337332224479, -0.641218820288852),
+            (3.846768111855119, -3.3752607770491423, 3.8992950511829445),
+        ),
+        (
+            True,
+            (0.16191838420990368, 0.1611201721950115, -0.1851560248140547),
+            (-2.4231895445436242, 2.1561660425576914, -3.4810610469877314),
+        ),
+    )
+
+    for lock_z, direction, model_velocity in cases:
+        final_velocity = finalize_px4_escape_velocity(
+            model_velocity,
+            direction,
+            lock_z=lock_z,
+            max_xy_speed=0.5,
+            max_z_speed=0.3,
+        )
+        actual_payload = clamp_px4_velocity(
+            final_velocity,
+            max_xy_speed=0.5,
+            max_z_speed=0.3,
+        )
+        if lock_z:
+            horizontal_norm = math.hypot(direction[0], direction[1])
+            effective_direction = (
+                direction[0] / horizontal_norm,
+                direction[1] / horizontal_norm,
+                0.0,
+            )
+        else:
+            direction_norm = math.sqrt(sum(value * value for value in direction))
+            effective_direction = tuple(
+                value / direction_norm for value in direction
+            )
+
+        assert actual_payload == final_velocity
+        assert sum(
+            value * normal
+            for value, normal in zip(actual_payload, effective_direction)
+        ) >= 0.0
+        assert math.hypot(actual_payload[0], actual_payload[1]) <= 0.5
+        assert abs(actual_payload[2]) <= 0.3
+        if lock_z:
+            assert actual_payload[2] == 0.0
+
+
 def test_locked_z_escape_constraint_rejects_vertical_escape_direction():
     try:
         finalize_px4_escape_velocity(
