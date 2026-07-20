@@ -44,10 +44,12 @@
     <arg name="geofence_y_max" default="10.0"/>
     <arg name="min_altitude" default="0.2"/>
     <arg name="max_altitude" default="5.0"/>
-    <arg name="enable_safety_stop" default="false"/>
+    <arg name="enable_proximity_hold" default="false"/>
     <arg name="enable_collision_detection" default="false"/>
-    <arg name="safety_min_dist" default="0.25"/>
-    <arg name="collision_dist" default="0.15"/>
+    <arg name="proximity_enter_dist" default="0.10"/>
+    <arg name="proximity_release_dist" default="0.15"/>
+    <arg name="proximity_release_duration" default="0.20"/>
+    <arg name="collision_dist" default="0.05"/>
 
     <arg name="odom_topic" default="/nokov/local_position/odom"/>
     <arg name="px4_local_odom_topic" default="/mavros/local_position/odom"/>
@@ -138,9 +140,11 @@
         <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
-        <param name="enable_safety_stop" value="$(arg enable_safety_stop)"/>
+        <param name="enable_proximity_hold" value="$(arg enable_proximity_hold)"/>
         <param name="enable_collision_detection" value="$(arg enable_collision_detection)"/>
-        <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
+        <param name="proximity_enter_dist" value="$(arg proximity_enter_dist)"/>
+        <param name="proximity_release_dist" value="$(arg proximity_release_dist)"/>
+        <param name="proximity_release_duration" value="$(arg proximity_release_duration)"/>
         <param name="collision_dist" value="$(arg collision_dist)"/>
         <param name="min_altitude" value="$(arg min_altitude)"/>
         <param name="max_altitude" value="$(arg max_altitude)"/>

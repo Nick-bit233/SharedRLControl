@@ -31,8 +31,12 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
             "takeoff_max_climb_speed": 0.4,
             "takeoff_max_vertical_accel": 0.5,
             "takeoff_max_tracking_error": 0.25,
-            "collision_dist": 0.15,
-            "safety_min_dist": 0.25,
+            "enable_proximity_hold": True,
+            "proximity_enter_dist": 0.10,
+            "proximity_release_dist": 0.15,
+            "proximity_release_duration": 0.20,
+            "enable_collision_detection": True,
+            "collision_dist": 0.05,
             "safety_activation_height": 0.3,
             "input_recovery_grace": 1.0,
             "fault_response": "auto_land",
@@ -111,6 +115,29 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
             ):
                 return now, position, history
         self.fail("takeoff profile did not reach its final target")
+
+    def advance_to_active(self, core):
+        reached_at, _, _ = self.advance_profile_to_target(core)
+        target = core.takeoff_target
+        core.update(
+            self.snapshot(
+                reached_at + 0.05,
+                position=target,
+                velocity=(0.0, 0.0, 0.0),
+                landed=False,
+            )
+        )
+        active = core.update(
+            self.snapshot(
+                reached_at + 0.05 + core.config.takeoff_confirm_duration + 0.01,
+                position=target,
+                velocity=(0.0, 0.0, 0.0),
+                landed=False,
+            )
+        )
+        self.assertEqual(active.state, LifecycleState.ACTIVE)
+        self.assertEqual(active.action, FlightAction.ACTIVE_CONTROL)
+        return active
 
     def test_waits_for_manual_arm_before_first_offboard_takeoff(self):
         core = self.make_core()
@@ -357,6 +384,151 @@ class OneShotFlightLifecycleTest(unittest.TestCase):
         self.assertLess(resumed.target[2], final_target[2])
         self.assertLessEqual(resumed.target_velocity[2], 0.05 + 1e-9)
         self.assertEqual(core.takeoff_target, final_target)
+
+    def test_active_input_recovery_hold_keeps_takeoff_altitude_and_xy(self):
+        core = self.make_core()
+        active = self.advance_to_active(core)
+        target_z = active.target[2]
+        now = core._takeoff_confirm_started_at + core.config.takeoff_confirm_duration + 0.1
+
+        first = core.update(
+            self.snapshot(
+                now,
+                position=(-1.5, 0.2, target_z + 0.18),
+                lidar_fresh=False,
+                landed=False,
+            )
+        )
+        second = core.update(
+            self.snapshot(
+                now + 0.1,
+                position=(-1.3, 0.4, target_z + 0.25),
+                lidar_fresh=False,
+                landed=False,
+            )
+        )
+
+        self.assertEqual(first.reason, "INPUT_RECOVERY_HOLD")
+        self.assertEqual(first.target, (-1.5, 0.2, target_z))
+        self.assertEqual(second.target, first.target)
+
+    def test_proximity_hold_captures_one_target_and_releases_with_hysteresis(self):
+        core = self.make_core()
+        active = self.advance_to_active(core)
+        target_z = active.target[2]
+        now = core._takeoff_confirm_started_at + core.config.takeoff_confirm_duration + 0.1
+
+        entered = core.update(
+            self.snapshot(
+                now,
+                position=(-1.4, 0.2, target_z - 0.16),
+                safety_distance=0.10,
+                landed=False,
+            )
+        )
+        near_release = core.update(
+            self.snapshot(
+                now + 0.05,
+                position=(-1.2, 0.4, target_z + 0.12),
+                safety_distance=0.14,
+                landed=False,
+            )
+        )
+        release_started = core.update(
+            self.snapshot(
+                now + 0.10,
+                position=(-1.1, 0.5, target_z + 0.10),
+                safety_distance=0.15,
+                landed=False,
+            )
+        )
+        still_holding = core.update(
+            self.snapshot(
+                now + 0.29,
+                position=(-1.0, 0.6, target_z),
+                safety_distance=0.20,
+                landed=False,
+            )
+        )
+        released = core.update(
+            self.snapshot(
+                now + 0.31,
+                position=(-1.0, 0.6, target_z),
+                safety_distance=0.20,
+                landed=False,
+            )
+        )
+
+        self.assertEqual(entered.reason, "PROXIMITY_HOLD")
+        self.assertEqual(entered.target, (-1.4, 0.2, target_z))
+        self.assertEqual(near_release.target, entered.target)
+        self.assertEqual(release_started.target, entered.target)
+        self.assertEqual(still_holding.target, entered.target)
+        self.assertEqual(released.action, FlightAction.ACTIVE_CONTROL)
+        self.assertEqual(released.reason, "ACTIVE")
+
+    def test_proximity_hold_can_be_disabled_without_disabling_collision(self):
+        core = self.make_core(enable_proximity_hold=False)
+        active = self.advance_to_active(core)
+        now = core._takeoff_confirm_started_at + core.config.takeoff_confirm_duration + 0.1
+
+        allowed = core.update(
+            self.snapshot(
+                now,
+                position=active.target,
+                safety_distance=0.08,
+                landed=False,
+            )
+        )
+        collision = core.update(
+            self.snapshot(
+                now + 0.1,
+                position=active.target,
+                safety_distance=0.05,
+                landed=False,
+            )
+        )
+
+        self.assertEqual(allowed.action, FlightAction.ACTIVE_CONTROL)
+        self.assertEqual(collision.reason, "COLLISION")
+        self.assertEqual(collision.state, LifecycleState.FAULT_LAND)
+
+    def test_all_map_distance_guards_can_be_disabled(self):
+        core = self.make_core(
+            enable_proximity_hold=False,
+            enable_collision_detection=False,
+        )
+        active = self.advance_to_active(core)
+        now = core._takeoff_confirm_started_at + core.config.takeoff_confirm_duration + 0.1
+
+        allowed = core.update(
+            self.snapshot(
+                now,
+                position=active.target,
+                safety_distance=float("nan"),
+                landed=False,
+            )
+        )
+
+        self.assertEqual(allowed.action, FlightAction.ACTIVE_CONTROL)
+
+    def test_active_fault_hold_uses_takeoff_altitude_not_live_height(self):
+        core = self.make_core(fault_response="hold")
+        active = self.advance_to_active(core)
+        target_z = active.target[2]
+        now = core._takeoff_confirm_started_at + core.config.takeoff_confirm_duration + 0.1
+
+        fault = core.update(
+            self.snapshot(
+                now,
+                position=(-1.2, 0.3, target_z + 0.22),
+                external_fault="GEOFENCE_X",
+                landed=False,
+            )
+        )
+
+        self.assertEqual(fault.state, LifecycleState.FAULT_HOLD)
+        self.assertEqual(fault.target, (-1.2, 0.3, target_z))
 
     def test_persistent_input_timeout_requests_auto_land(self):
         core = self.make_core()

@@ -48,8 +48,12 @@ class OneShotFlightConfig:
     takeoff_max_climb_speed: float = 0.4
     takeoff_max_vertical_accel: float = 0.5
     takeoff_max_tracking_error: float = 0.25
-    collision_dist: float = 0.15
-    safety_min_dist: float = 0.25
+    enable_proximity_hold: bool = True
+    proximity_enter_dist: float = 0.10
+    proximity_release_dist: float = 0.15
+    proximity_release_duration: float = 0.20
+    enable_collision_detection: bool = True
+    collision_dist: float = 0.05
     safety_activation_height: float = 0.3
     input_recovery_grace: float = 1.0
     fault_response: str = "auto_land"
@@ -103,6 +107,25 @@ class OneShotFlightLifecycle:
             raise ValueError("takeoff_max_vertical_accel must be positive")
         if config.takeoff_max_tracking_error <= 0.0:
             raise ValueError("takeoff_max_tracking_error must be positive")
+        if config.enable_proximity_hold:
+            if config.proximity_enter_dist <= 0.0:
+                raise ValueError("proximity_enter_dist must be positive")
+            if config.proximity_release_dist <= config.proximity_enter_dist:
+                raise ValueError(
+                    "proximity_release_dist must be greater than proximity_enter_dist"
+                )
+        if config.proximity_release_duration < 0.0:
+            raise ValueError("proximity_release_duration must be non-negative")
+        if config.enable_collision_detection and config.collision_dist <= 0.0:
+            raise ValueError("collision_dist must be positive")
+        if (
+            config.enable_collision_detection
+            and config.enable_proximity_hold
+            and config.collision_dist >= config.proximity_enter_dist
+        ):
+            raise ValueError(
+                "collision_dist must be smaller than proximity_enter_dist"
+            )
         if config.fault_land_max_attempts < 1:
             raise ValueError("fault_land_max_attempts must be at least one")
 
@@ -120,7 +143,11 @@ class OneShotFlightLifecycle:
         self._takeoff_decelerating = False
         self._takeoff_confirm_started_at: Optional[float] = None
         self._input_fault_started_at: Optional[float] = None
+        self._input_hold_target: Optional[Vector3] = None
         self._safety_active = False
+        self._proximity_hold_active = False
+        self._proximity_release_started_at: Optional[float] = None
+        self._proximity_hold_target: Optional[Vector3] = None
         self._last_safe_position: Optional[Vector3] = None
         self._fault_hold_target: Optional[Vector3] = None
         self._fault_reason: Optional[str] = None
@@ -245,7 +272,9 @@ class OneShotFlightLifecycle:
         self._takeoff_decelerating = False
         self._takeoff_confirm_started_at = None
         self._input_fault_started_at = None
+        self._input_hold_target = None
         self._safety_active = False
+        self._clear_proximity_hold()
         self._last_safe_position = origin
         self.state = LifecycleState.TAKEOFF
         self.reason = "TAKEOFF"
@@ -286,14 +315,21 @@ class OneShotFlightLifecycle:
             ):
                 return self._enter_fault(stale_reason, snapshot, previous_state)
             self._takeoff_confirm_started_at = None
+            self._proximity_release_started_at = None
             self._pause_takeoff_profile(snapshot.now, position)
+            if self._input_hold_target is None:
+                self._input_hold_target = self._capture_hold_target(
+                    position,
+                    use_takeoff_command=True,
+                )
             return self._decision(
                 FlightAction.FAULT_HOLD,
                 "INPUT_RECOVERY_HOLD",
-                target=position,
+                target=self._input_hold_target,
                 previous_state=previous_state,
             )
         self._input_fault_started_at = None
+        self._input_hold_target = None
 
         if (
             not self._safety_active
@@ -302,22 +338,30 @@ class OneShotFlightLifecycle:
             >= self.config.safety_activation_height
         ):
             self._safety_active = True
-        if self._safety_active:
+        safety_enabled = (
+            self.config.enable_collision_detection
+            or self.config.enable_proximity_hold
+        )
+        if self._safety_active and safety_enabled:
             if math.isnan(float(snapshot.safety_distance)):
                 return self._enter_fault(
                     "INVALID_SAFETY_DISTANCE", snapshot, previous_state
                 )
-            if float(snapshot.safety_distance) < self.config.collision_dist:
+            if (
+                self.config.enable_collision_detection
+                and float(snapshot.safety_distance) <= self.config.collision_dist
+            ):
                 return self._enter_fault("COLLISION", snapshot, previous_state)
-            if float(snapshot.safety_distance) < self.config.safety_min_dist:
-                self._takeoff_confirm_started_at = None
-                self._pause_takeoff_profile(snapshot.now, position)
-                return self._decision(
-                    FlightAction.FAULT_HOLD,
-                    "PROXIMITY_HOLD",
-                    target=position,
-                    previous_state=previous_state,
-                )
+
+            proximity_decision = self._update_proximity_hold(
+                snapshot,
+                position,
+                previous_state,
+            )
+            if proximity_decision is not None:
+                return proximity_decision
+        elif self._proximity_hold_active:
+            self._clear_proximity_hold()
 
         if self.state == LifecycleState.TAKEOFF:
             return self._update_takeoff(snapshot, position, velocity, previous_state)
@@ -330,6 +374,59 @@ class OneShotFlightLifecycle:
             target=self.takeoff_target,
             previous_state=previous_state,
         )
+
+    def _update_proximity_hold(
+        self,
+        snapshot: FlightSnapshot,
+        position: Vector3,
+        previous_state: str,
+    ) -> Optional[FlightDecision]:
+        """Apply entry/release hysteresis and keep one hold target per episode."""
+        if not self.config.enable_proximity_hold:
+            self._clear_proximity_hold()
+            return None
+
+        now = float(snapshot.now)
+        distance = float(snapshot.safety_distance)
+        if not self._proximity_hold_active:
+            if distance > self.config.proximity_enter_dist:
+                return None
+
+            self._takeoff_confirm_started_at = None
+            self._pause_takeoff_profile(now, position)
+            self._proximity_hold_active = True
+            self._proximity_release_started_at = None
+            self._proximity_hold_target = self._capture_hold_target(
+                position,
+                use_takeoff_command=True,
+            )
+        elif distance >= self.config.proximity_release_dist:
+            if self._proximity_release_started_at is None:
+                self._proximity_release_started_at = now
+            if (
+                now - self._proximity_release_started_at
+                >= self.config.proximity_release_duration
+            ):
+                self._clear_proximity_hold()
+                return None
+        else:
+            self._proximity_release_started_at = None
+
+        if self._proximity_hold_active:
+            if self._proximity_hold_target is None:
+                self._takeoff_confirm_started_at = None
+                self._pause_takeoff_profile(now, position)
+                self._proximity_hold_target = self._capture_hold_target(
+                    position,
+                    use_takeoff_command=True,
+                )
+            return self._decision(
+                FlightAction.FAULT_HOLD,
+                "PROXIMITY_HOLD",
+                target=self._proximity_hold_target,
+                previous_state=previous_state,
+            )
+        return None
 
     def _update_takeoff(
         self,
@@ -483,15 +580,47 @@ class OneShotFlightLifecycle:
         self._takeoff_profile_updated_at = float(now)
         self._takeoff_decelerating = False
 
+    def _capture_hold_target(
+        self,
+        position: Vector3,
+        *,
+        use_takeoff_command: bool = False,
+    ) -> Vector3:
+        """Capture XY once and select the correct immutable altitude target.
+
+        During TAKEOFF, a temporary hold pauses at the current smooth-profile
+        command.  Once ACTIVE, every hold path uses the one takeoff target z;
+        current odometry can never redefine the commanded flight altitude.
+        """
+        target_z = float(position[2])
+        if self.state == LifecycleState.TAKEOFF:
+            if use_takeoff_command and self.takeoff_command is not None:
+                target_z = float(self.takeoff_command[2])
+        elif self.takeoff_target is not None:
+            target_z = float(self.takeoff_target[2])
+        return (float(position[0]), float(position[1]), target_z)
+
+    def _clear_proximity_hold(self) -> None:
+        self._proximity_hold_active = False
+        self._proximity_release_started_at = None
+        self._proximity_hold_target = None
+
     def _enter_fault(
         self, reason: str, snapshot: FlightSnapshot, previous_state: str
     ) -> FlightDecision:
         self._fault_reason = str(reason)
         if self._fault_hold_target is None:
-            if snapshot.position is not None and snapshot.odom_fresh:
-                self._fault_hold_target = self._vec(snapshot.position)
-            else:
-                self._fault_hold_target = self._last_safe_position
+            candidate = None
+            if self._proximity_hold_target is not None:
+                candidate = self._proximity_hold_target
+            elif self._input_hold_target is not None:
+                candidate = self._input_hold_target
+            elif snapshot.position is not None and snapshot.odom_fresh:
+                candidate = self._vec(snapshot.position)
+            elif self._last_safe_position is not None:
+                candidate = self._last_safe_position
+            if candidate is not None:
+                self._fault_hold_target = self._capture_hold_target(candidate)
 
         can_request_land = (
             self.config.fault_response == "auto_land"

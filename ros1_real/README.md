@@ -31,8 +31,10 @@ Compose mounts:
 
 ## Build and enter the container
 
-The source tree is copied into the image at build time. Rebuild after changing
-anything under `src/`, the Dockerfile, or Compose configuration:
+The source tree is copied into the image at build time; it is not bind-mounted
+by Compose. Rebuild the release image after a change has passed real-flight
+acceptance, or whenever the Dockerfile, dependencies, CMake, messages, or
+compiled code change:
 
 ```bash
 cd /home/nickbit/uav/SharedRLControl/ros1_real
@@ -48,6 +50,24 @@ until an operator runs a launch command.
 The image intentionally includes the diagnostic packages installed in the
 validated test container: ROS Noetic desktop-full, RQt/common plugins, MAVROS
 debug symbols, and `net-tools`.
+
+For a pre-release experiment, existing Python, launch, and YAML files can be
+copied into a stopped navigation stack without rebuilding the image:
+
+```bash
+cd /home/nickbit/uav/SharedRLControl/ros1_real
+SRLC_RUNTIME_CONTAINER=ros1_real_v2-real_runtime-1
+docker exec "$SRLC_RUNTIME_CONTAINER" \
+  pgrep -af '[r]eal_px4.launch|[/]real_navigation_node.py|[/]map_lidar_node.py'
+docker cp src/srlc_real/. \
+  "$SRLC_RUNTIME_CONTAINER":/root/catkin_ws/src/srlc_real/
+```
+
+The catkin Python relay and `rospack` both resolve files from
+`/root/catkin_ws/src/srlc_real`, so these changes do not require `catkin_make`.
+They are ephemeral and disappear when the container is recreated. Never copy
+while the navigator or map LiDAR node is running. Rebuild/recreate instead if
+the change affects anything outside those interpreted source/config files.
 
 ## Independent launch entry points
 
@@ -151,7 +171,9 @@ The first armed OFFBOARD transition starts exactly one automatic takeoff:
    `0.5 m/s^2`, with no more than `0.25 m` command lead over PX4-local feedback.
 3. It enters ASSIST only after the generated target reaches the final relative
    height and PX4-local height/vertical speed remain inside the configured band.
-4. Any OFFBOARD loss or disarm after takeoff starts permanently terminates that
+4. It then keeps that one PX4-local target z for DIRECT, ASSIST, input-recovery,
+   proximity, and fault holds. Live Nokov/PX4 height samples cannot redefine it.
+5. Any OFFBOARD loss or disarm after takeoff starts permanently terminates that
    navigator process.  Switching back to OFFBOARD cannot restart it; restart
    `srlc_real_navigator` (normally the full `real_px4.launch`) before another
    flight.
@@ -176,6 +198,57 @@ Emergency faults default to requesting `AUTO.LAND`.  If PX4 does not confirm
 the mode within two seconds, SRLC holds the last valid XYZ until the pilot
 takes over.  Set `SRLC_FAULT_RESPONSE=hold` to skip the automatic landing
 request and use the hold fallback directly.
+
+### Proximity hold
+
+The default map model is a `0.20 m` cube/sphere approximation: the PCD is
+inflated by `0.10 m` on every axis on a `0.05 m` voxel grid. For the measured
+minimum obstacle gap of `0.56 m`, this leaves `0.36 m` of centre travel width,
+or `0.18 m` per side when centred.
+
+After the aircraft rises `0.30 m` above its takeoff origin, protection follows
+this lifecycle:
+
+1. Collision detection has priority at `safety_distance <= collision_dist`.
+2. `PROXIMITY_HOLD` enters at `safety_distance <= proximity_enter_dist` and
+   captures one XY target. Its z target is the immutable takeoff altitude after
+   TAKEOFF.
+3. It remains held until distance is at least `proximity_release_dist`
+   continuously for `proximity_release_duration`; falling below the release
+   threshold resets that timer.
+4. Disabling `enable_proximity_hold` bypasses only this protective hold;
+   collision detection remains independent.
+
+`safety_distance` is the minimum of the configured map-ray hits after vehicle
+inflation. It is not policy output and is not the raw nearest PCD-point
+distance. Recommended starting profiles are:
+
+| Use | Proximity | Enter / release | Clear time | Collision | Notes |
+|---|---:|---:|---:|---:|---|
+| Dense-map default | on | `0.10 / 0.15 m` | `0.20 s` | on, `0.05 m` | Fits the `0.56 m` gap; theoretical release centring tolerance is about `±0.03 m`. |
+| Open-space conservative | on | `0.15 / 0.20 m` | `0.30 s` | on, `0.05 m` | Do not use in the narrowest gap; it may be unable to release there. |
+| Narrow-gap contingency | off | n/a | n/a | on, `0.05 m` | Removes `PROXIMITY_HOLD` but retains the hard collision fallback. |
+| Bench-only, no map guard | off | n/a | n/a | off | No proximity or collision response; pilot/geofence/input faults still apply. |
+
+Example explicit launch for the current dense map (also overrides stale
+environment values in a container created from an older Compose file):
+
+```bash
+roslaunch srlc_real real_px4.launch \
+  pcd_file:=/root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd \
+  map_resolution:=0.05 \
+  map_inflate_x:=0.10 map_inflate_y:=0.10 map_inflate_z:=0.10 \
+  enable_proximity_hold:=true \
+  proximity_enter_dist:=0.10 \
+  proximity_release_dist:=0.15 \
+  proximity_release_duration:=0.20 \
+  enable_collision_detection:=true \
+  collision_dist:=0.05
+```
+
+To disable only the protective hold in the final contingency profile, add
+`enable_proximity_hold:=false`; do not also disable collision detection unless
+the test is deliberately operating without any map-distance protection.
 
 ## Main data paths
 
@@ -207,7 +280,7 @@ Coordinate ownership is intentional:
 `nokov_node` still applies `vision_z_offset = -0.15 m` when sending visual pose
 to PX4.  The correction represents the chosen physical reference and is not
 removed.  Because takeoff origin, final target, and feedback are now all in the
-same PX4-local frame, this constant correction no longer appears as a 0.15 m
+same PX4-local frame, this constant correction no longer appears as a `0.15 m`
 takeoff target/measurement mismatch.
 
 Other important topics:

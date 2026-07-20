@@ -59,8 +59,8 @@ class PcdRaycaster:
         Robot half-size for inflation in (x, y, z) metres.
     """
 
-    def __init__(self, pcd_path: str, resolution: float = 0.1,
-                 inflate: tuple = (0.15, 0.15, 0.05)):
+    def __init__(self, pcd_path: str, resolution: float = 0.05,
+                 inflate: tuple = (0.10, 0.10, 0.10)):
         self.res = resolution
         self.inv_res = 1.0 / resolution
 

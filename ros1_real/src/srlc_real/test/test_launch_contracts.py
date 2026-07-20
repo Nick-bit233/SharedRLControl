@@ -125,8 +125,44 @@ class LaunchContractTest(unittest.TestCase):
             "fault_response",
             "fault_land_mode",
             "fault_land_confirm_timeout",
+            "enable_proximity_hold",
+            "proximity_enter_dist",
+            "proximity_release_dist",
+            "proximity_release_duration",
+            "enable_collision_detection",
+            "collision_dist",
+            "map_resolution",
+            "map_inflate_x",
+            "map_inflate_y",
+            "map_inflate_z",
         ):
             self.assertIn(required_arg, args)
+
+        self.assertEqual(
+            args["pcd_file"],
+            "$(optenv SRLC_PCD_FILE /root/real_assets/maps/room601/"
+            "0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd)",
+        )
+        self.assertEqual(
+            args["enable_proximity_hold"],
+            "$(optenv SRLC_ENABLE_PROXIMITY_HOLD true)",
+        )
+        self.assertEqual(
+            args["proximity_enter_dist"],
+            "$(optenv SRLC_PROXIMITY_ENTER_DIST 0.10)",
+        )
+        self.assertEqual(
+            args["proximity_release_dist"],
+            "$(optenv SRLC_PROXIMITY_RELEASE_DIST 0.15)",
+        )
+        self.assertEqual(
+            args["proximity_release_duration"],
+            "$(optenv SRLC_PROXIMITY_RELEASE_DURATION 0.20)",
+        )
+        self.assertEqual(
+            args["collision_dist"],
+            "$(optenv SRLC_COLLISION_DIST 0.05)",
+        )
 
         navigator = next(
             node
@@ -150,6 +186,23 @@ class LaunchContractTest(unittest.TestCase):
             navigator_params["px4_local_velocity_topic"],
             "$(arg px4_local_velocity_topic)",
         )
+        self.assertEqual(
+            navigator_params["enable_proximity_hold"],
+            "$(arg enable_proximity_hold)",
+        )
+        self.assertNotIn("enable_safety_stop", navigator_params)
+        self.assertNotIn("safety_min_dist", navigator_params)
+
+        map_lidar = next(
+            node
+            for node in root.iter("node")
+            if node.attrib.get("name") == "map_lidar_node"
+        )
+        map_params = {
+            param.attrib["name"]: param.attrib.get("value", "")
+            for param in map_lidar.findall("param")
+        }
+        self.assertEqual(map_params["map_resolution"], "$(arg map_resolution)")
 
     def test_docker_defaults_match_real_launch(self):
         compose_path = REPO_DIR / "docker-compose.real.yml"
@@ -162,6 +215,25 @@ class LaunchContractTest(unittest.TestCase):
         self.assertIn("SRLC_TAKEOFF_MAX_CLIMB_SPEED: ${SRLC_TAKEOFF_MAX_CLIMB_SPEED:-0.4}", compose)
         self.assertIn("SRLC_TAKEOFF_MAX_VERTICAL_ACCEL: ${SRLC_TAKEOFF_MAX_VERTICAL_ACCEL:-0.5}", compose)
         self.assertIn("SRLC_TAKEOFF_MAX_TRACKING_ERROR: ${SRLC_TAKEOFF_MAX_TRACKING_ERROR:-0.25}", compose)
+        self.assertIn(
+            "SRLC_ENABLE_PROXIMITY_HOLD: ${SRLC_ENABLE_PROXIMITY_HOLD:-true}",
+            compose,
+        )
+        self.assertIn(
+            "SRLC_PROXIMITY_ENTER_DIST: ${SRLC_PROXIMITY_ENTER_DIST:-0.10}",
+            compose,
+        )
+        self.assertIn(
+            "SRLC_PROXIMITY_RELEASE_DIST: ${SRLC_PROXIMITY_RELEASE_DIST:-0.15}",
+            compose,
+        )
+        self.assertIn(
+            "SRLC_PROXIMITY_RELEASE_DURATION: "
+            "${SRLC_PROXIMITY_RELEASE_DURATION:-0.20}",
+            compose,
+        )
+        self.assertIn("SRLC_MAP_RESOLUTION: ${SRLC_MAP_RESOLUTION:-0.05}", compose)
+        self.assertIn("SRLC_COLLISION_DIST: ${SRLC_COLLISION_DIST:-0.05}", compose)
 
     def test_nokov_vision_height_correction_is_preserved(self):
         source = NOKOV_SOURCE.read_text(encoding="utf-8")

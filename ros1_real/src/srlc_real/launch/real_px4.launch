@@ -1,6 +1,6 @@
 <launch>
     <arg name="checkpoint" default="$(optenv SRLC_CHECKPOINT /root/real_assets/ckpts/checkpoint_minrisk_0610.pt)"/>
-    <arg name="pcd_file" default="$(optenv SRLC_PCD_FILE /root/real_assets/maps/room601/0624_section_resampled6w_ascii_aligned_yaw_m4p50_floor_level_z0.pcd)"/>
+    <arg name="pcd_file" default="$(optenv SRLC_PCD_FILE /root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd)"/>
     <arg name="device" default="$(optenv SRLC_DEVICE cpu)"/>
     <arg name="rviz" default="$(optenv SRLC_RVIZ false)"/>
     <arg name="record" default="$(optenv SRLC_RECORD true)"/>
@@ -12,6 +12,10 @@
     <arg name="map_origin_x" default="$(optenv SRLC_MAP_ORIGIN_X 0.0)"/>
     <arg name="map_origin_y" default="$(optenv SRLC_MAP_ORIGIN_Y 0.0)"/>
     <arg name="map_origin_z" default="$(optenv SRLC_MAP_ORIGIN_Z 0.0)"/>
+    <arg name="map_resolution" default="$(optenv SRLC_MAP_RESOLUTION 0.05)"/>
+    <arg name="map_inflate_x" default="$(optenv SRLC_MAP_INFLATE_X 0.10)"/>
+    <arg name="map_inflate_y" default="$(optenv SRLC_MAP_INFLATE_Y 0.10)"/>
+    <arg name="map_inflate_z" default="$(optenv SRLC_MAP_INFLATE_Z 0.10)"/>
 
     <arg name="takeoff_height" default="$(optenv SRLC_TAKEOFF_HEIGHT 1.0)"/>
     <arg name="post_takeoff_mode" default="$(optenv SRLC_POST_TAKEOFF_MODE assist)"/>
@@ -39,8 +43,12 @@
     <arg name="lateral_reverse" default="$(optenv SRLC_RC_LATERAL_REVERSE true)"/>
     <arg name="max_xy_speed_real" default="$(optenv SRLC_MAX_XY_SPEED 0.5)"/>
     <arg name="max_z_speed_real" default="$(optenv SRLC_MAX_Z_SPEED 0.3)"/>
-    <arg name="safety_min_dist" default="$(optenv SRLC_SAFETY_MIN_DIST 0.25)"/>
-    <arg name="collision_dist" default="$(optenv SRLC_COLLISION_DIST 0.15)"/>
+    <arg name="enable_proximity_hold" default="$(optenv SRLC_ENABLE_PROXIMITY_HOLD true)"/>
+    <arg name="proximity_enter_dist" default="$(optenv SRLC_PROXIMITY_ENTER_DIST 0.10)"/>
+    <arg name="proximity_release_dist" default="$(optenv SRLC_PROXIMITY_RELEASE_DIST 0.15)"/>
+    <arg name="proximity_release_duration" default="$(optenv SRLC_PROXIMITY_RELEASE_DURATION 0.20)"/>
+    <arg name="enable_collision_detection" default="$(optenv SRLC_ENABLE_COLLISION_DETECTION true)"/>
+    <arg name="collision_dist" default="$(optenv SRLC_COLLISION_DIST 0.05)"/>
     <arg name="safety_activation_height" default="$(optenv SRLC_SAFETY_ACTIVATION_HEIGHT 0.3)"/>
     <arg name="assist_input_deadzone_norm" default="$(optenv SRLC_ASSIST_INPUT_DEADZONE_NORM 0.05)"/>
     <arg name="geofence_x_min" default="$(optenv SRLC_GEOFENCE_X_MIN -3.0)"/>
@@ -69,6 +77,8 @@
         <param name="pcd_file" value="$(arg pcd_file)"/>
         <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
+        <param name="map_resolution" value="$(arg map_resolution)"/>
+        <rosparam param="inflate_xyz" subst_value="true">[$(arg map_inflate_x), $(arg map_inflate_y), $(arg map_inflate_z)]</rosparam>
         <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
     </node>
 
@@ -135,7 +145,11 @@
         <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
-        <param name="safety_min_dist" value="$(arg safety_min_dist)"/>
+        <param name="enable_proximity_hold" value="$(arg enable_proximity_hold)"/>
+        <param name="proximity_enter_dist" value="$(arg proximity_enter_dist)"/>
+        <param name="proximity_release_dist" value="$(arg proximity_release_dist)"/>
+        <param name="proximity_release_duration" value="$(arg proximity_release_duration)"/>
+        <param name="enable_collision_detection" value="$(arg enable_collision_detection)"/>
         <param name="collision_dist" value="$(arg collision_dist)"/>
         <param name="safety_activation_height" value="$(arg safety_activation_height)"/>
         <param name="min_altitude" value="$(arg min_altitude)"/>

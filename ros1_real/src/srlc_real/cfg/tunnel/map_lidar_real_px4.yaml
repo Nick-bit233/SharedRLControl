@@ -14,9 +14,11 @@ lidar_vfov: [-10.0, 20.0]
 lidar_vbeams: 4
 lidar_hres: 10.0
 
-# PCD voxelization.
-map_resolution: 0.1
-inflate_xyz: [0.15, 0.15, 0.05]
+# PCD voxelization.  The 0.10 m half-size models the measured vehicle as a
+# 0.20 m diameter sphere / 0.20 m cube.  A 0.05 m grid is required so the
+# 0.05/0.10/0.15 m collision, entry, and release levels remain distinguishable.
+map_resolution: 0.05
+inflate_xyz: [0.10, 0.10, 0.10]
 
 # Default assumption: pre-scanned PCD map is aligned with MAVROS local ENU.
 map_origin_xyz: [0.0, 0.0, 0.0]

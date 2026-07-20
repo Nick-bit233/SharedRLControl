@@ -55,8 +55,8 @@ class MapLidarNode:
         self._cos_yaw = math.cos(self.map_yaw)
         self._sin_yaw = math.sin(self.map_yaw)
 
-        resolution = float(rospy.get_param("~map_resolution", 0.1))
-        inflate = tuple(rospy.get_param("~inflate_xyz", [0.15, 0.15, 0.05]))
+        resolution = float(rospy.get_param("~map_resolution", 0.05))
+        inflate = tuple(rospy.get_param("~inflate_xyz", [0.10, 0.10, 0.10]))
         self.raycaster = PcdRaycaster(self.pcd_file, resolution=resolution, inflate=inflate)
 
         self.odom = None

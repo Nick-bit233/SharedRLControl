@@ -60,9 +60,12 @@ max_altitude: 3.0
 geofence_x: [-3.0, 3.0]
 geofence_y: [-3.0, 3.0]
 
-# Safety.
-enable_safety_stop: true
+# Safety for a measured 0.20 m vehicle and a minimum physical gap of 0.56 m.
+# Distances are measured outside the already-inflated vehicle envelope.
+enable_proximity_hold: true
+proximity_enter_dist: 0.10
+proximity_release_dist: 0.15
+proximity_release_duration: 0.20
 enable_collision_detection: true
-safety_min_dist: 0.25
-collision_dist: 0.15
+collision_dist: 0.05
 safety_activation_height: 0.3

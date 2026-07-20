@@ -138,12 +138,30 @@ class RealConfig:
             rospy.get_param("~assist_input_deadzone_norm", 0.05)
         )
 
-        self.enable_safety_stop = _param_bool(rospy.get_param("~enable_safety_stop", True))
+        # Canonical proximity parameters.  The old names remain read-only
+        # aliases so an older launch override does not silently disable safety.
+        self.enable_proximity_hold = _param_bool(
+            rospy.get_param(
+                "~enable_proximity_hold",
+                rospy.get_param("~enable_safety_stop", True),
+            )
+        )
         self.enable_collision_detection = _param_bool(
             rospy.get_param("~enable_collision_detection", True)
         )
-        self.safety_min_dist = float(rospy.get_param("~safety_min_dist", 0.25))
-        self.collision_dist = float(rospy.get_param("~collision_dist", 0.15))
+        self.proximity_enter_dist = float(
+            rospy.get_param(
+                "~proximity_enter_dist",
+                rospy.get_param("~safety_min_dist", 0.10),
+            )
+        )
+        self.proximity_release_dist = float(
+            rospy.get_param("~proximity_release_dist", 0.15)
+        )
+        self.proximity_release_duration = float(
+            rospy.get_param("~proximity_release_duration", 0.20)
+        )
+        self.collision_dist = float(rospy.get_param("~collision_dist", 0.05))
         self.safety_activation_height = float(
             rospy.get_param("~safety_activation_height", 0.3)
         )
@@ -203,12 +221,6 @@ class RealNavigator:
         self.assist_enabled = self.control_mode == "ASSIST"
         self.effective_mode = "INACTIVE"
         self.fault_reason = ""
-        collision_dist = self.cfg.collision_dist if self.cfg.enable_collision_detection else -1.0
-        safety_min_dist = (
-            self.cfg.safety_min_dist
-            if self.cfg.enable_safety_stop
-            else collision_dist
-        )
         self.lifecycle = OneShotFlightLifecycle(
             OneShotFlightConfig(
                 enabled=self.cfg.real_auto_takeoff_on_offboard,
@@ -223,8 +235,12 @@ class RealNavigator:
                 takeoff_max_climb_speed=self.cfg.takeoff_max_climb_speed,
                 takeoff_max_vertical_accel=self.cfg.takeoff_max_vertical_accel,
                 takeoff_max_tracking_error=self.cfg.takeoff_max_tracking_error,
-                collision_dist=collision_dist,
-                safety_min_dist=safety_min_dist,
+                enable_proximity_hold=self.cfg.enable_proximity_hold,
+                proximity_enter_dist=self.cfg.proximity_enter_dist,
+                proximity_release_dist=self.cfg.proximity_release_dist,
+                proximity_release_duration=self.cfg.proximity_release_duration,
+                enable_collision_detection=self.cfg.enable_collision_detection,
+                collision_dist=self.cfg.collision_dist,
                 safety_activation_height=self.cfg.safety_activation_height,
                 input_recovery_grace=self.cfg.input_recovery_grace,
                 fault_response=self.cfg.fault_response,
@@ -257,6 +273,11 @@ class RealNavigator:
             raise ValueError("post_takeoff_mode must be 'direct' or 'assist'")
         if not self.cfg.require_offboard:
             raise ValueError("one-shot real flight requires ~require_offboard=true")
+        if not self.cfg.lock_z_control:
+            raise ValueError(
+                "one-shot real flight requires ~lock_z_control=true so the "
+                "takeoff altitude target remains immutable"
+            )
         if self.cfg.fault_response not in {"auto_land", "hold"}:
             raise ValueError("fault_response must be 'auto_land' or 'hold'")
         if self.cfg.policy_mode not in {"residual", "direct"}:
@@ -300,6 +321,16 @@ class RealNavigator:
             self.cfg.takeoff_max_climb_speed,
             self.cfg.takeoff_max_vertical_accel,
             self.cfg.takeoff_max_tracking_error,
+        )
+        rospy.loginfo(
+            "[SRLCReal] proximity_hold=%s enter=%.2fm release=%.2fm/%.2fs "
+            "collision=%s@%.2fm",
+            self.cfg.enable_proximity_hold,
+            self.cfg.proximity_enter_dist,
+            self.cfg.proximity_release_dist,
+            self.cfg.proximity_release_duration,
+            self.cfg.enable_collision_detection,
+            self.cfg.collision_dist,
         )
 
     def _setup_ros(self):
@@ -555,7 +586,8 @@ class RealNavigator:
             now, self.last_lidar_time, self.cfg.lidar_timeout
         )
         safety_required = (
-            self.cfg.enable_safety_stop or self.cfg.enable_collision_detection
+            self.cfg.enable_proximity_hold
+            or self.cfg.enable_collision_detection
         )
         safety_fresh = (
             self._is_fresh(
@@ -790,6 +822,14 @@ class RealNavigator:
         self.z_policy_active_pub.publish(Bool(data=False))
         self._publish_policy_cmd(np.zeros(3, dtype=np.float32))
 
+        # After TAKEOFF completes, no lifecycle branch may redefine altitude
+        # from a live pose sample.  This is deliberately repeated here as a
+        # last-line invariant at the PX4 setpoint boundary.
+        if (
+            self.lifecycle.takeoff_target is not None
+            and self.lifecycle.state != LifecycleState.TAKEOFF
+        ):
+            target_z = self._px4_altitude_hold_target()
         if target_z is None:
             if self.px4_local_odom is not None:
                 target_z = float(self.px4_local_odom.pose.pose.position.z)
