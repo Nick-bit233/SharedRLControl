@@ -19,6 +19,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_launch_contracts.py)
   catkin_add_nosetests(test/test_one_shot_flight.py)
   catkin_add_nosetests(test/test_pcd_raycast_safety.py)
+  catkin_add_nosetests(test/test_predefined_rc_replay.py)
   catkin_add_nosetests(test/test_recorder_contract.py)
   add_rostest(test/fake_runtime_stream_guard.test)
   add_rostest(test/mavlink_stream_guard.test)
@@ -41,6 +42,7 @@ catkin_install_python(PROGRAMS
   scripts/real_navigation_node.py
   scripts/map_lidar_node.py
   scripts/pcd_map_publisher.py
+  scripts/predefined_rc_replay_node.py
   scripts/rc_input_node.py
   scripts/srlc_real_fake_runtime_node.py
   scripts/srlc_alignment_viz_node.py

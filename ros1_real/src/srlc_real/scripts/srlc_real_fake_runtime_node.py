@@ -76,13 +76,14 @@ class FakeRealRuntime:
         self.reject_set_mode = _param_bool(rospy.get_param("~reject_set_mode", False))
         self._mode_after_applied = False
         self.start_time = rospy.Time.now()
+        self.rc_topic = str(rospy.get_param("~rc_topic", "/mavros/rc/in"))
 
         self.state_pub = rospy.Publisher("/mavros/state", State, queue_size=2, latch=True)
         self.extended_state_pub = rospy.Publisher(
             "/mavros/extended_state", ExtendedState, queue_size=2, latch=True
         )
         self.battery_pub = rospy.Publisher("/mavros/battery", BatteryState, queue_size=1, latch=True)
-        self.rc_pub = rospy.Publisher("/mavros/rc/in", RCIn, queue_size=10)
+        self.rc_pub = rospy.Publisher(self.rc_topic, RCIn, queue_size=10)
         self.nokov_odom_pub = rospy.Publisher("/nokov/local_position/odom", Odometry, queue_size=10)
         self.mavros_odom_pub = rospy.Publisher("/mavros/local_position/odom", Odometry, queue_size=10)
         self.mavros_velocity_local_pub = rospy.Publisher(
@@ -265,6 +266,8 @@ class FakeRealRuntime:
             self.velocity[2] = self._clamp(vz, -self.max_z_speed, self.max_z_speed)
 
     def _rc_timer_cb(self, _event):
+        if rospy.is_shutdown():
+            return
         elapsed = (rospy.Time.now() - self.start_time).to_sec()
         motion_active = elapsed >= self.motion_after
         if self.stop_after > 0.0 and elapsed >= self.stop_after:
@@ -294,7 +297,11 @@ class FakeRealRuntime:
         msg = RCIn()
         msg.header.stamp = rospy.Time.now()
         msg.channels = channels
-        self.rc_pub.publish(msg)
+        try:
+            self.rc_pub.publish(msg)
+        except rospy.ROSException:
+            if not rospy.is_shutdown():
+                raise
 
     def _build_odom(self, stamp):
         odom = Odometry()

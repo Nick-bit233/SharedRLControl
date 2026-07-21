@@ -41,6 +41,9 @@
 
     <arg name="forward_reverse" default="$(optenv SRLC_RC_FORWARD_REVERSE false)"/>
     <arg name="lateral_reverse" default="$(optenv SRLC_RC_LATERAL_REVERSE true)"/>
+    <arg name="use_predefined_rc_replay" default="$(optenv SRLC_USE_PREDEFINED_RC_REPLAY false)"/>
+    <arg name="replay_rc_topic" default="/srlc/predefined_rc/in"/>
+    <arg name="replay_rc_deadband" default="0.0"/>
     <arg name="max_xy_speed_real" default="$(optenv SRLC_MAX_XY_SPEED 0.5)"/>
     <arg name="max_z_speed_real" default="$(optenv SRLC_MAX_Z_SPEED 0.3)"/>
     <arg name="enable_proximity_hold" default="$(optenv SRLC_ENABLE_PROXIMITY_HOLD true)"/>
@@ -51,6 +54,7 @@
     <arg name="collision_dist" default="$(optenv SRLC_COLLISION_DIST 0.05)"/>
     <arg name="safety_activation_height" default="$(optenv SRLC_SAFETY_ACTIVATION_HEIGHT 0.3)"/>
     <arg name="assist_input_deadzone_norm" default="$(optenv SRLC_ASSIST_INPUT_DEADZONE_NORM 0.05)"/>
+    <arg name="replay_input_deadzone_norm" default="0.001"/>
     <arg name="geofence_x_min" default="$(optenv SRLC_GEOFENCE_X_MIN -3.0)"/>
     <arg name="geofence_x_max" default="$(optenv SRLC_GEOFENCE_X_MAX 3.0)"/>
     <arg name="geofence_y_min" default="$(optenv SRLC_GEOFENCE_Y_MIN -3.0)"/>
@@ -62,6 +66,9 @@
     <arg name="px4_local_odom_topic" default="$(optenv SRLC_PX4_LOCAL_ODOM_TOPIC /mavros/local_position/odom)"/>
     <arg name="px4_local_velocity_topic" default="$(optenv SRLC_PX4_LOCAL_VELOCITY_TOPIC /mavros/local_position/velocity_local)"/>
     <arg name="rc_topic" default="/mavros/rc/in"/>
+    <arg name="selected_rc_topic" default="$(eval arg('replay_rc_topic') if arg('use_predefined_rc_replay') else arg('rc_topic'))"/>
+    <arg name="selected_rc_deadband" default="$(eval arg('replay_rc_deadband') if arg('use_predefined_rc_replay') else 0.05)"/>
+    <arg name="selected_input_deadzone_norm" default="$(eval arg('replay_input_deadzone_norm') if arg('use_predefined_rc_replay') else arg('assist_input_deadzone_norm'))"/>
     <arg name="setpoint_raw_topic" default="/mavros/setpoint_raw/local"/>
     <arg name="map_cloud_topic" default="/real_map/cloud"/>
     <arg name="map_cloud_voxel_size" default="0.1"/>
@@ -104,10 +111,26 @@
         <param name="max_altitude" value="$(arg max_altitude)"/>
     </node>
 
+    <group if="$(arg use_predefined_rc_replay)">
+        <node pkg="srlc_real" type="predefined_rc_replay_node.py"
+              name="predefined_rc_replay_node" output="screen" required="true">
+            <rosparam file="$(find srlc_real)/cfg/tunnel/rc_input_real_px4.yaml"/>
+            <rosparam file="$(find srlc_real)/cfg/tunnel/predefined_rc_s_curve.yaml"/>
+            <param name="input_rc_topic" value="$(arg rc_topic)"/>
+            <param name="output_rc_topic" value="$(arg replay_rc_topic)"/>
+            <param name="odom_topic" value="$(arg odom_topic)"/>
+            <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
+            <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+            <param name="forward_reverse" value="$(arg forward_reverse)"/>
+            <param name="lateral_reverse" value="$(arg lateral_reverse)"/>
+        </node>
+    </group>
+
     <node pkg="srlc_real" type="rc_input_node.py"
           name="rc_input_node" output="screen" required="true">
         <rosparam file="$(find srlc_real)/cfg/tunnel/rc_input_real_px4.yaml"/>
-        <param name="rc_topic" value="$(arg rc_topic)"/>
+        <param name="rc_topic" value="$(arg selected_rc_topic)"/>
+        <param name="deadband" value="$(arg selected_rc_deadband)"/>
         <param name="forward_reverse" value="$(arg forward_reverse)"/>
         <param name="lateral_reverse" value="$(arg lateral_reverse)"/>
     </node>
@@ -142,7 +165,7 @@
         <param name="fault_land_confirm_timeout" value="$(arg fault_land_confirm_timeout)"/>
         <param name="fault_land_retry_interval" value="$(arg fault_land_retry_interval)"/>
         <param name="fault_land_max_attempts" value="$(arg fault_land_max_attempts)"/>
-        <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
+        <param name="assist_input_deadzone_norm" value="$(arg selected_input_deadzone_norm)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
         <param name="enable_proximity_hold" value="$(arg enable_proximity_hold)"/>
@@ -166,7 +189,7 @@
             <param name="odom_topic" value="$(arg odom_topic)"/>
             <param name="px4_local_odom_topic" value="$(arg px4_local_odom_topic)"/>
             <param name="px4_local_velocity_topic" value="$(arg px4_local_velocity_topic)"/>
-            <param name="rc_topic" value="$(arg rc_topic)"/>
+            <param name="rc_topic" value="$(arg selected_rc_topic)"/>
             <param name="setpoint_raw_topic" value="$(arg setpoint_raw_topic)"/>
             <param name="lidar_range" value="4.0"/>
             <param name="lidar_hbeams" value="36"/>

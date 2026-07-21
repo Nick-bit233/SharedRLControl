@@ -331,6 +331,117 @@ rostopic echo /mavros/local_position/odom
 rostopic echo /mavros/local_position/velocity_local
 ```
 
+## Predefined S-curve RC replay
+
+Both launch files can explicitly replace the motion-stick channels consumed by
+`rc_input_node` with the same one-shot replay.  The source RC topic itself is
+never overwritten: the replay subscribes to `/mavros/rc/in`, copies all
+auxiliary/switch channels, replaces only roll/pitch/throttle intent channels,
+and publishes `/srlc/predefined_rc/in`.  MAVROS and PX4 therefore retain the
+real receiver stream for manual arming, mode selection, and receiver failsafe.
+
+The shared profile is
+`cfg/tunnel/predefined_rc_s_curve.yaml`:
+
+- map start `(-1.85, 2.55)` and goal `(2.75, -1.50)`;
+- an asymmetric S turn fitted to the hand-drawn `s_route2.png` shape, expressed
+  as shape-preserving `(progress, lateral_offset_m)` control points; its main
+  offsets are `-1.25 m` and `+0.83 m`, with a `+0.28 m` lead-in;
+- `26 s` cubic-smoothstep arc-length timing over an approximately `8.108 m`
+  curve, with zero start/end speed and approximately `0.468 m/s` peak intent
+  speed;
+- replay-only RC/intent deadbands of `0.0`/`0.001`, so the smooth low-speed
+  endpoints are not discarded (live-RC defaults remain unchanged);
+- start only after `/tunnel_nav/lifecycle_state == ACTIVE`, a one-second delay,
+  a measured start error no greater than `0.35 m`, and map yaw within `5 deg`
+  of `-45 deg` (clockwise from map `+X`);
+- one-shot abort on raw-RC, odometry, or lifecycle timeout.
+
+The curve was selected from the `0717` PCD at flight-height slices.  It passes
+through the central obstacle cluster (the closest raw PCD samples are under one
+centimetre from the intent centreline), so it is deliberately hazardous
+and is **not** a collision-free waypoint route.  It is an open-loop velocity
+replay: odometry position is used only for the start gate, while odometry yaw
+converts the fixed map-frame intent into equivalent body-frame RC channels.
+
+Validate the exact intent in DIRECT dryrun first:
+
+```bash
+roslaunch srlc_real dry_run_px4.launch \
+  pcd_file:=/root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd \
+  use_predefined_rc_replay:=true \
+  post_takeoff_mode:=direct \
+  fake_forward_speed:=0.0 \
+  rviz:=false \
+  record:=true \
+  run_id:=dry_run_predefined_s
+```
+
+The dryrun launch fallback now uses the `0717` PCD and starts at
+`(-1.85, 2.55)`.  When replay is enabled its fake initial yaw automatically
+becomes `-45 deg`; otherwise the general dryrun default remains `0 deg`.  The
+explicit `pcd_file` above also defeats a stale `SRLC_PCD_FILE` environment
+override.  Watch the replay and final position with:
+
+```bash
+rostopic echo /srlc/predefined_rc/status
+rostopic echo -n 1 /srlc/predefined_rc/complete
+rostopic echo -n 1 /nokov/local_position/odom
+```
+
+To exercise the actual checkpoint inference path in dryrun, change only the
+post-takeoff mode and use the real horizontal speed limit:
+
+```bash
+roslaunch srlc_real dry_run_px4.launch \
+  pcd_file:=/root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd \
+  use_predefined_rc_replay:=true \
+  post_takeoff_mode:=assist \
+  max_xy_speed_real:=0.5 \
+  fake_forward_speed:=0.0 \
+  rviz:=false \
+  record:=true \
+  run_id:=dry_run_predefined_s_assist
+```
+
+This feeds the replay through `TunnelPolicyNet`;
+`/experiment_control/human_cmd` is the predefined RC intent,
+`/tunnel_nav/policy_cmd` is the raw model output, and
+`/mavros/setpoint_raw/local` is the final speed-limited command.  A DIRECT
+pass does not imply an ASSIST pass.
+
+The current `checkpoint_minrisk_0610.pt` is **not validated for this `-45 deg`
+heading**.  With the current route2-fitted profile on the `0717` map dryrun,
+its raw horizontal output was mostly saturated (`2.772 m/s` median), the real
+limit held the setpoint at `0.5 m/s`, and the vehicle finished near
+`(1.505, -7.999)` instead of `(2.75, -1.50)`.
+Do not use this checkpoint for a real ASSIST replay; changing only the S-curve
+amplitude or duration cannot correct that orientation-dependent policy output.
+A new/retrained checkpoint or an explicitly reviewed model-specific command
+profile must pass the same ASSIST dryrun before flight.
+
+For real flight, enabling replay must remain an explicit operator action.  The
+currently **dryrun-validated** control path is DIRECT (no real hardware flight
+was performed here):
+
+```bash
+roslaunch srlc_real real_px4.launch \
+  pcd_file:=/root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd \
+  use_predefined_rc_replay:=true \
+  post_takeoff_mode:=direct
+```
+
+Before arming, physically orient the aircraft to map yaw `-45 deg`; this node
+does not autonomously rotate the aircraft.  The existing takeoff controller
+holds the measured heading, and replay remains neutral in `WAIT_START_YAW`
+outside the `+/-5 deg` gate.  Keep the physical sticks centred because they
+still reach PX4 independently of SRLC.  Real-flight proximity hold and
+collision detection remain enabled by default and can interrupt this
+intentionally unsafe intent.  If the experiment requires the narrow-gap
+contingency, disable only `enable_proximity_hold` and retain collision
+detection.  A completed or aborted replay remains neutral; restart the launch
+before another attempt.
+
 ## Verification after rebuilding
 
 Inside the rebuilt container:

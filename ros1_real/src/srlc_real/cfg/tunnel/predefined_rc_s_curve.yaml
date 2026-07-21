@@ -1,0 +1,54 @@
+# Deterministic map-frame RC intent shared by dryrun and real flight.
+#
+# Geometry was selected against
+# 0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd.  The asymmetric
+# lateral profile was fitted to s_route2.png.  It deliberately
+# crosses dense obstacle returns; this is a hazardous evaluation input, not a
+# collision-free route.  Positive offsets follow the left normal of the
+# start-to-goal chord; negative offsets follow its right normal.
+start_xy: [-1.85, 2.55]
+goal_xy: [2.75, -1.50]
+lateral_profile:
+  - [0.00,  0.00]
+  - [0.12,  0.28]
+  - [0.23, -0.09]
+  - [0.29, -0.80]
+  - [0.39, -1.25]
+  - [0.51, -1.01]
+  - [0.60, -0.37]
+  - [0.67,  0.32]
+  - [0.77,  0.83]
+  - [0.89,  0.55]
+  - [1.00,  0.00]
+duration: 26.0
+arc_length_timing: true
+arc_length_samples: 4001
+
+# Shape-preserving cubic Hermite interpolation keeps the requested asymmetric
+# lobes without overshoot.  Endpoint lateral slopes are zero, while smoothstep
+# arc-length timing makes endpoint velocities zero and caps the sampled peak at
+# about 0.468 m/s.
+command_speed_limit: 0.50
+start_delay: 1.0
+start_tolerance: 0.35
+start_yaw_deg: -45.0
+start_yaw_tolerance_deg: 5.0
+activation_value: "ACTIVE"
+
+# Input health is mandatory.  A stale source after replay starts aborts this
+# one-shot sequence permanently; restart the launch before another replay.
+publish_rate: 30.0
+input_timeout: 0.30
+odom_timeout: 0.30
+lifecycle_timeout: 0.50
+
+input_rc_topic: "/mavros/rc/in"
+output_rc_topic: "/srlc/predefined_rc/in"
+odom_topic: "/nokov/local_position/odom"
+lifecycle_topic: "/tunnel_nav/lifecycle_state"
+status_topic: "/srlc/predefined_rc/status"
+complete_topic: "/srlc/predefined_rc/complete"
+path_topic: "/srlc/predefined_rc/intent_path"
+map_frame: "map"
+path_z: 1.10
+path_samples: 201
