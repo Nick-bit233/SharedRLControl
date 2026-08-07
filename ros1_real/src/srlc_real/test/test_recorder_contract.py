@@ -45,6 +45,28 @@ class RecorderContractTest(unittest.TestCase):
         ):
             self.assertIn(topic, source)
 
+    def test_records_high_fidelity_rc_events_for_future_replay(self):
+        source = RECORDER.read_text(encoding="utf-8")
+
+        for field in (
+            "self.rc_events",
+            "self.start_monotonic",
+            '"ros_t"',
+            '"source_stamp"',
+            '"channels"',
+            '"rssi"',
+            '"position"',
+            '"yaw"',
+            '"recording_schema_version"',
+            '"rc_topic"',
+            '"recorder_rate_hz"',
+        ):
+            self.assertIn(field, source)
+        self.assertIn(
+            "rc_events=np.array(self.rc_events, dtype=object)",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

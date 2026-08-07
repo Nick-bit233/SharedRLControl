@@ -134,6 +134,7 @@ tunnel_test/logs/
 ros1/results/
 ros1_real/results/
 ros1_real/results_v2/
+ros1_real/artifacts/
 
 # paper works
 PAPER_PLAN.md

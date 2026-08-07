@@ -10,7 +10,10 @@
     <arg name="output_dir" default="$(optenv SRLC_OUTPUT_DIR /root/real_outputs)"/>
     <arg name="run_id" default="dry_run_px4_fixed_rc"/>
     <arg name="start_stream_guard" default="true"/>
-    <arg name="use_predefined_rc_replay" default="false"/>
+    <arg name="use_recorded_rc_replay" default="false"/>
+    <arg name="rc_replay_file" default="$(optenv SRLC_RC_REPLAY_FILE)"/>
+    <arg name="replay_start_time" default="-1.0"/>
+    <arg name="replay_end_time" default="-1.0"/>
 
     <arg name="post_takeoff_mode" default="assist"/>
     <arg name="takeoff_height" default="1.0"/>
@@ -26,14 +29,13 @@
     <arg name="fake_initial_x" default="-1.85"/>
     <arg name="fake_initial_y" default="2.55"/>
     <arg name="fake_initial_z" default="0.0"/>
-    <arg name="fake_initial_yaw_deg" default="$(eval -45.0 if arg('use_predefined_rc_replay') else 0.0)"/>
+    <arg name="fake_initial_yaw_deg" default="0.0"/>
     <arg name="fake_max_xy_speed" default="1.5"/>
     <arg name="fake_max_z_speed" default="0.8"/>
 
     <arg name="forward_reverse" default="false"/>
-    <arg name="lateral_reverse" default="false"/>
-    <arg name="replay_rc_topic" default="/srlc/predefined_rc/in"/>
-    <arg name="replay_rc_deadband" default="0.0"/>
+    <arg name="lateral_reverse" default="true"/>
+    <arg name="replay_rc_topic" default="/srlc/recorded_rc/in"/>
 
     <arg name="map_yaw_deg" default="$(optenv SRLC_MAP_YAW_DEG 0.0)"/>
     <arg name="map_origin_x" default="$(optenv SRLC_MAP_ORIGIN_X 0.0)"/>
@@ -43,7 +45,6 @@
     <arg name="max_xy_speed_real" default="1.0"/>
     <arg name="max_z_speed_real" default="0.3"/>
     <arg name="assist_input_deadzone_norm" default="0.05"/>
-    <arg name="replay_input_deadzone_norm" default="0.001"/>
     <arg name="lock_z_control" default="true"/>
     <arg name="geofence_x_min" default="-10.0"/>
     <arg name="geofence_x_max" default="10.0"/>
@@ -62,9 +63,7 @@
     <arg name="px4_local_odom_topic" default="/mavros/local_position/odom"/>
     <arg name="px4_local_velocity_topic" default="/mavros/local_position/velocity_local"/>
     <arg name="rc_topic" default="/mavros/rc/in"/>
-    <arg name="selected_rc_topic" default="$(eval arg('replay_rc_topic') if arg('use_predefined_rc_replay') else arg('rc_topic'))"/>
-    <arg name="selected_rc_deadband" default="$(eval arg('replay_rc_deadband') if arg('use_predefined_rc_replay') else 0.05)"/>
-    <arg name="selected_input_deadzone_norm" default="$(eval arg('replay_input_deadzone_norm') if arg('use_predefined_rc_replay') else arg('assist_input_deadzone_norm'))"/>
+    <arg name="selected_rc_topic" default="$(eval arg('replay_rc_topic') if arg('use_recorded_rc_replay') else arg('rc_topic'))"/>
     <arg name="setpoint_raw_topic" default="/mavros/setpoint_raw/local"/>
 
     <param name="/use_sim_time" value="false"/>
@@ -126,18 +125,17 @@
         <param name="max_altitude" value="$(arg max_altitude)"/>
     </node>
 
-    <group if="$(arg use_predefined_rc_replay)">
-        <node pkg="srlc_real" type="predefined_rc_replay_node.py"
-              name="predefined_rc_replay_node" output="screen" required="true">
+    <group if="$(arg use_recorded_rc_replay)">
+        <node pkg="srlc_real" type="recorded_rc_replay_node.py"
+              name="recorded_rc_replay_node" output="screen" required="true">
             <rosparam file="$(find srlc_real)/cfg/tunnel/rc_input_real_px4.yaml"/>
-            <rosparam file="$(find srlc_real)/cfg/tunnel/predefined_rc_s_curve.yaml"/>
+            <rosparam file="$(find srlc_real)/cfg/tunnel/recorded_rc_replay.yaml"/>
+            <param name="recording_file" value="$(arg rc_replay_file)"/>
+            <param name="replay_start_time" value="$(arg replay_start_time)"/>
+            <param name="replay_end_time" value="$(arg replay_end_time)"/>
             <param name="input_rc_topic" value="$(arg rc_topic)"/>
             <param name="output_rc_topic" value="$(arg replay_rc_topic)"/>
             <param name="odom_topic" value="$(arg odom_topic)"/>
-            <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
-            <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
-            <param name="forward_reverse" value="$(arg forward_reverse)"/>
-            <param name="lateral_reverse" value="$(arg lateral_reverse)"/>
         </node>
     </group>
 
@@ -145,7 +143,6 @@
           name="rc_input_node" output="screen" required="true">
         <rosparam file="$(find srlc_real)/cfg/tunnel/rc_input_real_px4.yaml"/>
         <param name="rc_topic" value="$(arg selected_rc_topic)"/>
-        <param name="deadband" value="$(arg selected_rc_deadband)"/>
         <param name="forward_reverse" value="$(arg forward_reverse)"/>
         <param name="lateral_reverse" value="$(arg lateral_reverse)"/>
     </node>
@@ -168,7 +165,7 @@
         <param name="real_auto_takeoff_on_offboard" value="true"/>
         <param name="post_takeoff_mode" value="$(arg post_takeoff_mode)"/>
         <param name="takeoff_confirm_duration" value="0.5"/>
-        <param name="assist_input_deadzone_norm" value="$(arg selected_input_deadzone_norm)"/>
+        <param name="assist_input_deadzone_norm" value="$(arg assist_input_deadzone_norm)"/>
         <param name="max_xy_speed_real" value="$(arg max_xy_speed_real)"/>
         <param name="max_z_speed_real" value="$(arg max_z_speed_real)"/>
         <param name="enable_proximity_hold" value="$(arg enable_proximity_hold)"/>

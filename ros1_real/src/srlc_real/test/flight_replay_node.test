@@ -1,0 +1,14 @@
+<launch>
+    <node pkg="srlc_real" type="flight_replay_node.py"
+          name="flight_replay_node" output="screen" required="true">
+        <param name="recording_file" value="$(find srlc_real)/test/data/flight_replay.json"/>
+        <param name="autostart" value="false"/>
+        <param name="speed" value="2.0"/>
+        <param name="publish_rate" value="60.0"/>
+        <param name="path_publish_rate" value="30.0"/>
+    </node>
+
+    <test test-name="flight_replay_node_ros"
+          pkg="srlc_real" type="test_flight_replay_node_ros.py"
+          time-limit="20.0"/>
+</launch>

@@ -1,0 +1,87 @@
+<launch>
+    <!-- Offline-only visualization.  This launch never starts MAVROS or control nodes. -->
+    <arg name="recording_file" default="$(optenv SRLC_REPLAY_RECORDING)"/>
+    <arg name="pcd_file" default="$(optenv SRLC_PCD_FILE /root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd)"/>
+    <arg name="start_time" default="-1.0"/>
+    <arg name="end_time" default="-1.0"/>
+    <arg name="speed" default="1.0"/>
+    <arg name="autostart" default="true"/>
+    <arg name="autostart_delay" default="2.0"/>
+    <arg name="max_sample_gap" default="0.2"/>
+
+    <arg name="map_yaw_deg" default="$(optenv SRLC_MAP_YAW_DEG 0.0)"/>
+    <arg name="map_origin_x" default="$(optenv SRLC_MAP_ORIGIN_X 0.0)"/>
+    <arg name="map_origin_y" default="$(optenv SRLC_MAP_ORIGIN_Y 0.0)"/>
+    <arg name="map_origin_z" default="$(optenv SRLC_MAP_ORIGIN_Z 0.0)"/>
+
+    <arg name="map_cloud_topic" default="/real_map/cloud"/>
+    <arg name="ceiling_cloud_topic" default="/real_map/ceiling"/>
+    <arg name="map_cloud_voxel_size" default="0.05"/>
+    <arg name="map_cloud_max_points" default="300000"/>
+    <arg name="ceiling_z" default="2.8"/>
+    <arg name="input_prediction_enabled" default="true"/>
+    <arg name="input_prediction_max_xy_speed" default="0.5"/>
+    <arg name="prediction_collision_radius" default="0.25"/>
+    <arg name="prediction_collision_min_z" default="0.30"/>
+    <arg name="rviz" default="true"/>
+    <arg name="fullscreen" default="false"/>
+
+    <node pkg="srlc_real" type="pcd_map_publisher.py"
+          name="flight_replay_map_publisher" output="screen" required="true">
+        <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="frame_id" value="map"/>
+        <param name="topic" value="$(arg map_cloud_topic)"/>
+        <param name="voxel_size" value="$(arg map_cloud_voxel_size)"/>
+        <param name="max_points" value="$(arg map_cloud_max_points)"/>
+        <param name="z_max" value="$(arg ceiling_z)"/>
+        <param name="publish_rate" value="0.0"/>
+        <param name="latch" value="true"/>
+    </node>
+
+    <node pkg="srlc_real" type="pcd_map_publisher.py"
+          name="flight_replay_ceiling_publisher" output="screen" required="true">
+        <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="frame_id" value="map"/>
+        <param name="topic" value="$(arg ceiling_cloud_topic)"/>
+        <param name="voxel_size" value="$(arg map_cloud_voxel_size)"/>
+        <param name="max_points" value="$(arg map_cloud_max_points)"/>
+        <param name="z_min" value="$(arg ceiling_z)"/>
+        <param name="publish_rate" value="0.0"/>
+        <param name="latch" value="true"/>
+    </node>
+
+    <node pkg="srlc_real" type="flight_replay_node.py"
+          name="flight_replay_node" output="screen" required="true">
+        <param name="recording_file" value="$(arg recording_file)"/>
+        <param name="start_time" value="$(arg start_time)"/>
+        <param name="end_time" value="$(arg end_time)"/>
+        <param name="speed" value="$(arg speed)"/>
+        <param name="autostart" value="$(arg autostart)"/>
+        <param name="autostart_delay" value="$(arg autostart_delay)"/>
+        <param name="max_sample_gap" value="$(arg max_sample_gap)"/>
+        <param name="map_yaw_deg" value="$(arg map_yaw_deg)"/>
+        <rosparam param="map_origin_xyz" subst_value="true">[$(arg map_origin_x), $(arg map_origin_y), $(arg map_origin_z)]</rosparam>
+        <param name="pcd_file" value="$(arg pcd_file)"/>
+        <param name="input_prediction_enabled" value="$(arg input_prediction_enabled)"/>
+        <param name="input_prediction_max_xy_speed" value="$(arg input_prediction_max_xy_speed)"/>
+        <param name="prediction_collision_radius" value="$(arg prediction_collision_radius)"/>
+        <param name="prediction_collision_min_z" value="$(arg prediction_collision_min_z)"/>
+        <param name="ceiling_z" value="$(arg ceiling_z)"/>
+        <param name="frame_id" value="map"/>
+        <param name="child_frame_id" value="replay_uav"/>
+        <param name="camera_target_frame_id" value="replay_camera_target"/>
+        <param name="publish_rate" value="60.0"/>
+        <param name="path_publish_rate" value="30.0"/>
+    </node>
+
+    <group if="$(arg rviz)">
+        <node unless="$(arg fullscreen)"
+              pkg="rviz" type="rviz" name="srlc_flight_replay_rviz"
+              args="-d $(find srlc_real)/cfg/real_map/flight_replay.rviz"
+              output="screen" required="true"/>
+        <node if="$(arg fullscreen)"
+              pkg="rviz" type="rviz" name="srlc_flight_replay_rviz"
+              args="-d $(find srlc_real)/cfg/real_map/flight_replay.rviz --fullscreen"
+              output="screen" required="true"/>
+    </group>
+</launch>

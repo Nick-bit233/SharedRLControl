@@ -41,6 +41,8 @@ def main():
     topic = rospy.get_param("~topic", "/real_map/cloud")
     voxel_size = float(rospy.get_param("~voxel_size", 0.0))
     max_points = int(rospy.get_param("~max_points", 300000))
+    z_min = float(rospy.get_param("~z_min", "-inf"))
+    z_max = float(rospy.get_param("~z_max", "inf"))
     publish_rate = float(rospy.get_param("~publish_rate", 0.2))
     latch = bool(rospy.get_param("~latch", True))
 
@@ -50,9 +52,17 @@ def main():
     if not os.path.exists(pcd_file):
         rospy.logfatal("[PCD Map Publisher] PCD file not found: %s", pcd_file)
         return
+    if not z_min < z_max:
+        rospy.logfatal(
+            "[PCD Map Publisher] expected z_min < z_max, got %.3f >= %.3f",
+            z_min,
+            z_max,
+        )
+        return
 
     points = read_pcd_xyz(pcd_file)
-    if voxel_size > 0:
+    points = points[(points[:, 2] >= z_min) & (points[:, 2] < z_max)]
+    if voxel_size > 0 and len(points) > 0:
         points = voxel_downsample(points, voxel_size)
     if max_points > 0 and len(points) > max_points:
         step = int(np.ceil(len(points) / float(max_points)))
@@ -60,9 +70,12 @@ def main():
 
     pub = rospy.Publisher(topic, PointCloud2, queue_size=1, latch=latch)
     rospy.loginfo(
-        "[PCD Map Publisher] Loaded %d points from %s; publishing %s in frame %s",
+        "[PCD Map Publisher] Loaded %d points from %s in z=[%.3f, %.3f); "
+        "publishing %s in frame %s",
         len(points),
         pcd_file,
+        z_min,
+        z_max,
         topic,
         frame_id,
     )

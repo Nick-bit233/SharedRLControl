@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: srlc_ros1_real:noetic
+    image: ${SRLC_IMAGE:-srlc_ros1_real:noetic}
     network_mode: host
     ipc: host
     shm_size: 2gb
@@ -65,6 +65,10 @@ services:
       SRLC_MAP_ORIGIN_X: ${SRLC_MAP_ORIGIN_X:-0.0}
       SRLC_MAP_ORIGIN_Y: ${SRLC_MAP_ORIGIN_Y:-0.0}
       SRLC_MAP_ORIGIN_Z: ${SRLC_MAP_ORIGIN_Z:-0.0}
+      SRLC_USE_RECORDED_RC_REPLAY: ${SRLC_USE_RECORDED_RC_REPLAY:-false}
+      SRLC_RC_REPLAY_FILE: ${SRLC_RC_REPLAY_FILE:-}
+      SRLC_RC_REPLAY_START_TIME: ${SRLC_RC_REPLAY_START_TIME:--1.0}
+      SRLC_RC_REPLAY_END_TIME: ${SRLC_RC_REPLAY_END_TIME:--1.0}
       SRLC_RECORD: ${SRLC_RECORD:-true}
       SRLC_RVIZ: ${SRLC_RVIZ:-false}
       SRLC_OUTPUT_DIR: ${SRLC_OUTPUT_DIR:-/root/real_outputs}

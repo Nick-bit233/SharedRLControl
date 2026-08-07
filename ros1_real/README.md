@@ -331,116 +331,246 @@ rostopic echo /mavros/local_position/odom
 rostopic echo /mavros/local_position/velocity_local
 ```
 
-## Predefined S-curve RC replay
+## Recorded RC replay
 
 Both launch files can explicitly replace the motion-stick channels consumed by
-`rc_input_node` with the same one-shot replay.  The source RC topic itself is
-never overwritten: the replay subscribes to `/mavros/rc/in`, copies all
-auxiliary/switch channels, replaces only roll/pitch/throttle intent channels,
-and publishes `/srlc/predefined_rc/in`.  MAVROS and PX4 therefore retain the
-real receiver stream for manual arming, mode selection, and receiver failsafe.
+`rc_input_node` with a one-shot command stream from an earlier recorder
+JSON/NPZ file.  There is no generated command profile in this path.
 
-The shared profile is
-`cfg/tunnel/predefined_rc_s_curve.yaml`:
+The physical `/mavros/rc/in` topic is never overwritten.  The replay node copies
+fresh auxiliary and switch channels from the physical receiver, overlays only
+the configured forward, lateral, and vertical channels from the recording, and
+publishes `/srlc/recorded_rc/in`.  PX4 therefore retains the real receiver for
+arming, mode selection, and receiver failsafe.  Keep the physical motion sticks
+centred during a replay because they still reach PX4 independently of SRLC.
 
-- map start `(-1.85, 2.55)` and goal `(2.75, -1.50)`;
-- an asymmetric S turn fitted to the hand-drawn `s_route2.png` shape, expressed
-  as shape-preserving `(progress, lateral_offset_m)` control points; its main
-  offsets are `-1.25 m` and `+0.83 m`, with a `+0.28 m` lead-in;
-- `26 s` cubic-smoothstep arc-length timing over an approximately `8.108 m`
-  curve, with zero start/end speed and approximately `0.468 m/s` peak intent
-  speed;
-- replay-only RC/intent deadbands of `0.0`/`0.001`, so the smooth low-speed
-  endpoints are not discarded (live-RC defaults remain unchanged);
-- start only after `/tunnel_nav/lifecycle_state == ACTIVE`, a one-second delay,
-  a measured start error no greater than `0.35 m`, and map yaw within `5 deg`
-  of `-45 deg` (clockwise from map `+X`);
-- one-shot abort on raw-RC, odometry, or lifecycle timeout.
+Current recorder files contain a high-rate top-level `rc_events` stream with
+monotonic receive timestamps and the latest odometry pose.  Older files remain
+compatible through their 20 Hz
+`samples[].t` and `samples[].rc` snapshots.  JSON is preferred for inspection;
+NPZ is also supported, but only trusted local NPZ files should be used because
+the recorder stores NumPy object arrays.
 
-The curve was selected from the `0717` PCD at flight-height slices.  It passes
-through the central obstacle cluster (the closest raw PCD samples are under one
-centimetre from the intent centreline), so it is deliberately hazardous
-and is **not** a collision-free waypoint route.  It is an open-loop velocity
-replay: odometry position is used only for the start gate, while odometry yaw
-converts the fixed map-frame intent into equivalent body-frame RC channels.
+By default the loader selects exactly one continuous
+`lifecycle_state == "ACTIVE"` interval and preserves its original relative
+timing with zero-order hold.  It refuses a missing or ambiguous interval,
+non-monotonic timestamps, a gap over `0.25 s`, out-of-range motion PWM, or a
+duration over `300 s`.  Early legacy recordings without lifecycle fields need
+an explicit `replay_start_time` and `replay_end_time`; both values are source
+recording seconds.
 
-Validate the exact intent in DIRECT dryrun first:
+Inspect the exact automatic interval and start gate before use:
+
+```bash
+rosrun srlc_real inspect_recorded_rc.py \
+  /root/real_outputs/real_px4_nokov_YYYYMMDD_HHMMSS.json
+```
+
+For an early recording, first inspect `t`, `status`, `position`, and RC input,
+then ask the same loader to validate only the chosen post-takeoff interval:
+
+```bash
+jq '.samples[] | {
+  t, status, position, yaw, rc, human_action
+}' /root/real_outputs/legacy_flight.json
+
+rosrun srlc_real inspect_recorded_rc.py \
+  --start-time 30.2 \
+  --end-time 52.0 \
+  /root/real_outputs/legacy_flight.json
+```
+
+Always dry-run the exact file and downstream control mode first.  The fake
+initial XY/yaw must match the first selected historical sample; yaw is supplied
+in degrees:
 
 ```bash
 roslaunch srlc_real dry_run_px4.launch \
-  pcd_file:=/root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd \
-  use_predefined_rc_replay:=true \
-  post_takeoff_mode:=direct \
-  fake_forward_speed:=0.0 \
-  rviz:=false \
-  record:=true \
-  run_id:=dry_run_predefined_s
-```
-
-The dryrun launch fallback now uses the `0717` PCD and starts at
-`(-1.85, 2.55)`.  When replay is enabled its fake initial yaw automatically
-becomes `-45 deg`; otherwise the general dryrun default remains `0 deg`.  The
-explicit `pcd_file` above also defeats a stale `SRLC_PCD_FILE` environment
-override.  Watch the replay and final position with:
-
-```bash
-rostopic echo /srlc/predefined_rc/status
-rostopic echo -n 1 /srlc/predefined_rc/complete
-rostopic echo -n 1 /nokov/local_position/odom
-```
-
-To exercise the actual checkpoint inference path in dryrun, change only the
-post-takeoff mode and use the real horizontal speed limit:
-
-```bash
-roslaunch srlc_real dry_run_px4.launch \
-  pcd_file:=/root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd \
-  use_predefined_rc_replay:=true \
+  use_recorded_rc_replay:=true \
+  rc_replay_file:=/root/real_outputs/real_px4_nokov_YYYYMMDD_HHMMSS.json \
+  fake_initial_x:=RECORDED_START_X \
+  fake_initial_y:=RECORDED_START_Y \
+  fake_initial_yaw_deg:=RECORDED_START_YAW_DEG \
   post_takeoff_mode:=assist \
-  max_xy_speed_real:=0.5 \
   fake_forward_speed:=0.0 \
+  max_xy_speed_real:=0.5 \
   rviz:=false \
   record:=true \
-  run_id:=dry_run_predefined_s_assist
+  run_id:=dry_run_recorded_rc
 ```
 
-This feeds the replay through `TunnelPolicyNet`;
-`/experiment_control/human_cmd` is the predefined RC intent,
-`/tunnel_nav/policy_cmd` is the raw model output, and
-`/mavros/setpoint_raw/local` is the final speed-limited command.  A DIRECT
-pass does not imply an ASSIST pass.
+For a legacy file, append both launch arguments:
 
-The current `checkpoint_minrisk_0610.pt` is **not validated for this `-45 deg`
-heading**.  With the current route2-fitted profile on the `0717` map dryrun,
-its raw horizontal output was mostly saturated (`2.772 m/s` median), the real
-limit held the setpoint at `0.5 m/s`, and the vehicle finished near
-`(1.505, -7.999)` instead of `(2.75, -1.50)`.
-Do not use this checkpoint for a real ASSIST replay; changing only the S-curve
-amplitude or duration cannot correct that orientation-dependent policy output.
-A new/retrained checkpoint or an explicitly reviewed model-specific command
-profile must pass the same ASSIST dryrun before flight.
+```bash
+  replay_start_time:=30.2 \
+  replay_end_time:=52.0
+```
 
-For real flight, enabling replay must remain an explicit operator action.  The
-currently **dryrun-validated** control path is DIRECT (no real hardware flight
-was performed here):
+### Reusable dry-run and trajectory report
+
+From the repository root, the host-side helper performs the complete workflow:
+it validates the source interval, takes the fake start pose/yaw from the
+recording, rebuilds the current workspace in a transient container, runs the
+one-shot replay, checks that replay and recorder shutdown both completed, and
+renders the trajectory report.
+
+Build `srlc_ros1_real:noetic` first and install host-side `numpy` and
+`matplotlib`.  The default checkpoint and PCD paths are the sibling
+`../ros1/ckpts` and `../ros1/real_maps` paths used by this repository:
+
+```bash
+docker compose -f docker-compose.real.yml build real_runtime
+
+./tools/recorded_rc_dryrun.py \
+  results_v2/real_px4_nokov_20260721_111553.json \
+  --max-xy-speed 0.8 \
+  --output-dir artifacts/rc_replay_20260721_111553
+```
+
+Set `--checkpoint`, `--pcd`, `--image`, or `--post-takeoff-mode` when those
+defaults do not match the source experiment.  `--post-takeoff-mode auto`
+accepts only a source interval containing exactly one supported `ASSIST` or
+`DIRECT` mode.  The recording does not contain the original
+`max_xy_speed_real` launch value, so always pass the value used by the source
+flight when it differs from the conservative `0.5 m/s` default.
+For a legacy recording, pass both `--replay-start-time 30.2` and
+`--replay-end-time 52.0`.
+
+The container uses `--network none`, never starts MAVROS or Nokov hardware
+clients, disables the independent proximity/collision holds, and mounts source
+data and assets read-only.  ASSIST still runs the selected policy against the
+simulated odometry and map LiDAR.  The output directory contains:
+
+- `dry_run_replay_*.json` and `.npz`: complete simulated recorder output;
+- `dry_run.log`: build, start-gate, replay-completion, and recorder evidence;
+- `trajectory_2d.png` and `.svg`: equal-axis map overlay;
+- `rc_integrated_trajectory.csv`: the obstacle-free integrated RC reference;
+- `replay_metrics.json`: command-fidelity and trajectory metrics.
+
+The plot has three paths.  The historical and dry-run paths are recorded
+odometry.  The `RC-only integration` path applies the configured PWM
+calibration and deadband, converts forward/lateral commands to body-frame
+velocity, rotates each command by the recorded yaw, applies the same
+`max_xy_speed_real` clamp, and integrates each sample with zero-order hold over
+its original timestamp interval.  It intentionally applies no policy, LiDAR,
+obstacle response, safety hold, or vehicle dynamics; map points behind it are
+context only.
+
+The plot defaults to the real-layout orientation: horizontal `Map Y`, vertical
+`Map X`, and a left-right mirror of the rendered scene (the horizontal `Map Y`
+values decrease from left to right).  Use `--plot-mirror none` to disable the
+mirror, or select `vertical`/`both` for the other display reflections.  Use
+`--plot-axis-order xy` to restore the conventional horizontal-X/vertical-Y
+view.  These options change only the display; `rc_integrated_trajectory.csv`,
+JSON trajectory metrics, and endpoint labels retain true `XY=(x, y)` ordering.
+
+To redraw a report without rerunning ROS, provide the existing dry-run JSON and
+the same speed/calibration options:
+
+```bash
+./tools/recorded_rc_dryrun.py \
+  results_v2/real_px4_nokov_20260721_111553.json \
+  --plot-only \
+    artifacts/rc_replay_20260721_111553/dry_run_replay_20260721_111553_assist_20260724_145239.json \
+  --max-xy-speed 0.8 \
+  --output-dir artifacts/rc_replay_20260721_111553
+```
+
+Monitor the one-shot state and the actual command path:
+
+```bash
+rostopic echo /srlc/recorded_rc/status
+rostopic echo -n 1 /srlc/recorded_rc/complete
+rostopic echo /srlc/human_action
+rostopic echo /mavros/setpoint_raw/local
+```
+
+For real flight, replay remains an explicit opt-in and the source file must be
+visible inside the container:
 
 ```bash
 roslaunch srlc_real real_px4.launch \
-  pcd_file:=/root/real_assets/maps/room601/0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd \
-  use_predefined_rc_replay:=true \
-  post_takeoff_mode:=direct
+  use_recorded_rc_replay:=true \
+  rc_replay_file:=/root/real_outputs/real_px4_nokov_YYYYMMDD_HHMMSS.json \
+  post_takeoff_mode:=assist
 ```
 
-Before arming, physically orient the aircraft to map yaw `-45 deg`; this node
-does not autonomously rotate the aircraft.  The existing takeoff controller
-holds the measured heading, and replay remains neutral in `WAIT_START_YAW`
-outside the `+/-5 deg` gate.  Keep the physical sticks centred because they
-still reach PX4 independently of SRLC.  Real-flight proximity hold and
-collision detection remain enabled by default and can interrupt this
-intentionally unsafe intent.  If the experiment requires the narrow-gap
-contingency, disable only `enable_proximity_hold` and retain collision
-detection.  A completed or aborted replay remains neutral; restart the launch
-before another attempt.
+The replay stays neutral until the new experiment is `ACTIVE`, its XY position
+is within `0.35 m` of the recorded start, its yaw is within `5 deg`, and the
+one-second start delay completes.  Raw RC, odometry, or lifecycle timeout and
+leaving `ACTIVE` permanently abort the attempt.  Completion also leaves all
+motion channels neutral; restart the launch for another replay.
+
+Use the same channel calibration, reverse flags, deadbands, map/localization
+frame, checkpoint, and `post_takeoff_mode` as the source flight when the goal is
+to reproduce the earlier experiment.  The input is open-loop: matching RC
+timing does not guarantee the same trajectory under changed initial pose,
+vehicle dynamics, localization, battery, environment, safety intervention, or
+policy output.  Proximity hold and collision detection remain enabled by
+default and may interrupt the recorded intent.
+
+## Offline RViz flight video
+
+The visualization replay is independent of the RC/control replay above.  It
+loads the recorded `samples[].t`, `position`, and `yaw`, publishes a progressive
+3D path and `map -> replay_uav` TF, and renders the static obstacle PCD.  It
+also publishes a translation-only `map -> replay_camera_target` TF.  RViz tracks
+that frame with a fixed yaw and pitch, so the camera follows UAV position
+without rotating with vehicle yaw.  It never starts MAVROS, Nokov, or the
+navigator.
+
+The default video presentation separates the PCD at map `Z=2.8 m`: room and
+obstacle points below it remain opaque, while the ceiling is rendered in a
+separate layer at `18%` alpha.  The measured trajectory is cyan.  When
+`samples[].human_action` is available, a magenta `62%`-alpha trajectory shows
+an obstacle/policy-free estimate of the original right-stick input.  Its path
+from the first estimated PCD contact onward is overlaid in red, with a red
+3D marker and contact time in the video legend.  The estimate uses
+zero-order-held body-frame forward/lateral input, the recorded yaw and
+altitude, the real default `0.5 m/s` horizontal limit, and a configurable
+`0.25 m` vehicle contact radius.  It is a command integration for comparison,
+not a vehicle-dynamics simulation.
+
+Rendered MP4s also contain a lower-right `RIGHT STICK` HUD.  Forward input is
+up, physical-right input is right, the yellow vector is the current input, and
+the green trace shows the previous `1.5 s`.
+
+Preview interactively through the host X11 display:
+
+```bash
+./tools/flight_replay.py preview \
+  --recording results_v2/real_px4_nokov_20260721_111553.json
+```
+
+Render a headless 1920x1080, 30 fps H.264 MP4:
+
+```bash
+./tools/flight_replay.py render \
+  --recording results_v2/real_px4_nokov_20260721_111553.json \
+  --output artifacts/replay_video/real_px4_nokov_20260721_111553.mp4
+```
+
+Both commands rebuild the runtime image by default; add `--skip-build` for
+repeated runs after the image is current.  The default map is the aligned 0717
+Room 601 PCD under `${SRLC_MAP_HOST_DIR:-../ros1/real_maps}`.  Override it with
+`--pcd-file`.
+
+Current-schema recordings are automatically cropped from the first `TAKEOFF`
+to landing/disarm.  Legacy recordings need both `--start-time` and
+`--end-time`.  Use `--speed` to change replay speed.  If the source flight used
+non-zero map alignment, pass the original `--map-yaw-deg` and
+`--map-origin-x/y/z`; historical recorder files do not contain those values.
+Use `--ceiling-z`, `--input-prediction-max-xy-speed`,
+`--prediction-collision-radius`, or `--stick-trail-seconds` to change the new
+overlays.  `--no-input-prediction` and `--no-human-input-overlay` disable them
+independently.
+
+The renderer runs an isolated ROS master with `--network none`, captures
+fullscreen RViz under Xvfb, and validates the result with `ffprobe`.  Alongside
+the MP4 it writes a JSON sidecar containing source/map hashes, selected flight
+window, transform, speed, resolution, frame rate, and codec metadata.  JSON is
+the preferred input.  Recorder NPZ files use NumPy object arrays and must only
+be loaded from trusted sources.
 
 ## Verification after rebuilding
 

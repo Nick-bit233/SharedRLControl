@@ -75,35 +75,48 @@ class LaunchContractTest(unittest.TestCase):
 
         self.assertIn("$(find srlc_real)/launch/mavlink_stream_guard.launch", includes)
 
-    def test_predefined_rc_replay_is_explicit_and_shared_by_both_launches(self):
+    def test_recorded_rc_replay_is_explicit_and_shared_by_both_launches(self):
         for launch_name in ("dry_run_px4.launch", "real_px4.launch"):
             root = parse_launch(launch_name)
             args = launch_args(root)
-            self.assertIn("use_predefined_rc_replay", args)
+            self.assertIn("use_recorded_rc_replay", args)
+            self.assertIn("rc_replay_file", args)
+            self.assertIn("replay_start_time", args)
+            self.assertIn("replay_end_time", args)
             self.assertIn("replay_rc_topic", args)
             self.assertEqual(
                 args["selected_rc_topic"],
                 "$(eval arg('replay_rc_topic') if "
-                "arg('use_predefined_rc_replay') else arg('rc_topic'))",
+                "arg('use_recorded_rc_replay') else arg('rc_topic'))",
             )
 
             replay = next(
                 node
                 for node in root.iter("node")
-                if node.attrib.get("name") == "predefined_rc_replay_node"
+                if node.attrib.get("name") == "recorded_rc_replay_node"
             )
             self.assertEqual(replay.attrib.get("required"), "true")
             loaded_configs = {
                 rosparam.attrib.get("file", "") for rosparam in replay.findall("rosparam")
             }
             self.assertIn(
-                "$(find srlc_real)/cfg/tunnel/predefined_rc_s_curve.yaml",
+                "$(find srlc_real)/cfg/tunnel/recorded_rc_replay.yaml",
                 loaded_configs,
             )
             replay_params = {
                 param.attrib["name"]: param.attrib.get("value", "")
                 for param in replay.findall("param")
             }
+            self.assertEqual(
+                replay_params["recording_file"], "$(arg rc_replay_file)"
+            )
+            self.assertEqual(
+                replay_params["replay_start_time"],
+                "$(arg replay_start_time)",
+            )
+            self.assertEqual(
+                replay_params["replay_end_time"], "$(arg replay_end_time)"
+            )
             self.assertEqual(replay_params["input_rc_topic"], "$(arg rc_topic)")
             self.assertEqual(
                 replay_params["output_rc_topic"], "$(arg replay_rc_topic)"
@@ -119,9 +132,7 @@ class LaunchContractTest(unittest.TestCase):
                 for param in bridge.findall("param")
             }
             self.assertEqual(bridge_params["rc_topic"], "$(arg selected_rc_topic)")
-            self.assertEqual(
-                bridge_params["deadband"], "$(arg selected_rc_deadband)"
-            )
+            self.assertNotIn("deadband", bridge_params)
 
             navigator = next(
                 node
@@ -134,21 +145,26 @@ class LaunchContractTest(unittest.TestCase):
             }
             self.assertEqual(
                 navigator_params["assist_input_deadzone_norm"],
-                "$(arg selected_input_deadzone_norm)",
+                "$(arg assist_input_deadzone_norm)",
             )
-            self.assertEqual(args["replay_rc_deadband"], "0.0")
-            self.assertEqual(args["replay_input_deadzone_norm"], "0.001")
+            for removed_arg in (
+                "replay_rc_deadband",
+                "replay_input_deadzone_norm",
+                "selected_rc_deadband",
+                "selected_input_deadzone_norm",
+            ):
+                self.assertNotIn(removed_arg, args)
 
         self.assertEqual(
-            launch_args(parse_launch("real_px4.launch"))["use_predefined_rc_replay"],
-            "$(optenv SRLC_USE_PREDEFINED_RC_REPLAY false)",
+            launch_args(parse_launch("real_px4.launch"))["use_recorded_rc_replay"],
+            "$(optenv SRLC_USE_RECORDED_RC_REPLAY false)",
         )
         self.assertEqual(
-            launch_args(parse_launch("dry_run_px4.launch"))["use_predefined_rc_replay"],
+            launch_args(parse_launch("dry_run_px4.launch"))["use_recorded_rc_replay"],
             "false",
         )
 
-    def test_dry_run_replay_defaults_match_current_map_start(self):
+    def test_dry_run_has_no_route_specific_replay_defaults(self):
         args = launch_args(parse_launch("dry_run_px4.launch"))
 
         self.assertIn(
@@ -157,10 +173,8 @@ class LaunchContractTest(unittest.TestCase):
         )
         self.assertEqual(args["fake_initial_x"], "-1.85")
         self.assertEqual(args["fake_initial_y"], "2.55")
-        self.assertEqual(
-            args["fake_initial_yaw_deg"],
-            "$(eval -45.0 if arg('use_predefined_rc_replay') else 0.0)",
-        )
+        self.assertEqual(args["fake_initial_yaw_deg"], "0.0")
+        self.assertEqual(args["lateral_reverse"], "true")
 
     def test_dry_run_models_manual_arm_then_single_offboard_entry(self):
         root = parse_launch("dry_run_px4.launch")
@@ -297,6 +311,7 @@ class LaunchContractTest(unittest.TestCase):
             self.skipTest("docker-compose.real.yml is outside the catkin source image")
         compose = compose_path.read_text(encoding="utf-8")
 
+        self.assertIn("image: ${SRLC_IMAGE:-srlc_ros1_real:noetic}", compose)
         self.assertIn("SRLC_POST_TAKEOFF_MODE: ${SRLC_POST_TAKEOFF_MODE:-assist}", compose)
         self.assertIn("SRLC_TAKEOFF_HEIGHT: ${SRLC_TAKEOFF_HEIGHT:-1.0}", compose)
         self.assertIn("SRLC_TAKEOFF_MAX_CLIMB_SPEED: ${SRLC_TAKEOFF_MAX_CLIMB_SPEED:-0.4}", compose)
@@ -321,6 +336,15 @@ class LaunchContractTest(unittest.TestCase):
         )
         self.assertIn("SRLC_MAP_RESOLUTION: ${SRLC_MAP_RESOLUTION:-0.05}", compose)
         self.assertIn("SRLC_COLLISION_DIST: ${SRLC_COLLISION_DIST:-0.05}", compose)
+        self.assertIn(
+            "SRLC_USE_RECORDED_RC_REPLAY: "
+            "${SRLC_USE_RECORDED_RC_REPLAY:-false}",
+            compose,
+        )
+        self.assertIn(
+            "SRLC_RC_REPLAY_FILE: ${SRLC_RC_REPLAY_FILE:-}",
+            compose,
+        )
 
     def test_nokov_vision_height_correction_is_preserved(self):
         source = NOKOV_SOURCE.read_text(encoding="utf-8")

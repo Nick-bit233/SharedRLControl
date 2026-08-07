@@ -79,10 +79,12 @@ class SrlcRealRecorder:
         self.front_distance = float("inf")
         self.status = ""
         self.start_time = rospy.Time.now()
+        self.start_monotonic = time.monotonic()
         self.initial_position = None
         self.initial_px4_local_position = None
         self.saved = False
         self.samples = []
+        self.rc_events = []
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -159,6 +161,27 @@ class SrlcRealRecorder:
 
     def _rc_cb(self, msg):
         self.rc = msg
+        now = rospy.Time.now()
+        position = []
+        yaw = None
+        if self.odom is not None:
+            p = self.odom.pose.pose.position
+            position = [float(p.x), float(p.y), float(p.z)]
+            yaw = float(self._yaw_from_odom(self.odom))
+        self.rc_events.append(
+            {
+                "t": float(time.monotonic() - self.start_monotonic),
+                "ros_t": float((now - self.start_time).to_sec()),
+                "source_stamp": float(msg.header.stamp.to_sec()),
+                "channels": [int(value) for value in msg.channels],
+                "rssi": int(msg.rssi),
+                "position": position,
+                "yaw": yaw,
+                "lifecycle_state": self.lifecycle_state,
+                "control_mode": self.control_mode,
+                "effective_mode": self.effective_mode,
+            }
+        )
 
     def _human_cb(self, msg):
         self.human_cmd = msg
@@ -311,8 +334,12 @@ class SrlcRealRecorder:
         npz_path = os.path.join(self.output_dir, stem + ".npz")
 
         summary = {
+            "recording_schema_version": 2,
             "run_id": self.run_id,
             "samples": len(self.samples),
+            "rc_events": len(self.rc_events),
+            "rc_topic": self.rc_topic,
+            "recorder_rate_hz": self.rate_hz,
             "min_distance": min((s["min_distance"] for s in self.samples), default=float("inf")),
             "min_safety_distance": min(
                 (s["safety_distance"] for s in self.samples),
@@ -327,9 +354,27 @@ class SrlcRealRecorder:
             "data_file": os.path.basename(npz_path),
         }
         with open(json_path, "w", encoding="utf-8") as handle:
-            json.dump({"summary": summary, "samples": self.samples}, handle, indent=2)
-        np.savez_compressed(npz_path, samples=np.array(self.samples, dtype=object), summary=summary)
-        rospy.loginfo("[SRLC Recorder] Saved %d samples to %s", len(self.samples), json_path)
+            json.dump(
+                {
+                    "summary": summary,
+                    "samples": self.samples,
+                    "rc_events": self.rc_events,
+                },
+                handle,
+                indent=2,
+            )
+        np.savez_compressed(
+            npz_path,
+            samples=np.array(self.samples, dtype=object),
+            rc_events=np.array(self.rc_events, dtype=object),
+            summary=summary,
+        )
+        rospy.loginfo(
+            "[SRLC Recorder] Saved %d samples and %d RC events to %s",
+            len(self.samples),
+            len(self.rc_events),
+            json_path,
+        )
 
 
 if __name__ == "__main__":

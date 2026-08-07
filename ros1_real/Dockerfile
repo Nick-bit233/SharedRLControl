@@ -34,9 +34,18 @@ RUN apt-get update && apt-get install -y \
 RUN /opt/ros/noetic/lib/mavros/install_geographiclib_datasets.sh
 
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && python3 -m pip install --no-cache-dir numpy==1.24.4 scipy==1.10.1 \
+    && python3 -m pip install --no-cache-dir \
+       numpy==1.24.4 scipy==1.10.1 pbr==7.0.3 testresources==2.0.1 \
     && python3 -m pip install --no-cache-dir \
        --index-url https://download.pytorch.org/whl/cpu torch==2.4.1+cpu
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    fonts-dejavu-core \
+    libgl1-mesa-dri \
+    x11-utils \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /root/catkin_ws
 COPY src ./src

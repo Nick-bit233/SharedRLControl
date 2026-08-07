@@ -1,0 +1,35 @@
+# One-shot replay of motion-stick channels from an SRLC recorder JSON/NPZ file.
+#
+# With negative replay_start/end times, the loader requires exactly one
+# contiguous lifecycle_state=ACTIVE interval.  For legacy recordings without
+# lifecycle fields, set both times explicitly in the launch command.
+recording_file: ""
+replay_start_time: -1.0
+replay_end_time: -1.0
+activation_value: "ACTIVE"
+
+# Replay begins only after the current experiment is ACTIVE, the recorded
+# start XY/yaw matches current odometry, and this delay has elapsed.
+start_delay: 1.0
+start_xy_tolerance: 0.35
+start_yaw_tolerance_deg: 5.0
+
+# Zero-order hold at 50 Hz preserves recorded transitions without inventing
+# interpolated stick values.  Any stale dependency aborts the one-shot replay.
+publish_rate: 50.0
+input_timeout: 0.30
+odom_timeout: 0.30
+lifecycle_timeout: 0.50
+
+# Reject corrupt, sparse, implausibly long, or out-of-range motion input.
+pwm_lower_bound: 800
+pwm_upper_bound: 2200
+max_sample_gap: 0.25
+max_replay_duration: 300.0
+
+input_rc_topic: "/mavros/rc/in"
+output_rc_topic: "/srlc/recorded_rc/in"
+odom_topic: "/nokov/local_position/odom"
+lifecycle_topic: "/tunnel_nav/lifecycle_state"
+status_topic: "/srlc/recorded_rc/status"
+complete_topic: "/srlc/recorded_rc/complete"
