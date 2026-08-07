@@ -1,0 +1,19 @@
+services:
+  real_runtime:
+    # This override is for archive validation only.  It cannot reach PX4,
+    # Nokov, the LAN, or the public network.
+    network_mode: none
+    ipc: private
+    environment:
+      ROS_MASTER_URI: http://127.0.0.1:11311
+      ROS_IP: 127.0.0.1
+      START_MAVLINK_STREAM_GUARD: "false"
+      PX4_FCU_URL: ""
+      PX4_GCS_URL: ""
+      NOKOV_SERVER: 127.0.0.1
+      SRLC_AUTO_TAKEOFF: "false"
+      SRLC_REQUIRE_OFFBOARD: "false"
+      SRLC_USE_RECORDED_RC_REPLAY: "false"
+      SRLC_RECORD: "false"
+      SRLC_RVIZ: "false"
+    command: ["bash", "-lc", "sleep infinity"]

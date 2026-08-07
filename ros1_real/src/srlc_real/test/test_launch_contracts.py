@@ -346,6 +346,25 @@ class LaunchContractTest(unittest.TestCase):
             compose,
         )
 
+    def test_archive_restore_compose_is_hardware_offline(self):
+        restore_path = REPO_DIR / "docker-compose.restore.yml"
+        if not restore_path.exists():
+            self.skipTest("restore compose override is outside the catkin source image")
+        restore = restore_path.read_text(encoding="utf-8")
+
+        for contract in (
+            "network_mode: none",
+            "ipc: private",
+            'START_MAVLINK_STREAM_GUARD: "false"',
+            'PX4_FCU_URL: ""',
+            "NOKOV_SERVER: 127.0.0.1",
+            'SRLC_AUTO_TAKEOFF: "false"',
+            'SRLC_REQUIRE_OFFBOARD: "false"',
+            'SRLC_USE_RECORDED_RC_REPLAY: "false"',
+            'command: ["bash", "-lc", "sleep infinity"]',
+        ):
+            self.assertIn(contract, restore)
+
     def test_nokov_vision_height_correction_is_preserved(self):
         source = NOKOV_SOURCE.read_text(encoding="utf-8")
 
