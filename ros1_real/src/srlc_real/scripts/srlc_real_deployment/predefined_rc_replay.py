@@ -218,8 +218,8 @@ class SCurveIntent:
     def tangent_at_progress(self, progress: float) -> Tuple[float, float]:
         """Return ``dp/du`` for the geometric curve.
 
-        Both the sinusoidal fallback and the control-point profile have zero
-        endpoint lateral slope, so the initial/final tangent follows the
+        Cubing the sinusoid makes its derivative zero at both endpoints (and
+        at the centre crossing), so the initial/final tangent follows the
         start-to-goal diagonal instead of introducing an immediate side-slip.
         """
 

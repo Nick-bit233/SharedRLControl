@@ -1,8 +1,8 @@
 # Deterministic map-frame RC intent shared by dryrun and real flight.
 #
 # Geometry was selected against
-# 0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd.  The asymmetric
-# lateral profile was fitted to s_route2.png.  It deliberately
+# 0717_section_resampled_0p05_ascii_aligned_floor_level_z0.pcd.  The positive
+# The asymmetric lateral profile was fitted to s_route2.png.  It deliberately
 # crosses dense obstacle returns; this is a hazardous evaluation input, not a
 # collision-free route.  Positive offsets follow the left normal of the
 # start-to-goal chord; negative offsets follow its right normal.
